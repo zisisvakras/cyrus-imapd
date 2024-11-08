@@ -411,7 +411,12 @@ EXPORTED int index_expunge(struct index_state *state, const char *sequence,
     r = index_lock(state, /*readonly*/0);
     if (r) return r;
 
-    /* XXX - check if not mailbox->i.deleted count and need_deleted */
+    /* If mailbox has no deleted flagged records return */
+    if (!(state->mailbox->i.deleted && need_deleted)) {
+        index_unlock(state);
+        return r;
+    }
+
     seq = _parse_sequence(state, sequence, 1);
 
     mboxevent = mboxevent_new(EVENT_MESSAGE_EXPUNGE);
@@ -2145,7 +2150,7 @@ EXPORTED int index_search(struct index_state *state,
                        &searchargs->partial.range, sizeof(range_t));
                 state->last_partial.last_match = folder->esearch.last_match;
                 state->last_partial.highestmodseq = state->highestmodseq;
-                
+
                 free(state->last_partial.expr);
                 state->last_partial.expr = partial_expr;
                 partial_expr = NULL;
@@ -4304,7 +4309,7 @@ static void index_fetchflags(struct index_state *state,
     im->told_modseq = im->modseq;
 }
 
-static void index_printflags(struct index_state *state, 
+static void index_printflags(struct index_state *state,
                              uint32_t msgno, unsigned tell_flags)
 {
     struct index_map *im = &state->map[msgno-1];
@@ -7917,7 +7922,7 @@ static MsgData **references_thread_proc(struct rootset *rootset,
 {
     /* Step 4: sort the root set */
     ref_sort_root(rootset->root);
-    
+
     /* Step 5: group root set by subject */
     ref_group_subjects(rootset->root, rootset->nroot, newnode);
 
