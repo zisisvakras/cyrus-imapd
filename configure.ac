@@ -324,6 +324,49 @@ AC_DEFINE_UNQUOTED([strtorlimt(a,b,c)], [$cyr_cv_parse_rlim_t(a,b,c)],
 dnl function for doing each of the database backends
 dnl parameters: backend name, variable to set, withval
 
+
+dnl Redis DB Detection
+dnl Check for hiredis
+
+AC_ARG_WITH(hiredis,
+    [AS_HELP_STRING([--with-hiredis=DIR], [use Hiredis (in DIR) [no]])],
+    with_hiredis=$withval, with_hiredis="no")
+
+case "$with_hiredis" in
+
+  no)
+    use_hiredis="no"
+    ;;
+  yes)
+    use_hiredis="yes"
+    with_hiredis_lib=/usr/lib/x86_64-linux-gnu
+    with_hiredis_inc=/usr/include/hiredis
+    ;;
+  *)
+    use_hiredis="yes"
+    with_hiredis_lib="$with_hiredis/lib"
+    with_hiredis_inc="$with_hiredis/include"
+    ;;
+
+esac
+
+if test "$use_hiredis" != "no"; then
+  AC_CHECK_LIB(hiredis, redisConnect, [
+    HAVE_CYRUSDB_REDIS=1
+    LIBS="${LIBS} -lhiredis"
+    CPPFLAGS="${CPPFLAGS} -I${with_hiredis_inc}"
+    LDFLAGS="${LDFLAGS} -L${with_hiredis_lib}"
+    AC_DEFINE(HAVE_HIREDIS,[],[Build in Hiredis support?])
+  ], [
+    AC_MSG_ERROR([Hiredis was not found. You may need to supply the --with-hiredis-libdir or --with-hiredis-incdir configure options.])
+  ])
+fi
+
+AC_SUBST(HAVE_CYRUSDB_REDIS)
+AM_CONDITIONAL([USE_CYRUSDB_REDIS], [test "$HAVE_CYRUSDB_REDIS" = "1"])
+
+
+
 dnl SQL DB Detection
 
 HAVE_CYRUSDB_SQL=0

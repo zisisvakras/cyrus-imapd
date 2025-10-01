@@ -109,6 +109,22 @@ enum cyrus_opt {
     CYRUSOPT_ACL_ADMIN_IMPLIES_WRITE,
     /* cyrusdb autoconvert */
     CYRUSOPT_CYRUSDB_AUTOCONVERT,
+    /* Redis sentinel */
+    CYRUSOPT_REDIS_SENTINEL,
+    /* Redis hosts array */
+    CYRUSOPT_REDIS_HOSTS,
+    /* Redis service name */
+    CYRUSOPT_REDIS_SERVICE,
+    /* Redis auth username */
+    CYRUSOPT_REDIS_AUTH_USERNAME,
+    /* Redis auth password */
+    CYRUSOPT_REDIS_AUTH_PASSWORD,
+    /* Redis timeout */
+    CYRUSOPT_REDIS_TIMEOUT,
+    /* Redis reconnect delay */
+    CYRUSOPT_REDIS_RECONNECT_DELAY,
+    /* Redis max retries */
+    CYRUSOPT_REDIS_MAX_RETRIES,
 
     CYRUSOPT_LAST
 

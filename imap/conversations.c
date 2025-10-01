@@ -52,6 +52,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <sysexits.h>
+#include <stdbool.h>
 
 #include "acl.h"
 #include "annotate.h"

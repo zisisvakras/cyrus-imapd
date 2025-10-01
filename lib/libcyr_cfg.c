@@ -165,6 +165,38 @@ static struct cyrusopt_s cyrus_options[] = {
       CFGVAL(long, 0),
       CYRUS_OPT_SWITCH },
 
+    { CYRUSOPT_REDIS_SENTINEL,
+      CFGVAL(long, 0),
+      CYRUS_OPT_SWITCH },
+
+    { CYRUSOPT_REDIS_HOSTS,
+      CFGVAL(const char *, "localhost:6379"),
+      CYRUS_OPT_STRING },
+
+    { CYRUSOPT_REDIS_SERVICE,
+      CFGVAL(const char *, "cyrus"),
+      CYRUS_OPT_STRING },
+    
+    { CYRUSOPT_REDIS_AUTH_USERNAME,
+      CFGVAL(const char *, NULL),
+      CYRUS_OPT_STRING },
+
+    { CYRUSOPT_REDIS_AUTH_PASSWORD,
+      CFGVAL(const char *, NULL),
+      CYRUS_OPT_STRING },
+
+    { CYRUSOPT_REDIS_TIMEOUT,
+      CFGVAL(long, 5), /* 5 seconds */
+      CYRUS_OPT_INT },
+
+    { CYRUSOPT_REDIS_RECONNECT_DELAY,
+      CFGVAL(long, 5), /* 5 seconds */
+      CYRUS_OPT_INT },
+
+    { CYRUSOPT_REDIS_MAX_RETRIES,
+      CFGVAL(long, 5),
+      CYRUS_OPT_INT },
+
     { CYRUSOPT_LAST, { NULL }, CYRUS_OPT_NOTOPT }
 };
 

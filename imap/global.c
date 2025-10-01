@@ -412,6 +412,23 @@ EXPORTED int cyrus_init(const char *alt_config, const char *ident, unsigned flag
                                   config_getswitch(IMAPOPT_ACL_ADMIN_IMPLIES_WRITE));
         libcyrus_config_setswitch(CYRUSOPT_CYRUSDB_AUTOCONVERT,
                                   config_getswitch(IMAPOPT_CYRUSDB_AUTOCONVERT));
+        libcyrus_config_setswitch(CYRUSOPT_REDIS_SENTINEL,
+                                  config_getswitch(IMAPOPT_REDIS_SENTINEL));
+        libcyrus_config_setstring(CYRUSOPT_REDIS_HOSTS,
+                                  config_getstring(IMAPOPT_REDIS_HOSTS));
+        libcyrus_config_setstring(CYRUSOPT_REDIS_SERVICE,
+                                  config_getstring(IMAPOPT_REDIS_SERVICE));
+        libcyrus_config_setstring(CYRUSOPT_REDIS_AUTH_USERNAME,     
+                                  config_getstring(IMAPOPT_REDIS_AUTH_USERNAME));
+        libcyrus_config_setstring(CYRUSOPT_REDIS_AUTH_PASSWORD,     
+                                  config_getstring(IMAPOPT_REDIS_AUTH_PASSWORD));
+        libcyrus_config_setint(CYRUSOPT_REDIS_TIMEOUT, /* <-- n.b. still an int */
+                               config_getduration(IMAPOPT_REDIS_TIMEOUT, 's'));
+        libcyrus_config_setint(CYRUSOPT_REDIS_RECONNECT_DELAY, /* <-- n.b. still an int */
+                               config_getduration(IMAPOPT_REDIS_RECONNECT_DELAY, 's'));
+        libcyrus_config_setint(CYRUSOPT_REDIS_MAX_RETRIES, /* <-- n.b. still an int */
+                               config_getint(IMAPOPT_REDIS_MAX_RETRIES));
+
 
         /* Not until all configuration parameters are set! */
         libcyrus_init();

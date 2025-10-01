@@ -52,6 +52,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <stdbool.h>
 
 #include <sasl/saslutil.h>
 

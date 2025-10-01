@@ -804,6 +804,7 @@ include_HEADERS = \
     lib/procinfo.h \
     lib/retry.h \
     lib/rfc822tok.h \
+    lib/sentinel.h \
     lib/seqset.h \
     lib/signals.h \
     lib/smallarrayu64.h \
@@ -817,7 +818,7 @@ include_HEADERS = \
     lib/wildmat.h \
     lib/xmalloc.h \
     lib/xsha1.h \
-    lib/xunlink.h
+    lib/xunlink.h 
 
 nodist_include_HEADERS = \
     lib/imapopts.h
@@ -1511,6 +1512,9 @@ lib_libcyrus_la_SOURCES += lib/cyrusdb_sql.c
 endif
 if USE_SQLITE
 lib_libcyrus_la_SOURCES += lib/sqldb.c
+endif
+if USE_CYRUSDB_REDIS
+lib_libcyrus_la_SOURCES += lib/sentinel.c lib/cyrusdb_redis.c
 endif
 if GMTOFF_TM
 lib_libcyrus_la_SOURCES += lib/gmtoff_tm.c
