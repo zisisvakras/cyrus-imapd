@@ -300,6 +300,8 @@ int redis_parse_options(const char *uri, redis_options **ret)
     const char *ptr = uri;
 
     /* Parse mode */
+    // XXX Maybe SSL should be specified by adding an s at the end
+    // of the protocol ( e.g. rediss:// or sentinels:// )
     if (!strncmp(ptr, "redis://", 8)) {
         opts->is_sentinel = 0;
         ptr += 8;
@@ -407,6 +409,8 @@ int redis_parse_options(const char *uri, redis_options **ret)
     opts->timeout.tv_sec = libcyrus_config_getint(CYRUSOPT_REDIS_TIMEOUT);
     opts->max_reconnects = libcyrus_config_getint(CYRUSOPT_REDIS_MAX_RETRIES);
     opts->reconnect_interval = libcyrus_config_getint(CYRUSOPT_REDIS_RECONNECT_DELAY) * 1000;
+
+    if (opts->timeout.tv_sec < 1) opts->timeout.tv_sec = 1;
 
     opts->uri = xstrdup(uri);
     if (!opts->uri) goto mem_error;
