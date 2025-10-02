@@ -342,6 +342,11 @@ int redis_parse_options(const char *uri, redis_options **ret)
                          "uri=<%s>", uri);
         goto error;
     }
+    if (slash == ptr) { /* No hosts */
+        xsyslog(LOG_ERR, "DBERROR: REDIS no hosts specified",
+                         "uri=<%s>", uri);
+        goto error;
+    }
     char *hosts_line = xzmalloc(slash - ptr + 1);
     if (!hosts_line) goto mem_error;
     strncpy(hosts_line, ptr, slash - ptr);
@@ -349,12 +354,9 @@ int redis_parse_options(const char *uri, redis_options **ret)
     ptr = slash + 1;
     syslog(LOG_DEBUG, "REDIS: Hosts line: \"%s\"", hosts_line);
     /* Separate hosts */
+    opts->nhosts = 1;
     char *host_linep = hosts_line - 1;
-    do {
-        while (isspace(*++host_linep));
-        if (!isspace(*host_linep)) opts->nhosts++;
-        while (*host_linep && !isspace(*host_linep)) host_linep++;
-    } while (*host_linep);
+    while (*++host_linep) opts->nhosts += (*host_linep == ',');
     syslog(LOG_DEBUG, "REDIS: Found %zu hosts", opts->nhosts);
     if (opts->nhosts == 0) {
         xsyslog(LOG_ERR, "DBERROR: REDIS no hosts specified",
