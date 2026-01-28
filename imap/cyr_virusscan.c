@@ -1,44 +1,6 @@
-/* cyr_virusscan.c - scan mailboxes for infected messages and remove them
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* cyr_virusscan.c - scan mailboxes for infected messages and remove them */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -261,14 +223,14 @@ static void put_notification_headers(FILE *f, int counter, time_t t,
 static void append_notifications(const struct buf *template);
 
 static const char *default_notification_template =
-	"The following message was deleted from mailbox '%MAILBOX%'\n"
-	"because it was infected with virus '%VIRUS%'\n"
-	"\n"
-	"\tMessage-ID: %MSG_ID%\n"
-	"\tDate: %MSG_DATE%\n"
-	"\tFrom: %MSG_FROM%\n"
-	"\tSubject: %MSG_SUBJECT%\n"
-	"\tIMAP UID: %MSG_UID%\n";
+        "The following message was deleted from mailbox '%MAILBOX%'\n"
+        "because it was infected with virus '%VIRUS%'\n"
+        "\n"
+        "\tMessage-ID: %MSG_ID%\n"
+        "\tDate: %MSG_DATE%\n"
+        "\tFrom: %MSG_FROM%\n"
+        "\tSubject: %MSG_SUBJECT%\n"
+        "\tIMAP UID: %MSG_UID%\n";
 
 int main (int argc, char *argv[])
 {
@@ -351,7 +313,7 @@ int main (int argc, char *argv[])
 
         srock.searchargs = new_searchargs("*", GETSEARCH_CHARSET_KEYWORD,
                                           &scan_namespace, NULL, NULL, 1);
-        c = get_search_program(scan_in, scan_out, srock.searchargs);
+        c = get_search_program(scan_in, scan_out, 0/*quirks*/, srock.searchargs);
         prot_free(scan_in);
         prot_flush(scan_out);
         prot_free(scan_out);
@@ -717,7 +679,7 @@ static void append_notifications(const struct buf *template)
         if (i_mbox->msgs) {
             FILE *f = NULL;
             struct infected_msg *msg;
-            time_t t;
+            struct timespec now;
             struct protstream *pout;
             struct appendstate as;
             struct body *body = NULL;
@@ -739,8 +701,8 @@ static void append_notifications(const struct buf *template)
                 goto user_done;
             }
 
-            t = time(NULL);
-            put_notification_headers(f, outgoing_count++, t, owner);
+            cyrus_gettime(CLOCK_REALTIME, &now);
+            put_notification_headers(f, outgoing_count++, now.tv_sec, owner);
 
             first = 1;
             while ((msg = i_mbox->msgs)) {
@@ -804,7 +766,7 @@ static void append_notifications(const struct buf *template)
             if (!r) {
                 pout = prot_new(fd, 0);
                 prot_rewind(pout);
-                r = append_fromstream(&as, &body, pout, msgsize, t, NULL);
+                r = append_fromstream(&as, &body, pout, msgsize, &now, NULL);
                 /* n.b. append_fromstream calls append_abort itself if it fails */
                 if (!r) r = append_commit(&as);
 

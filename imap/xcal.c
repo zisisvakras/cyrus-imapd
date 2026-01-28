@@ -1,45 +1,6 @@
-/* xcal.c -- Routines for converting iCalendar to/from xCal
- *
- * Copyright (c) 1994-2013 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* xcal.c -- Routines for converting iCalendar to/from xCal */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -121,8 +82,12 @@ const char *icaltime_as_iso_string(const struct icaltimetype tt)
     else if (icaltime_is_utc(tt)) fmt = "%04d-%02d-%02dT%02d:%02d:%02dZ";
     else fmt = "%04d-%02d-%02dT%02d:%02d:%02d";
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    /* format string decided above */
     snprintf(str, sizeof(str), fmt, tt.year, tt.month, tt.day,
              tt.hour, tt.minute, tt.second);
+#pragma GCC diagnostic pop
 
     return str;
 }
@@ -150,7 +115,11 @@ const char *icalvalue_utcoffset_as_iso_string(const icalvalue* value)
     if (s > 0) fmt = "%c%02d:%02d:%02d";
     else fmt = "%c%02d:%02d";
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    /* format string decided above */
     snprintf(str, sizeof(str), fmt, sign, abs(h), abs(m), abs(s));
+#pragma GCC diagnostic pop
 
     return str;
 }
@@ -676,7 +645,7 @@ static icalvalue *xml_element_to_icalvalue(xmlNodePtr xtype,
         struct icalperiodtype p;
 
         p.start = p.end = icaltime_null_time();
-        p.duration = icaldurationtype_from_int(0);
+        p.duration = icaldurationtype_from_seconds(0);
 
         node = xmlFirstElementChild(xtype);
         if (!node) {
@@ -708,7 +677,7 @@ static icalvalue *xml_element_to_icalvalue(xmlNodePtr xtype,
             xmlFree(content);
             content = xmlNodeGetContent(node);
             p.duration = icaldurationtype_from_string((const char *) content);
-            if (icaldurationtype_as_int(p.duration) == 0) break;
+            if (icaldurationtype_as_utc_seconds(p.duration) == 0) break;
         }
         else {
             syslog(LOG_WARNING,
@@ -883,7 +852,7 @@ static icalproperty *xml_element_to_icalproperty(xmlNodePtr xprop)
 
     /* Get the property type */
     propname = ucase(icalmemory_tmp_copy((const char *) xprop->name));
-    kind = icalenum_string_to_property_kind(propname);
+    kind = icalproperty_string_to_kind(propname);
     if (kind == ICAL_NO_PROPERTY) {
         syslog(LOG_WARNING, "Unknown xCal property type: %s", propname);
         return NULL;
@@ -927,7 +896,7 @@ static icalproperty *xml_element_to_icalproperty(xmlNodePtr xprop)
     }
     typestr = ucase(icalmemory_tmp_copy((const char *) node->name));
     valkind = !strcmp(typestr, "UNKNOWN") ? ICAL_X_VALUE :
-        icalenum_string_to_value_kind(typestr);
+        icalvalue_string_to_kind(typestr);
     if (valkind == ICAL_NO_VALUE) {
         syslog(LOG_WARNING, "Unknown xCal value type for %s property: %s",
                propname, typestr);
@@ -1005,7 +974,7 @@ static icalcomponent *xml_element_to_icalcomponent(xmlNodePtr xcomp)
 
     /* Get component type */
     kind =
-        icalenum_string_to_component_kind(
+        icalcomponent_string_to_kind(
             ucase(icalmemory_tmp_copy((const char *) xcomp->name)));
     if (kind == ICAL_NO_COMPONENT) {
         syslog(LOG_WARNING, "Unknown xCal component type: %s", xcomp->name);

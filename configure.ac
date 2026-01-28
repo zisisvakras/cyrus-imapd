@@ -1,45 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
+dnl SPDX-License-Identifier: BSD-3-Clause-CMU
+dnl See COPYING file at the root of the distribution for more details.
 
-dnl
-dnl Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
-dnl
-dnl Redistribution and use in source and binary forms, with or without
-dnl modification, are permitted provided that the following conditions
-dnl are met:
-dnl
-dnl 1. Redistributions of source code must retain the above copyright
-dnl    notice, this list of conditions and the following disclaimer.
-dnl
-dnl 2. Redistributions in binary form must reproduce the above copyright
-dnl    notice, this list of conditions and the following disclaimer in
-dnl    the documentation and/or other materials provided with the
-dnl    distribution.
-dnl
-dnl 3. The name "Carnegie Mellon University" must not be used to
-dnl    endorse or promote products derived from this software without
-dnl    prior written permission. For permission or any legal
-dnl    details, please contact
-dnl      Carnegie Mellon University
-dnl      Center for Technology Transfer and Enterprise Creation
-dnl      4615 Forbes Avenue
-dnl      Suite 302
-dnl      Pittsburgh, PA  15213
-dnl      (412) 268-7393, fax: (412) 268-7395
-dnl      innovation@andrew.cmu.edu
-dnl
-dnl 4. Redistributions of any form whatsoever must retain the following
-dnl    acknowledgment:
-dnl    "This product includes software developed by Computing Services
-dnl     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
-dnl
-dnl CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
-dnl THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-dnl AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
-dnl FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-dnl WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-dnl AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
-dnl OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-dnl
 dnl configure.ac for the Cyrus imapd
 dnl
 
@@ -503,7 +465,7 @@ AC_ARG_WITH(caringo,
         [AS_HELP_STRING([--with-caringo], [use Caringo ("yes" or "no")])],,with_caringo="no")
 case "$with_caringo" in
   yes)
-	LDFLAGS="$LDFLAGS -lCastorSDK"
+    LDFLAGS="$LDFLAGS -lCastorSDK"
   ;;
 esac
 AC_MSG_RESULT([$with_caringo])
@@ -517,20 +479,20 @@ AC_ARG_WITH(openio,
 
 case "$with_openio" in
   no)
-	use_openio="no"
-	;;
+    use_openio="no"
+    ;;
   yes)
-	use_openio="yes"
-	with_openio_lib=none
-	with_openio_inc=none
-	AC_DEFINE([WITH_OPENIO],[1],[Enable support for OpenIO object storage.])
-	;;
+    use_openio="yes"
+    with_openio_lib=none
+    with_openio_inc=none
+    AC_DEFINE([WITH_OPENIO],[1],[Enable support for OpenIO object storage.])
+    ;;
   *)
-	use_openio="yes"
-	with_openio_lib="$with_openio/lib64"
-	with_openio_inc="$with_openio/include"
-	AC_DEFINE([WITH_OPENIO],[1],[Enable support for OpenIO object storage.])
-	;;
+    use_openio="yes"
+    with_openio_lib="$with_openio/lib64"
+    with_openio_inc="$with_openio/include"
+    AC_DEFINE([WITH_OPENIO],[1],[Enable support for OpenIO object storage.])
+    ;;
 esac
 
 AC_ARG_WITH(openio-libdir,
@@ -543,27 +505,27 @@ AC_ARG_WITH(openio-incdir,
         [ test "${with_openio_inc+set}" = set || with_openio_inc=none ])
 
 if test "$use_openio" = "yes"; then
-	if test ! -d "$with_openio_lib"; then
-		AC_MSG_ERROR([OpenIO library directory '$with_openio_lib' does not exist.])
-	fi
-	if test ! -d "$with_openio_inc"; then
-		AC_MSG_ERROR([OpenIO include directory '$with_openio_inc' does not exist.])
-	fi
+    if test ! -d "$with_openio_lib"; then
+        AC_MSG_ERROR([OpenIO library directory '$with_openio_lib' does not exist.])
+    fi
+    if test ! -d "$with_openio_inc"; then
+        AC_MSG_ERROR([OpenIO include directory '$with_openio_inc' does not exist.])
+    fi
 
-	LDFLAGS="$LDFLAGS -L$with_openio_lib"
-	CFLAGS="$CFLAGS -I$with_openio_inc"
-	openio_headers="oio_sds.h core/oiourl.h"
-	for h in $openio_headers; do
-		AC_CHECK_HEADER($h,[],[
-			AC_MSG_ERROR([Header $h is missing.])
-		])
-	done
-	AC_CHECK_LIB([oiosds],[oio_error_free],[],[AC_MSG_ERROR([Library oiosds not found.])])
-	AC_CHECK_LIB([oiocore],[oio_url_empty],[],[AC_MSG_ERROR([Library oiocore not found.])])
-	AC_CHECK_LIB([curl],[curl_version],[],[AC_MSG_ERROR([Library curl not found.])])
-	AC_CHECK_LIB([json-c],[json_tokener_parse_ex],[],[AC_MSG_ERROR([Library json-c not found.])])
+    LDFLAGS="$LDFLAGS -L$with_openio_lib"
+    CFLAGS="$CFLAGS -I$with_openio_inc"
+    openio_headers="oio_sds.h core/oiourl.h"
+    for h in $openio_headers; do
+        AC_CHECK_HEADER($h,[],[
+            AC_MSG_ERROR([Header $h is missing.])
+        ])
+    done
+    AC_CHECK_LIB([oiosds],[oio_error_free],[],[AC_MSG_ERROR([Library oiosds not found.])])
+    AC_CHECK_LIB([oiocore],[oio_url_empty],[],[AC_MSG_ERROR([Library oiocore not found.])])
+    AC_CHECK_LIB([curl],[curl_version],[],[AC_MSG_ERROR([Library curl not found.])])
+    AC_CHECK_LIB([json-c],[json_tokener_parse_ex],[],[AC_MSG_ERROR([Library json-c not found.])])
 
-	LDFLAGS="$LDFLAGS -L$with_openio_lib -loiosds -loiocore -lcurl -ljson-c"
+    LDFLAGS="$LDFLAGS -L$with_openio_lib -loiosds -loiocore -lcurl -ljson-c"
 fi
 AC_MSG_RESULT([$use_openio])
 
@@ -650,7 +612,7 @@ if test "x$enable_xapian" != xno ; then
         fi
 
         dnl Xapian requires CXX11
-        AX_CXX_COMPILE_STDCXX_11([], [mandatory])
+        AX_CXX_COMPILE_STDCXX(11)
 
         dnl If AC_PROG_LIBTOOL (or the deprecated older version AM_PROG_LIBTOOL)
         dnl has already been expanded, enable libtool support now, otherwise add
@@ -769,8 +731,8 @@ if test "$enable_pcre" != "no"; then
                       [ AC_MSG_CHECKING(for utf8 enabled pcre)
                         saved_CFLAGS="$CFLAGS"
                         saved_LIBS="$LIBS"
-                        CFLAGS="$CFLAGS PCRE_CFLAGS"
-                        LIBS="$LIBS PCRE_LIBS"
+                        CFLAGS="$CFLAGS $PCRE_CFLAGS"
+                        LIBS="$LIBS $PCRE_LIBS"
                         AC_CACHE_VAL(cyrus_cv_pcre_utf8,
                                      AC_TRY_CPP([   #include <pcreposix.h>
                                                     #ifndef REG_UTF8
@@ -792,8 +754,8 @@ if test "$enable_pcre2" != "no"; then
                       [ AC_MSG_CHECKING(for utf8 enabled pcre2)
                         saved_CFLAGS="$CFLAGS"
                         saved_LIBS="$LIBS"
-                        CFLAGS="$CFLAGS PCRE2_CFLAGS"
-                        LIBS="$LIBS PCRE2_LIBS"
+                        CFLAGS="$CFLAGS $PCRE2_CFLAGS"
+                        LIBS="$LIBS $PCRE2_LIBS"
                         AC_CACHE_VAL(cyrus_cv_pcre2_utf8,
                                      AC_TRY_CPP([   #include <pcre2posix.h>
                                                     #ifndef REG_UTF
@@ -1081,6 +1043,11 @@ AC_SEARCH_LIBS([clock_gettime], [rt], [], [
     AC_MSG_ERROR([unable to find the clock_gettime() function])
 ])
 
+dnl check for fts_open
+AC_SEARCH_LIBS([fts_open], [fts], [
+    AC_DEFINE(HAVE_FTS,[],[Do we have fts_open()?])
+], [])
+
 dnl check for libuuid (used when generating mailbox uniqueids)
 LIB_UUID=
 AC_CHECK_LIB(uuid, uuid_generate,[
@@ -1238,12 +1205,12 @@ AC_SUBST(LDAP_LIBS)
 AM_CONDITIONAL([HAVE_LDAP], [test "$have_ldap" = "yes"])
 
 AC_ARG_WITH([clamav],
-	AS_HELP_STRING([--without-clamav], [ignore presence of ClamAV and disable it]))
+    AS_HELP_STRING([--without-clamav], [ignore presence of ClamAV and disable it]))
 AS_IF([test "x$with_clamav" != "xno"],
-	[ PKG_CHECK_MODULES([CLAMAV], [libclamav],
-		[ AC_DEFINE(HAVE_CLAMAV, [], [Do we have ClamAV?])
-		  with_clamav=yes ],
-		with_clamav=no)])
+    [ PKG_CHECK_MODULES([CLAMAV], [libclamav],
+        [ AC_DEFINE(HAVE_CLAMAV, [], [Do we have ClamAV?])
+          with_clamav=yes ],
+        with_clamav=no)])
 
 AC_ARG_ENABLE(server,
         [AS_HELP_STRING([--disable-server], [disable compiling servers])])
@@ -1276,100 +1243,13 @@ fi
 SASL_SET_GSSAPI_LIBS
 
 dnl
-dnl Test for OpenSSL
+dnl Check for OpenSSL library, needed for TLS support
 dnl
-AC_ARG_WITH(openssl,
-        [AS_HELP_STRING([--with-openssl=DIR], [use OpenSSL from DIR])],
-        with_ssl="${withval}")
-
-SSL_CPPFLAGS=
-SSL_LIBS=
-
-case "x$with_ssl" in
-xno)
-    # --without-openssl
-    # do not try to enable
-    ;;
-x|xyes)
-    # default args or --with-openssl
-    #
-    # Try pkg-config - OpenSSL >= 0.9.6 has openssl.pc
-    PKG_CHECK_MODULES(OPENSSL, openssl, [with_ssl=yes])
-    ssl_cppflags="$OPENSSL_CFLAGS"
-    ssl_ldflags="$OPENSSL_LIBS"
-    #
-    # If pkg-config doesn't work, search in default system directories
-    ;;
-*)
-    # --with-openssl=DIR
-    # try to enable, search in given install directory
-    if test -d "$with_ssl"; then
-        ssl_cppflags="-I${with_ssl}/include"
-        ssl_ldflags=
-        if test -d "${with_ssl}/lib64"; then
-            CMU_ADD_LIBPATH_TO(${with_ssl}/lib64, ssl_ldflags)
-        else
-            CMU_ADD_LIBPATH_TO(${with_ssl}/lib, ssl_ldflags)
-        fi
-        with_ssl=yes
-    else
-        AC_WARN([Disabling OpenSSL - no include files found])
-        with_ssl=no
-    fi
-esac
-
-if test "$with_ssl" != "no"; then
-    save_CPPFLAGS="$CPPFLAGS"
-    save_LDFLAGS="$LDFLAGS"
-    CPPFLAGS="$CPPFLAGS $ssl_cppflags"
-    LDFLAGS="$LDFLAGS $ssl_ldflags"
-
-    AC_CHECK_HEADER(openssl/evp.h, [
-        with_ssl=yes
-    ],[
-        with_ssl=no
-    ])
-
-    dnl if openssl has been compiled with the rsaref2 libraries,
-    dnl we need to include the rsaref libraries in the crypto check
-    ssl_libs=
-    AC_CHECK_LIB(rsaref, RSAPublicEncrypt,[
-       ssl_libs="-lRSAglue -lrsaref"
-    ],[
-       # whatever, we do not care
-       :
-    ])
-    AC_CHECK_LIB(crypto, BIO_accept,[
-        ssl_libs="-lcrypto $ssl_libs"
-    ],[
-        with_ssl=no
-    ], $ssl_libs)
-    AC_CHECK_LIB(ssl, SSL_CTX_new, [
-        ssl_libs="-lssl $ssl_libs"
-    ],[
-        with_ssl=no
-    ], $ssl_libs)
-
-    if test "$with_ssl" = "no"; then
-        AC_WARN([Disabling SSL - no library files found])
-    fi
-    CPPFLAGS="$save_CPPFLAGS"
-    LDFLAGS="$save_LDFLAGS"
-fi
-
-AC_MSG_CHECKING(for ssl)
-AC_MSG_RESULT($with_ssl)
-
-if test "$with_ssl" != "no"; then
-    SSL_CPPFLAGS="$ssl_cppflags"
-    SSL_LIBS="$ssl_ldflags $ssl_libs"
-    AC_DEFINE(HAVE_SSL,[],[Build with SSL support?])
-    AC_CHECK_LIB(ssl, SSL_CTX_set_alpn_select_cb,
-       AC_DEFINE(HAVE_TLS_ALPN,[], [Do we have support for TLS ALPN extension?]))
-fi
-AM_CONDITIONAL([HAVE_SSL], [test "$with_ssl" != "no"])
-AC_SUBST(SSL_CPPFLAGS)
-AC_SUBST(SSL_LIBS)
+PKG_CHECK_MODULES([SSL], [openssl >= 3.0], [],
+                  AC_MSG_ERROR([openssl is required]))
+dnl call AC_SUBST macro to support pkg-config version older than 0.24
+AC_SUBST([SSL_LIBS])
+AC_SUBST([SSL_CFLAGS])
 
 dnl
 dnl Allow for setting EGD socket file on systems without /dev/*random.
@@ -1452,35 +1332,6 @@ if test "$with_zephyr" != "no"; then
 fi
 AM_CONDITIONAL([ZEPHYR], [test "$with_zephyr" != "no"])
 
-
-dnl
-dnl Test for libcap (POSIX.1e - security API) on Linux systems
-dnl
-AC_ARG_WITH([libcap],
-        AS_HELP_STRING([--with-libcap], [Enable libcap system capabilities handling (Linux systems only)]),
-        with_libcap="${withval}")
-
-have_libcap=no
-LIBCAP_LIBS=""
-case $host_os in
-linux*)
-        if test "x$with_libcap" = "xyes"; then
-                AC_CHECK_LIB([cap], [cap_get_proc], have_libcap=yes, have_libcap=no)
-                AC_CHECK_HEADERS([sys/capability.h sys/prctl.h], , have_libcap=no)
-                if test "$have_libcap" = "yes"; then
-                        AC_DEFINE(HAVE_LIBCAP, [], [Do we have libcap system capabilities handling (Linux systems only)?])
-                        LIBCAP_LIBS="-lcap"
-                fi
-        fi
-        ;;
-*)
-        ;;
-esac
-AC_SUBST(LIBCAP_LIBS)
-
-AC_MSG_CHECKING(for libcap)
-AC_MSG_RESULT($have_libcap)
-
 dnl
 dnl Check for jansson library, needed for JSON support
 dnl
@@ -1510,14 +1361,14 @@ dnl
 dnl Check for chardet library, needed for charset detection support
 dnl
 AC_ARG_WITH([chardet],
-	[AS_HELP_STRING([--without-chardet], [ignore presence of chardet library and disable it])],
+    [AS_HELP_STRING([--without-chardet], [ignore presence of chardet library and disable it])],
     [],
     [with_chardet=yes])
 AS_IF([test "x$with_chardet" = "xyes"],
-	[ PKG_CHECK_MODULES([LIBCHARDET], [chardet >= 1.0.5],
-		[ AC_DEFINE(HAVE_LIBCHARDET, [], [Build with chardet library support])
-		  with_chardet=yes ],
-		with_chardet=no)])
+    [ PKG_CHECK_MODULES([LIBCHARDET], [chardet >= 1.0.5],
+        [ AC_DEFINE(HAVE_LIBCHARDET, [], [Build with chardet library support])
+          with_chardet=yes ],
+        with_chardet=no)])
 AS_IF([test "x$with_chardet" != "xyes"],
       [AC_MSG_NOTICE([JMAP will not have character set detection support.  Consider installing chardet >= 1.0.5])])
 AC_SUBST([LIBCHARDET_LIBS])
@@ -1672,40 +1523,12 @@ dnl
                                 [Do we have support for xmlBufferDetach()?]))
                 ])
 
-        PKG_CHECK_MODULES([ICAL], [libical >= 3.0.10], [
+        PKG_CHECK_MODULES([ICAL], [libical >= 3.99.99], [
                 AC_DEFINE(HAVE_ICAL,[],[Build CalDAV support into httpd?])
-                LIBS="$LIBS ${ICAL_LIBS}"
+                LIBS="$LIBS ${ICAL_LIBS} -licalvcard"
                 with_ical=yes
                 ],
-                AC_MSG_ERROR([Need libical 3.0.10 for http]))
-
-        dnl libical may have been built without RSCALE support
-        AC_CHECK_LIB(ical, icalrecurrencetype_rscale_is_supported,
-                [AC_DEFINE(HAVE_RSCALE,[], [Build RSCALE support into httpd?])],
-                [AC_MSG_NOTICE([Your version of libical can not support non-gregorian recurrences])])
-
-        dnl icalcomponent_clone will be new in libical 3.1.0
-        AC_CHECK_LIB(ical, icalcomponent_clone,
-                AC_DEFINE(HAVE_NEW_CLONE_API,[],
-                        [Do we have support for new clone API?]))
-
-        dnl ical_set_invalid_rrule_handling_setting will be new in libical 3.1.0
-        AC_CHECK_LIB(ical, ical_set_invalid_rrule_handling_setting,
-                AC_DEFINE(HAVE_INVALID_RRULE_HANDLING,[],
-                        [Do we have support for controlling invalid RRULE handline?]))
-
-        dnl icalcomponent_get_component_name will be new in libical 3.1.0
-        AC_CHECK_LIB(ical, icalcomponent_get_component_name,
-                AC_DEFINE(HAVE_GET_COMPONENT_NAME,[],
-                        [Do we have support for fetching X- component names?]))
-
-        dnl Check if libical parser allows setting CONTROL char handling
-        AC_CHECK_LIB(ical, icalparser_get_ctrl,
-            [
-                AC_DEFINE(HAVE_ICALPARSER_CTRL,[], [Can we omit CONTROL characters?])
-                have_ical_ctrl=yes
-            ],
-            have_ical_ctrl=no)
+                AC_MSG_ERROR([Need libical for http]))
 
         dnl Check if libical supports PARTICIPANT-TYPE=VOTER
         AC_CHECK_DECL([ICAL_PARTICIPANTTYPE_VOTER],
@@ -1713,18 +1536,10 @@ dnl
                         [Do we have support for PARTICIPANT-TYPE=VOTER?]),
                 [], [[#include <libical/ical.h>]])
 
-        dnl icalrecurrencetype_new will be new in libical 4.0
-        AC_CHECK_LIB(ical, icalrecurrencetype_new,
-                AC_DEFINE(HAVE_RECUR_BY_REF,[],
-                        [Do we have support for icalrecurrencetype by reference?]))
-
-        dnl Check for libicalvcard
-        AC_CHECK_LIB(icalvcard, vcardcomponent_new, [
-                 AC_DEFINE(HAVE_LIBICALVCARD,[],[Do we have the icalvcard library?])
-                 LIBS="$LIBS -licalvcard"
-                 with_icalvcard=yes
-                ],
-                with_icalvcard=no)
+        dnl vcardparser_set_xprop_value_kind will be new in libical 4.0
+        AC_CHECK_LIB(icalvcard, vcardparser_set_xprop_value_kind,
+                AC_DEFINE(HAVE_LIBICALVCARD_XPROP_VALUE,[],
+                        [Do we have support for custom x-property value types?]))
 
 dnl  Don't bother checking for DKIM until iSchedule gains traction
 dnl        PKG_CHECK_MODULES([DKIM], [opendkim >= 2.7.0],
@@ -1739,6 +1554,10 @@ dnl                AC_MSG_WARN([Your version of OpenDKIM can not support iSchedu
                 PKG_CHECK_MODULES([NGHTTP2], [libnghttp2 >= 1.34.0], [
                         AC_DEFINE(HAVE_NGHTTP2,[],
                                 [Build HTTP/2 support into httpd?])
+                        AC_CHECK_DECL([nghttp2_submit_data2],
+                                AC_DEFINE(HAVE_NGHTTP2_SSIZE,[],
+                                [Do we have support for nghttp2_ssize?]),
+                                [], [[#include <nghttp2/nghttp2.h>]])
                         with_nghttp2=yes
                 ], [
                         if test "x$with_nghttp2" = "xyes"; then
@@ -1829,15 +1648,30 @@ if test "x$enable_http" = "xyes"; then
 fi
 
 dnl
+dnl allow setting a compile-time default for zoneinfo_dir
+dnl
+AC_ARG_WITH([zoneinfo-dir],
+            [AS_HELP_STRING([--with-zoneinfo-dir=path],
+                            [set default zoneinfo_dir to path (otherwise NULL)])])
+AS_CASE([$with_zoneinfo_dir],
+        [yes],  [AC_MSG_ERROR([--with-zoneinfo-dir requires a path])],
+        [no],   [with_zoneinfo_dir=''],
+        [*],    []);
+AS_IF([test "x$with_zoneinfo_dir" != "x"],
+      AC_DEFINE_UNQUOTED(DEFAULT_ZONEINFO_DIR,
+                         ["$with_zoneinfo_dir"],
+                         [Default zoneinfo_dir]))
+
+dnl
 dnl see if we're compiling with calendar alarm support
 dnl
 AC_ARG_ENABLE(calalarmd,
         [AS_HELP_STRING([--enable-calalarmd], [enable CalDAV alarm support])],,[enable_calalarmd="no";])
 if test "x$enable_calalarmd" = "xyes"; then
     if test "x$enable_http" = "xyes"; then
-	AC_DEFINE(USE_CALALARMD,[],[Build with calendar alarm functionality])
+    AC_DEFINE(USE_CALALARMD,[],[Build with calendar alarm functionality])
     else
-	AC_MSG_ERROR([--enable-calalarmd requires --enable-http])
+    AC_MSG_ERROR([--enable-calalarmd requires --enable-http])
     fi
 fi
 AM_CONDITIONAL([CALALARMD], [test "$enable_calalarmd" != "no"])
@@ -2055,6 +1889,10 @@ dnl the source directory)
     AC_CONFIG_LINKS([perl/sieve/managesieve/managesieve.pm:perl/sieve/managesieve/managesieve.pm])
     AC_CONFIG_FILES([perl/sieve/managesieve/MANIFEST])
     AC_CONFIG_LINKS([perl/imap/Cyrus/AccountSync.pm:perl/imap/Cyrus/AccountSync.pm])
+    AC_CONFIG_LINKS([perl/imap/Cyrus/Backup.pm:perl/imap/Cyrus/Backup.pm])
+    AC_CONFIG_LINKS([perl/imap/Cyrus/Backup/State.pm:perl/imap/Cyrus/Backup/State.pm])
+    AC_CONFIG_LINKS([perl/imap/Cyrus/Backup/Restore.pm:perl/imap/Cyrus/Backup/Restore.pm])
+    AC_CONFIG_LINKS([perl/imap/Cyrus/Backup/Tar.pm:perl/imap/Cyrus/Backup/Tar.pm])
     AC_CONFIG_LINKS([perl/imap/Cyrus/CacheFile.pm:perl/imap/Cyrus/CacheFile.pm])
     AC_CONFIG_LINKS([perl/imap/Cyrus/DList.pm:perl/imap/Cyrus/DList.pm])
     AC_CONFIG_LINKS([perl/imap/Cyrus/HeaderFile.pm:perl/imap/Cyrus/HeaderFile.pm])
@@ -2253,8 +2091,9 @@ int cval(const void *a, const void *b, void *prev)
   return 1;
 }
 ],[
-    char *dest;
-    func("abc", 3, 1, cval, &dest);
+    /* the chaos is a pair of quadrigraphs representing square brackets */
+    char *dest, buf@<:@@:>@ = "abc";
+    func(buf, 3, 1, cval, &dest);
 ],cyrus_cv_function_nesting=yes, cyrus_cv_function_nesting=no))
 AC_MSG_RESULT($cyrus_cv_function_nesting)
 if test "$cyrus_cv_function_nesting" = "yes"; then
@@ -2352,33 +2191,15 @@ AX_PROG_PERL_MODULES([Pod::POM::View::Restructured],
                        have_ppvr=no
                      ])
 
-AX_PYTHON_MODULE([git], [], [python2])
+AX_PYTHON_MODULE([git], [], [python3])
 AS_CASE([$HAVE_PYMOD_GIT],
         [yes],  [],
-        [*],    [
-    unset PYTHON # work around AX_PYTHON_MODULE not cleaning up
-    AX_PYTHON_MODULE([git], [], [python3])
-    AS_CASE([$HAVE_PYMOD_GIT],
-            [yes],  [],
-            [*],    [WARN_DOCDEPS([GitPython])])
-])
+        [*],    [WARN_DOCDEPS([GitPython])])
 
-# XXX icky and slightly bogus* to have to duplicate this python2/python3 mess,
-# XXX but i think it's not worth generalising now when we'll surely drop
-# XXX python2 support sooner or later anyway
-# XXX (* this check inherits the successful PYTHON from the check above, and
-# XXX doesn't actually check both despite looking like it will.  that's fine...
-# XXX it only works if both modules are installed for the same python anyway!)
-AX_PYTHON_MODULE([sphinx_rtd_theme], [], [python2])
+AX_PYTHON_MODULE([sphinx_rtd_theme], [], [python3])
 AS_CASE([$HAVE_PYMOD_SPHINX_RTD_THEME],
         [yes],  [],
-        [*],    [
-    unset PYTHON # work around AX_PYTHON_MODULE not cleaning up
-    AX_PYTHON_MODULE([sphinx_rtd_theme], [], [python3])
-    AS_CASE([$HAVE_PYMOD_SPHINX_RTD_THEME],
-            [yes],  [],
-            [*],    [WARN_DOCDEPS([sphinx_rtd_theme])])
-])
+        [*],    [WARN_DOCDEPS([sphinx_rtd_theme])])
 
 AM_CONDITIONAL([HAVE_SPHINX_BUILD],
     [ test -n "$SPHINX_BUILD" \
@@ -2388,7 +2209,7 @@ AM_CONDITIONAL([HAVE_SPHINX_BUILD],
 
 AH_TOP([
 /*
- * Copyright (c) 1994-2015 Carnegie Mellon University.  All rights reserved.
+ * Copyright (c) 1994-2025 Carnegie Mellon University.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -2640,7 +2461,6 @@ External dependencies:
    zstd:               $with_zstd
    xml2:               $with_xml2
    ical:               $with_ical
-   icalvcard:          $with_icalvcard
    shapelib:           $with_shapelib
    icu4c:              $with_icu4c
    chardet:            $with_chardet
@@ -2656,9 +2476,6 @@ Search engine:
    squat:              $enable_squat
    xapian:             $enable_xapian
    xapian_cjk_tokens:  $xapian_cjk_tokens
-
-iCalendar features:
-   ctrl:               $have_ical_ctrl
 
 Documentation dependencies:
    sphinx-build:       $SPHINX_BUILD
@@ -2681,4 +2498,5 @@ Build info:
    unit tests (cunit): $enable_unit_tests
    xxd:                $XXD
    release checks:     $enable_release_checks
+   zoneinfo_dir:       $with_zoneinfo_dir
 "

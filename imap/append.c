@@ -1,44 +1,6 @@
-/* append.c -- Routines for appending messages to a mailbox
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* append.c -- Routines for appending messages to a mailbox */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -175,7 +137,7 @@ EXPORTED int append_setup(struct appendstate *as, const char *name,
     r = append_setup_mbox(as, mailbox, userid, auth_state,
                           aclcheck, quotacheck, namespace, isadmin, event_type);
     if (r) mailbox_close(&mailbox);
-    else as->close_mailbox_when_done = 1;
+    else as->close_mailbox_when_done = true;
 
     return r;
 }
@@ -216,7 +178,7 @@ EXPORTED int append_setup_mbox(struct appendstate *as, struct mailbox *mailbox,
     }
     as->namespace = namespace;
     as->auth_state = auth_state;
-    as->isadmin = isadmin;
+    as->isadmin = !!isadmin;
 
     /* initialize seen list creator */
     as->internalseen = mailbox_internal_seen(mailbox, as->userid);
@@ -266,7 +228,7 @@ EXPORTED int append_commit(struct appendstate *as)
 
     if (as->nummsg) {
         /* Calculate new index header information */
-        as->mailbox->i.last_appenddate = time(0);
+        as->mailbox->i.last_appenddate.tv_sec = time(0);
 
         /* log the append so rolling squatter can index this mailbox */
         sync_log_append(mailbox_name(as->mailbox));
@@ -350,7 +312,7 @@ EXPORTED FILE *append_newstage_full(const char *mailboxname, time_t internaldate
     /* create this file and put it into stage->parts[0] */
     xunlink(stagefile);
     if (sourcefile) {
-        r = mailbox_copyfile(sourcefile, stagefile, 0);
+        r = cyrus_copyfile(sourcefile, stagefile, COPYFILE_NODIRSYNC);
         if (r) {
             syslog(LOG_ERR, "couldn't copy stagefile '%s' for mbox: '%s': %s",
                    sourcefile, mailboxname, error_message(r));
@@ -885,23 +847,25 @@ out:
 
 struct findstage_cb_rock {
     const char *partition;
-    const char *guid;
+    struct message_guid *guid;
     char *fname;
 };
 
 static int findstage_cb(const conv_guidrec_t *rec, void *vrock)
 {
     struct findstage_cb_rock *rock = vrock;
-    mbentry_t *mbentry = NULL;
+    int r;
 
     if (rec->part) return 0;
+
     // no point copying from archive, spool is on data
     if (rec->internal_flags & FLAG_INTERNAL_ARCHIVED) return 0;
 
-    int r = conv_guidrec_mbentry(rec, &mbentry);
+    mbentry_t *mbentry = NULL;
+    r = conv_guidrec_mbentry(rec, &mbentry);
     if (r) return 0;
 
-    if (!strcmp(rock->partition, mbentry->partition)) {
+    if (!strcmpsafe(rock->partition, mbentry->partition)) {
         struct stat sbuf;
         const char *msgpath = mbentry_datapath(mbentry, rec->uid);
         if (msgpath && !stat(msgpath, &sbuf)) {
@@ -910,8 +874,9 @@ static int findstage_cb(const conv_guidrec_t *rec, void *vrock)
             if (file) {
                 struct body *body = NULL;
                 r = message_parse_file(file, NULL, NULL, &body, msgpath);
-                if (!r && !strcmp(rock->guid, message_guid_encode(&body->guid)))
+                if (!r && message_guid_equal(rock->guid, &body->guid)) {
                     rock->fname = xstrdup(msgpath);
+                }
                 if (body) {
                     message_free_body(body);
                     free(body);
@@ -923,8 +888,12 @@ static int findstage_cb(const conv_guidrec_t *rec, void *vrock)
 
     mboxlist_entry_free(&mbentry);
 
-    return rock->fname ? CYRUSDB_DONE : 0;
+    if (!rock->fname) return 0;
+
+    // found it!
+    return CYRUSDB_DONE;
 }
+
 
 /*
  * staging, to allow for single-instance store.  the complication here
@@ -935,11 +904,14 @@ static int findstage_cb(const conv_guidrec_t *rec, void *vrock)
  */
 EXPORTED int append_fromstage_full(struct appendstate *as, struct body **body,
                                    struct stagemsg *stage,
-                                   time_t internaldate, time_t savedate,
-                                   modseq_t createdmodseq,
-                                   const strarray_t *flags, int nolink,
-                                   struct entryattlist **user_annotsp)
+                                   struct append_metadata *meta)
 {
+    struct timespec *internaldate = meta->internaldate;
+    time_t savedate = meta->savedate;
+    modseq_t createdmodseq = meta->createdmodseq;
+    const strarray_t *flags = meta->flags;
+    struct entryattlist **user_annotsp = meta->annotations;
+    int nolink = meta->nolink;
     struct mailbox *mailbox = as->mailbox;
     msgrecord_t *msgrec = NULL;
     const char *fname;
@@ -970,33 +942,32 @@ EXPORTED int append_fromstage_full(struct appendstate *as, struct body **body,
         if (r) goto out;
     }
 
-    /* xxx check errors */
+    struct message_guid *guid = &(*body)->guid;
+
+    /* XXX check errors */
     mboxlist_findstage(mailbox_name(mailbox), stagefile, sizeof(stagefile));
     strlcat(stagefile, stage->fname, sizeof(stagefile));
 
-    if (!nolink) {
-        /* attempt to find an existing message with the same guid
-           and use it as the stagefile */
-        struct conversations_state *cstate = mailbox_get_cstate(mailbox);
+    /* attempt to find an existing message with the same guid
+       and use it as the stagefile and/or use its internaldate */
+    struct conversations_state *cstate = mailbox_get_cstate(mailbox);
 
-        if (cstate) {
-            char *guid = xstrdup(message_guid_encode(&(*body)->guid));
-            struct findstage_cb_rock rock = { mailbox_partition(mailbox), guid, NULL };
+    if (!nolink && cstate) {
+        struct findstage_cb_rock rock = { mailbox_partition(mailbox), guid, NULL };
 
-            // ignore errors, it's OK for this to fail
-            conversations_guid_foreach(cstate, guid, findstage_cb, &rock);
+        // ignore errors, it's OK for this to fail
+        char guidrep[2*MESSAGE_GUID_SIZE+1];
+        strcpy(guidrep, message_guid_encode(guid));
+        conversations_guid_foreach(cstate, guidrep, findstage_cb, &rock);
 
-            // if we found a file, remember it
-            if (rock.fname) {
-                syslog(LOG_NOTICE, "found existing file %s for %s; linking", guid, rock.fname);
-                linkfile = rock.fname;
-            }
-
-            free(guid);
+        // if we found a file, use it
+        if (rock.fname) {
+            syslog(LOG_NOTICE, "found existing file %s for %s; linking",
+                   guidrep, rock.fname);
+            linkfile = rock.fname;
+            goto havefile;
         }
     }
-
-    if (linkfile) goto havefile;
 
     for (i = 0 ; i < stage->parts.count ; i++) {
         /* ok, we've successfully created the file */
@@ -1010,12 +981,12 @@ EXPORTED int append_fromstage_full(struct appendstate *as, struct body **body,
         /* ok, create this file, and copy the name of it into stage->parts. */
 
         /* create the new staging file from the first stage part */
-        r = mailbox_copyfile(stage->parts.data[0], stagefile, 0);
+        r = cyrus_copyfile(stage->parts.data[0], stagefile, COPYFILE_NODIRSYNC);
         if (r) {
             /* maybe the directory doesn't exist? */
             char stagedir[MAX_MAILBOX_PATH+1];
 
-            /* xxx check errors */
+            /* XXX check errors */
             mboxlist_findstage(mailbox_name(mailbox), stagedir, sizeof(stagedir));
             if (mkdir(stagedir, 0755) != 0) {
                 syslog(LOG_ERR, "couldn't create stage directory: %s: %m",
@@ -1023,7 +994,7 @@ EXPORTED int append_fromstage_full(struct appendstate *as, struct body **body,
             } else {
                 syslog(LOG_NOTICE, "created stage directory %s",
                        stagedir);
-                r = mailbox_copyfile(stage->parts.data[0], stagefile, 0);
+                r = cyrus_copyfile(stage->parts.data[0], stagefile, COPYFILE_NODIRSYNC);
             }
         }
         if (r) {
@@ -1057,8 +1028,6 @@ havefile:
     msgrec = msgrecord_new(mailbox);
     r = msgrecord_set_uid(msgrec, uid);
     if (r) goto out;
-    r = msgrecord_set_internaldate(msgrec, internaldate);
-    if (r) goto out;
     r = msgrecord_set_createdmodseq(msgrec, createdmodseq);
     if (r) goto out;
     r = msgrecord_set_bodystructure(msgrec, *body);
@@ -1069,15 +1038,26 @@ havefile:
     }
 
     /* And make sure it has a timestamp */
-    r = msgrecord_get_internaldate(msgrec, &internaldate);
-    if (!r && !internaldate)
-        r = msgrecord_set_internaldate(msgrec, time(NULL));
+
+    struct timespec now;
+    cyrus_gettime(CLOCK_REALTIME, &now);
+    if (!internaldate) internaldate = &now;
+
+    // timestamp might be nanoseconds from the clock plus seconds from the
+    // append timestamp, either way it MIGHT clash
+    // make sure we don't have a JMAP ID (internaldate) clash
+    conversations_adjust_internaldate(cstate, mailbox_name(mailbox),
+                                      guid, internaldate);
+
+    r = msgrecord_set_internaldate(msgrec, internaldate);
     if (r) goto out;
 
     /* should we archive it straight away? */
+    int *fdptr = &mailbox->spool_dirfd;
     if (msgrecord_should_archive(msgrec, NULL)) {
         r = msgrecord_add_internalflags(msgrec, FLAG_INTERNAL_ARCHIVED);
         if (r) goto out;
+        fdptr = &mailbox->archive_dirfd;
     }
 
     /* unlink BOTH potential destination files to clean up any past failure.
@@ -1092,22 +1072,11 @@ havefile:
     r = msgrecord_get_fname(msgrec, &fname);
     if (r) goto out;
 
-    r = mailbox_copyfile(linkfile ? linkfile : stagefile, fname, nolink);
+    r = mailbox_copyfile_fdptr(linkfile ? linkfile : stagefile, fname, nolink, fdptr);
     if (r) goto out;
 
-    FILE *destfile = fopen(fname, "r");
-    if (destfile) {
-        /* this will hopefully ensure that the link() actually happened
-           and makes sure that the file actually hits disk */
-        fsync(fileno(destfile));
-        fclose(destfile);
-    }
-    else {
-        r = IMAP_IOERROR;
-        goto out;
-    }
-
-    if (config_getstring(IMAPOPT_ANNOTATION_CALLOUT) &&
+    if (!as->disable_annotator &&
+        config_getstring(IMAPOPT_ANNOTATION_CALLOUT) &&
         (mbtype_isa(mailbox_mbtype(mailbox)) == MBTYPE_EMAIL)) {
         if (flags)
             newflags = strarray_dup(flags);
@@ -1166,8 +1135,8 @@ havefile:
     if (r) goto out;
 
     if (in_object_storage) {  // must delete local file
-        if (xunlink(fname) != 0) // unlink should do it.
-            if (!remove (fname))  // we must insist
+        if (xunlink(fname) == -1) // unlink should do it.
+            if (!remove(fname))  // we must insist
                 syslog(LOG_ERR, "Removing local file <%s> error", fname);
     }
 
@@ -1216,6 +1185,21 @@ out:
     return r;
 }
 
+EXPORTED int append_fromstage(struct appendstate *as, struct body **body,
+                                   struct stagemsg *stage,
+                                   struct timespec *internaldate,
+                                   modseq_t createdmodseq,
+                                   const strarray_t *flags, int nolink,
+                                   struct entryattlist **user_annotsp)
+{
+    struct append_metadata meta = {
+        internaldate, /*savedate*/ 0, createdmodseq,
+        flags, user_annotsp, !!nolink
+    };
+
+    return append_fromstage_full(as, body, stage, &meta);
+}
+
 EXPORTED int append_removestage(struct stagemsg *stage)
 {
     char *p;
@@ -1224,10 +1208,7 @@ EXPORTED int append_removestage(struct stagemsg *stage)
 
     while ((p = strarray_pop(&stage->parts))) {
         /* unlink the staging file */
-        if (xunlink(p) != 0) {
-            xsyslog(LOG_ERR, "IOERROR: error unlinking file",
-                             "filename=<%s>", p);
-        }
+        xunlink(p);
         free(p);
     }
 
@@ -1253,7 +1234,7 @@ EXPORTED int append_removestage(struct stagemsg *stage)
 EXPORTED int append_fromstream(struct appendstate *as, struct body **body,
                       struct protstream *messagefile,
                       unsigned long size,
-                      time_t internaldate,
+                      struct timespec *internaldate,
                       const strarray_t *flags)
 {
     struct mailbox *mailbox = as->mailbox;
@@ -1269,6 +1250,13 @@ EXPORTED int append_fromstream(struct appendstate *as, struct body **body,
     msgrec = msgrecord_new(mailbox);
     r = msgrecord_set_uid(msgrec, as->baseuid + as->nummsg);
     if (r) goto out;
+
+    /* And make sure it has a timestamp */
+    struct timespec now;
+    if (!internaldate) {
+        cyrus_gettime(CLOCK_REALTIME, &now);
+        internaldate = &now;
+    }
     r = msgrecord_set_internaldate(msgrec, internaldate);
     if (r) goto out;
 
@@ -1479,6 +1467,8 @@ EXPORTED int append_copy(struct mailbox *mailbox, struct appendstate *as,
         uint32_t src_uid;
         uint32_t src_system_flags;
         uint32_t src_internal_flags;
+        struct timespec internaldate;
+        struct message_guid guid;
 
         if (prock) prock->cb(msg, msgrecs->count, prock);
 
@@ -1487,6 +1477,10 @@ EXPORTED int append_copy(struct mailbox *mailbox, struct appendstate *as,
         r = msgrecord_get_systemflags(src_msgrec, &src_system_flags);
         if (r) goto out;
         r = msgrecord_get_internalflags(src_msgrec, &src_internal_flags);
+        if (r) goto out;
+        r = msgrecord_get_internaldate(src_msgrec, &internaldate);
+        if (r) goto out;
+        r = msgrecord_get_guid(src_msgrec, &guid);
         if (r) goto out;
         /* read in existing cache record BEFORE we copy data, so that the
          * mmap will be up to date even if it's the same mailbox for source
@@ -1524,6 +1518,13 @@ EXPORTED int append_copy(struct mailbox *mailbox, struct appendstate *as,
         }
 
         r = msgrecord_set_cache_offset(dst_msgrec, 0);
+        if (r) goto out;
+
+        struct conversations_state *cstate = mailbox_get_cstate(as->mailbox);
+        conversations_adjust_internaldate(cstate, mailbox_name(as->mailbox),
+                                          &guid, &internaldate);
+
+        r = msgrecord_set_internaldate(dst_msgrec, &internaldate);
         if (r) goto out;
 
         /* renumber the message into the new mailbox */
@@ -1604,9 +1605,12 @@ EXPORTED int append_copy(struct mailbox *mailbox, struct appendstate *as,
         if (r) goto out;
         destfname = xstrdup(tmp);
 
+        int *fdptr = dst_internal_flags & FLAG_INTERNAL_ARCHIVED
+                   ? &as->mailbox->archive_dirfd : &as->mailbox->spool_dirfd;
+
         if (!(object_storage_enabled &&
               src_internal_flags & FLAG_INTERNAL_ARCHIVED))   // if object storage do not move file
-           r = mailbox_copyfile(srcfname, destfname, nolink);
+           r = mailbox_copyfile_fdptr(srcfname, destfname, nolink, fdptr);
 
         if (r) goto out;
 
@@ -1615,7 +1619,7 @@ EXPORTED int append_copy(struct mailbox *mailbox, struct appendstate *as,
             src_internal_flags & FLAG_INTERNAL_ARCHIVED) {
             struct index_record record;
             r = msgrecord_get_index_record(dst_msgrec, &record);
-            if (!r) r = objectstore_put(as->mailbox, &record, destfname);   // put should just add the refcount.
+            if (!r) r = objectstore_put(as->mailbox, &record, srcfname);   // put should just add the refcount.
         }
 #endif
 

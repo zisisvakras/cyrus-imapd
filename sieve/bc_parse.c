@@ -1,45 +1,6 @@
-/* bc_parse.c -- sieve bytecode - pass 1 of the decompiler
- * Ken Murchison
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* bc_parse.c -- sieve bytecode - pass 1 of the decompiler */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -57,6 +18,7 @@ struct args_t {
     const size_t offsets[MAX_ARGS];
 };
 
+// clang-format: off
 static const struct args_t cmd_args_table[] = {
     { B_STOP,                    "", { 0 } },                            /*  0 */
     { B_KEEP_ORIG,               "", { 0 } },                            /*  1 */
@@ -306,7 +268,9 @@ static const struct args_t cmd_args_table[] = {
         offsetof(struct Commandlist, u.cal.reason_var)
       } },
 };
+// clang-format: on
 
+// clang-format: off
 static const struct args_t test_args_table[] = {
     { BC_FALSE,                  "", { 0 } },                            /*  0 */
     { BC_TRUE,                   "", { 0 } },                            /*  1 */
@@ -454,6 +418,7 @@ static const struct args_t test_args_table[] = {
         offsetof(struct Test, u.dt.kl)
       } },
 };
+// clang-format: on
 
 /* Given a bytecode_input_t at the beginning of a file,
  * return the version, the required extensions,
@@ -463,7 +428,9 @@ EXPORTED int bc_header_parse(bytecode_input_t *bc, int *version, int *requires)
     int pos = 0;
 
     *version = 0;
-    if (requires) *requires = 0;
+    if (requires) {
+        *requires = 0;
+    }
 
     if (memcmp(bc, BYTECODE_MAGIC, BYTECODE_MAGIC_LEN)) return -1;
 
@@ -473,7 +440,9 @@ EXPORTED int bc_header_parse(bytecode_input_t *bc, int *version, int *requires)
     if (*version >= 0x11) {
         int req = ntohl(bc[pos++].value);
 
-        if (requires) *requires = req;
+        if (requires) {
+            *requires = req;
+        }
     }
 
     return pos;

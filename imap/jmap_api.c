@@ -1,45 +1,6 @@
-/* jmap_api.c -- Routines for handling JMAP API requests
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_api.c -- Routines for handling JMAP API requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -60,9 +21,10 @@
 #include "mboxname.h"
 #include "msgrecord.h"
 #include "proxy.h"
-#include "times.h"
 #include "strhash.h"
 #include "syslog.h"
+#include "times.h"
+#include "user.h"
 #include "xmalloc.h"
 #include "xstrlcpy.h"
 
@@ -250,10 +212,11 @@ static int process_resultrefs(json_t *args, json_t *resp, json_t **err)
 }
 
 static int validate_request(struct transaction_t *txn, const json_t *req,
-                            jmap_settings_t *settings)
+                            jmap_settings_t *settings, int64_t *num_created_ids)
 {
     json_t *using = json_object_get(req, "using");
     json_t *calls = json_object_get(req, "methodCalls");
+    json_t *createdIds = json_object_get(req, "createdIds");
 
     if (!json_is_array(using) || !json_is_array(calls)) {
         return JMAP_NOT_REQUEST;
@@ -265,9 +228,19 @@ static int validate_request(struct transaction_t *txn, const json_t *req,
      * maxConcurrentRequests
      */
 
-    if (buf_len(&txn->req_body.payload) >
-        (size_t) settings->limits[MAX_SIZE_REQUEST]) {
-        return JMAP_LIMIT_SIZE;
+    if (json_is_object(createdIds)) {
+        *num_created_ids = json_object_size(createdIds);
+
+        if (*num_created_ids > settings->limits[MAX_CREATEDIDS_IN_REQUEST]) {
+            return JMAP_LIMIT_CREATEDIDS;
+        }
+    }
+    else if (createdIds && !json_is_null(createdIds)) {
+        txn->error.desc = "Invalid createdIds argument";
+        return JMAP_NOT_REQUEST;
+    }
+    else {
+        *num_created_ids = 0;
     }
 
     size_t i;
@@ -282,26 +255,16 @@ static int validate_request(struct transaction_t *txn, const json_t *req,
         if (i >= (size_t) settings->limits[MAX_CALLS_IN_REQUEST]) {
             return JMAP_LIMIT_CALLS;
         }
+
         const char *mname = json_string_value(json_array_get(val, 0));
         mname = strchr(mname, '/');
         if (!mname) continue;
 
         mname++;
-        if (!strcmp(mname, "get")) {
-            json_t *ids = json_object_get(json_array_get(val, 1), "ids");
-            if (json_array_size(ids) >
-                (size_t) settings->limits[MAX_OBJECTS_IN_GET]) {
-                return JMAP_LIMIT_OBJS_GET;
-            }
-        }
-        else if (!strcmp(mname, "set")) {
+        if (!strcmp(mname, "set") || !strcmp(mname, "upload")) {
             json_t *args = json_array_get(val, 1);
             size_t size = json_object_size(json_object_get(args, "create"));
-            size += json_object_size(json_object_get(args, "update"));
-            size += json_array_size(json_object_get(args, "destroy"));
-            if (size > (size_t) settings->limits[MAX_OBJECTS_IN_SET]) {
-                return JMAP_LIMIT_OBJS_SET;
-            }
+            *num_created_ids += MIN(size, MAX_OBJECTS_IN_SET);
         }
     }
 
@@ -356,8 +319,7 @@ HIDDEN int jmap_error_response(struct transaction_t *txn,
         GCC_FALLTHROUGH
 
     case JMAP_LIMIT_CALLS:
-    case JMAP_LIMIT_OBJS_GET:
-    case JMAP_LIMIT_OBJS_SET:
+    case JMAP_LIMIT_CREATEDIDS:
         limit = title + strlen(title) + 1;
         break;
 
@@ -557,7 +519,7 @@ static json_t *lookup_capabilities(const char *accountid,
         jmap_core_capabilities(capas);
         jmap_blob_capabilities(capas);
         jmap_quota_capabilities(capas);
-        jmap_mail_capabilities(capas, mayCreateTopLevel);
+        jmap_mail_capabilities(capas, accountid, mayCreateTopLevel);
         jmap_emailsubmission_capabilities(capas);
         jmap_mdn_capabilities(capas);
         jmap_contact_capabilities(capas, authstate, authuserid, accountid);
@@ -585,7 +547,7 @@ static json_t *lookup_capabilities(const char *accountid,
             if (rock.has_mail) {
                 // we don't offer emailsubmission or vacation
                 // for shared accounts right now
-                jmap_mail_capabilities(capas, mayCreateTopLevel);
+                jmap_mail_capabilities(capas, accountid, mayCreateTopLevel);
             }
             if (rock.has_contacts) {
                 jmap_contact_capabilities(capas, authstate, authuserid, accountid);
@@ -624,6 +586,7 @@ HIDDEN int jmap_api(struct transaction_t *txn,
     int ret, do_perf = 0;
     char *account_inboxname = NULL;
     int return_created_ids = 0;
+    int64_t num_created_ids = 0;
     hash_table created_ids = HASH_TABLE_INITIALIZER;
     hash_table inmemory_blobs = HASH_TABLE_INITIALIZER;
     hash_table capabilities_by_accountid = HASH_TABLE_INITIALIZER;
@@ -635,7 +598,7 @@ HIDDEN int jmap_api(struct transaction_t *txn,
     strarray_t scheduled_emails = STRARRAY_INITIALIZER;
 
     /* Validate Request object */
-    if ((ret = validate_request(txn, jreq, settings))) {
+    if ((ret = validate_request(txn, jreq, settings, &num_created_ids))) {
         return jmap_error_response(txn, ret, res);
     }
 
@@ -651,7 +614,7 @@ HIDDEN int jmap_api(struct transaction_t *txn,
     construct_hash_table(&capabilities_by_accountid, 8, 0);
     construct_hash_table(&inmemory_blobs, 64, 0);
     construct_hash_table(&mbstates, 64, 0);
-    construct_hash_table(&created_ids, 1024, 0);
+    construct_hash_table(&created_ids, num_created_ids+1, 0);
 
     /* Parse client-supplied creation ids */
     json_t *jcreatedIds = json_object_get(jreq, "createdIds");
@@ -673,11 +636,6 @@ HIDDEN int jmap_api(struct transaction_t *txn,
             }
             hash_insert(creation_id, xstrdup(id), &created_ids);
         }
-    }
-    else if (jcreatedIds && jcreatedIds != json_null()) {
-        txn->error.desc = "Invalid createdIds argument";
-        ret = HTTP_BAD_REQUEST;
-        goto done;
     }
 
     json_t *jusing = json_object_get(jreq, "using");
@@ -772,10 +730,22 @@ HIDDEN int jmap_api(struct transaction_t *txn,
             continue;
         }
 
+        int readonly = !(mp->flags & JMAP_READ_WRITE);
+        int locktype = readonly ? LOCK_SHARED : LOCK_EXCLUSIVE;
+        user_nslock_t *user_nslock = NULL;
+        if (!(mp->flags & JMAP_NO_USERLOCK)) {
+            arg = json_object_get(args, "fromAccountId");
+            if (arg && arg != json_null()) {
+                user_nslock = user_nslock_lockdouble(accountid, json_string_value(arg), locktype);
+            }
+            else {
+                user_nslock = user_nslock_lock(accountid, locktype);
+            }
+        }
+
         struct conversations_state *cstate = NULL;
         if (mp->flags & JMAP_NEED_CSTATE) {
-            r = conversations_open_user(accountid,
-                                        !(mp->flags & JMAP_READ_WRITE), &cstate);
+            r = conversations_open_user(accountid, readonly, &cstate);
 
             if (r) {
                 txn->error.desc = error_message(r);
@@ -823,6 +793,7 @@ HIDDEN int jmap_api(struct transaction_t *txn,
         account_inboxname = NULL;
         if (r) {
             conversations_abort(&req.cstate);
+            user_nslock_release(&user_nslock);
             txn->error.desc = error_message(r);
             ret = HTTP_SERVER_ERROR;
             jmap_finireq(&req);
@@ -842,20 +813,22 @@ HIDDEN int jmap_api(struct transaction_t *txn,
         /* Call the message processor. */
         r = mp->proc(&req);
 
-        /* Finalize request context */
-        jmap_finireq(&req);
-
         if (r) {
             conversations_abort(&req.cstate);
+            user_nslock_release(&user_nslock);
             txn->error.desc = error_message(r);
             ret = HTTP_SERVER_ERROR;
+            jmap_finireq(&req);
             json_decref(args);
             goto done;
         }
         conversations_commit(&req.cstate);
+        user_nslock_release(&user_nslock);
 
-	// run any notification updates after conversations are released
-	dav_run_notifications();
+        jmap_finireq(&req);
+
+        // run any notification updates after conversations are released
+        dav_run_notifications();
 
         json_decref(args);
     }
@@ -1016,9 +989,7 @@ HIDDEN void jmap_accounts(json_t *accounts, json_t *primary_accounts)
     json_object_set(primary_accounts, JMAP_URN_MAIL, jprimary);
     json_object_set(primary_accounts, JMAP_URN_SUBMISSION, jprimary);
     json_object_set(primary_accounts, JMAP_URN_VACATION, jprimary);
-#ifdef HAVE_LIBICALVCARD
     json_object_set(primary_accounts, JMAP_URN_CONTACTS, jprimary);
-#endif
     json_object_set(primary_accounts, JMAP_URN_CALENDARS, jprimary);
     json_object_set(primary_accounts, JMAP_CONTACTS_EXTENSION, jprimary);
     json_object_set(primary_accounts, JMAP_CALENDARS_EXTENSION, jprimary);
@@ -1331,6 +1302,31 @@ HIDDEN modseq_t jmap_modseq(jmap_req_t *req, int mbtype, int flags)
     return modseq;
 }
 
+static char *_state_string(int prefixed_state, modseq_t modseq)
+{
+    struct buf buf = BUF_INITIALIZER;
+
+    if (prefixed_state) {
+        // add mandatory prefix
+        buf_putc(&buf, JMAP_STATE_STRING_PREFIX);
+    }
+    buf_printf(&buf, MODSEQ_FMT, modseq);
+
+    return buf_release(&buf);
+}
+
+EXPORTED char *jmap_state_string(jmap_req_t *req, modseq_t modseq,
+                                 int mbtype, int flags)
+{
+    int prefixed_state =
+        (mbtype == MBTYPE_EMAIL) && USER_COMPACT_EMAILIDS(req->cstate);
+
+    // if we were not given a modseq, look it up by mbtype
+    if (!modseq) modseq = jmap_modseq(req, mbtype, flags);
+
+    return _state_string(prefixed_state, modseq);
+}
+
 HIDDEN char *jmap_xhref(const char *mboxname, const char *resource)
 {
     /* XXX - look up root path from namespace? */
@@ -1422,7 +1418,7 @@ HIDDEN int jmap_myrights(jmap_req_t *req, const char *mboxname)
 HIDDEN int jmap_myrights_mboxid(jmap_req_t *req, const char *mboxid)
 {
     int rights = 0;
-    const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
+    const mbentry_t *mbentry = jmap_mbentry_by_mboxid(req, mboxid);
     if (mbentry) {
         rights = jmap_myrights_mbentry(req, mbentry);
     }
@@ -1431,7 +1427,7 @@ HIDDEN int jmap_myrights_mboxid(jmap_req_t *req, const char *mboxid)
 
 HIDDEN int jmap_hasrights_mboxid(jmap_req_t *req, const char *mboxid, int rights)
 {
-    const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
+    const mbentry_t *mbentry = jmap_mbentry_by_mboxid(req, mboxid);
     return mbentry ? jmap_hasrights_mbentry(req, mbentry, rights) : 0;
 }
 
@@ -1528,6 +1524,39 @@ HIDDEN const jmap_property_t *jmap_property_find(const char *name,
 
 /* Foo/get */
 
+HIDDEN hash_table *jmap_get_validate_props(jmap_req_t *req,
+                                           struct jmap_parser *parser,
+                                           const jmap_property_t *valid_props,
+                                           const char *key,
+                                           json_t *jprops)
+{
+    hash_table *props = xzmalloc(sizeof(hash_table));
+    construct_hash_table(props, json_array_size(jprops) + 1, 0);
+
+    json_t *val;
+    size_t i;
+    json_array_foreach(jprops, i, val) {
+        const char *name = json_string_value(val);
+        const jmap_property_t *propdef = NULL;
+        if (name) {
+            propdef = jmap_property_find(name, valid_props);
+            if (propdef && propdef->capability &&
+                !jmap_is_using(req, propdef->capability)) {
+                propdef = NULL;
+            }
+        }
+        if (!propdef || (propdef->flags & JMAP_PROP_REJECT_GET)) {
+            jmap_parser_push_index(parser, key, i, name);
+            jmap_parser_invalid(parser, NULL);
+            jmap_parser_pop(parser);
+            continue;
+        }
+        hash_insert(name, (void*)1, props);
+    }
+
+    return props;
+}
+                           
 HIDDEN void jmap_get_parse(jmap_req_t *req,
                            struct jmap_parser *parser,
                            const jmap_property_t valid_props[],
@@ -1542,8 +1571,7 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
     json_t *arg, *val;
     size_t i;
 
-    memset(get, 0, sizeof(struct jmap_get));
-
+    // assume that we are given an initialized jmap_get struct
     get->list = json_array();
     get->not_found = json_array();
 
@@ -1554,6 +1582,14 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
 
         else if (!strcmp(key, "ids")) {
             if (json_is_array(arg)) {
+                size_t size = json_array_size(arg);
+                if (size > (size_t) req->settings->limits[MAX_OBJECTS_IN_GET]) {
+                    *err = json_pack("{s:s, s:s}", "type", "requestTooLarge",
+                                     "description",
+                                     "number of ids exceeds maxObjectsInGet limit");
+                    return;
+                }
+
                 get->ids = json_array();
                 /* JMAP spec requires: "If an identical id is included
                  * more than once in the request, the server MUST only
@@ -1561,7 +1597,7 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
                  * argument of the response."
                  * So let's weed out duplicate ids here. */
                 hash_table _dedup = HASH_TABLE_INITIALIZER;
-                construct_hash_table(&_dedup, json_array_size(arg) + 1, 0);
+                construct_hash_table(&_dedup, size + 1, 0);
                 json_array_foreach(arg, i, val) {
                     const char *id = json_string_value(val);
                     if (!id) {
@@ -1588,6 +1624,7 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
                     if (hash_lookup(id, &_dedup)) {
                         continue;
                     }
+                    hash_insert(id, (void*)1, &_dedup);
                     json_array_append_new(get->ids, json_string(id));
                 }
                 free_hash_table(&_dedup, NULL);
@@ -1599,26 +1636,8 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
 
         else if (!strcmp(key, "properties")) {
             if (json_is_array(arg)) {
-                get->props = xzmalloc(sizeof(hash_table));
-                construct_hash_table(get->props, json_array_size(arg) + 1, 0);
-                json_array_foreach(arg, i, val) {
-                    const char *name = json_string_value(val);
-                    const jmap_property_t *propdef = NULL;
-                    if (name) {
-                        propdef = jmap_property_find(name, valid_props);
-                        if (propdef && propdef->capability &&
-                            !jmap_is_using(req, propdef->capability)) {
-                            propdef = NULL;
-                        }
-                    }
-                    if (!propdef || (propdef->flags & JMAP_PROP_REJECT_GET)) {
-                        jmap_parser_push_index(parser, "properties", i, name);
-                        jmap_parser_invalid(parser, NULL);
-                        jmap_parser_pop(parser);
-                        continue;
-                    }
-                    hash_insert(name, (void*)1, get->props);
-                }
+                get->props = jmap_get_validate_props(req, parser,
+                                                     valid_props, key, arg);
             }
             else if (JNOTNULL(arg)) {
                 jmap_parser_invalid(parser, "properties");
@@ -1672,8 +1691,6 @@ HIDDEN void jmap_get_parse(jmap_req_t *req,
             }
         }
     }
-
-    /* Number of ids checked in validate_request() */
 }
 
 HIDDEN void jmap_get_fini(struct jmap_get *get)
@@ -1710,11 +1727,16 @@ static void jmap_set_validate_props(jmap_req_t *req, const char *id, json_t *job
         /* Determine property name */
         const char *pname = path;
         char *tmp = NULL;
-        const char *slash = strchr(pname, '/');
-        if (slash) {
-            tmp = jmap_pointer_decode(pname, slash - path);
-            if (tmp) pname = tmp;
+
+        if (id) {
+            /* update */
+            const char *slash = strchr(pname, '/');
+            if (slash) {
+                tmp = jmap_pointer_decode(pname, slash - path);
+                if (tmp) pname = tmp;
+            }
         }
+
         /* Validate against property spec */
         const jmap_property_t *prop = jmap_property_find(pname, valid_props);
         if (!prop) {
@@ -1744,6 +1766,17 @@ static void jmap_set_validate_props(jmap_req_t *req, const char *id, json_t *job
         }
         if (tmp) free(tmp);
     }
+    if (!id) {
+        /* create */
+        const jmap_property_t *prop;
+
+        for (prop = valid_props; prop && prop->name; prop++) {
+            if ((prop->flags & JMAP_PROP_MANDATORY) &&
+                !json_object_get(jobj, prop->name)) {
+                json_array_append_new(invalid, json_string(prop->name));
+            }
+        }
+    }
     if (json_array_size(invalid)) {
         *err = json_pack("{s:s s:o}",
                 "type", "invalidProperties",
@@ -1760,7 +1793,8 @@ HIDDEN void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
                            struct jmap_set *set, json_t **err)
 {
     json_t *jargs = req->args;
-    memset(set, 0, sizeof(struct jmap_set));
+
+    // assume that we are given an initialized jmap_set struct
     set->create = json_object();
     set->update = json_object();
     set->destroy = json_array();
@@ -1771,10 +1805,15 @@ HIDDEN void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
     set->not_updated = json_object();
     set->not_destroyed = json_object();
 
-    const char *key;
-    json_t *arg, *val;
+    const char *key, *id;
+    json_t *arg, *val, *create = NULL, *update = NULL, *destroy = NULL;
+    hash_table willDestroy = HASH_TABLE_INITIALIZER;
+    uint64_t limit = req->settings->limits[MAX_OBJECTS_IN_SET];
+    uint64_t total = 0;
 
     json_object_foreach(jargs, key, arg) {
+        size_t size = 0;
+
         if (!strcmp(key, "accountId")) {
             /* already handled in jmap_api() */
         }
@@ -1789,19 +1828,21 @@ HIDDEN void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
             }
         }
 
+        /* applyEmptyUpdates */
+        else  if (!strcmp(key, "applyEmptyUpdates")) {
+            if (json_is_boolean(arg)) {
+                set->apply_empty_updates = json_is_true(arg);
+            }
+            else if (JNOTNULL(arg)) {
+                jmap_parser_invalid(parser, "applyEmptyUpdates");
+            }
+        }
+
         /* create */
         else if (!strcmp(key, "create")) {
             if (json_is_object(arg)) {
-                const char *id;
-                json_object_foreach(arg, id, val) {
-                    if (!json_is_object(val)) {
-                        jmap_parser_push(parser, "create");
-                        jmap_parser_invalid(parser, id);
-                        jmap_parser_pop(parser);
-                        continue;
-                    }
-                    json_object_set(set->create, id, val);
-                }
+                create = arg;
+                size = json_object_size(create);
             }
             else if (JNOTNULL(arg)) {
                 jmap_parser_invalid(parser, "create");
@@ -1811,16 +1852,8 @@ HIDDEN void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
         /* update */
         else if (!strcmp(key, "update")) {
             if (json_is_object(arg)) {
-                const char *id;
-                json_object_foreach(arg, id, val) {
-                    if (!json_is_object(val)) {
-                        jmap_parser_push(parser, "update");
-                        jmap_parser_invalid(parser, id);
-                        jmap_parser_pop(parser);
-                        continue;
-                    }
-                    json_object_set(set->update, id, val);
-                }
+                update = arg;
+                size = json_object_size(update);
             }
             else if (JNOTNULL(arg)) {
                 jmap_parser_invalid(parser, "update");
@@ -1829,47 +1862,105 @@ HIDDEN void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
 
         /* destroy */
         else if (!strcmp(key, "destroy")) {
-            if (JNOTNULL(arg)) {
-                jmap_parse_strings(arg, parser, "destroy");
-                if (!json_array_size(parser->invalid)) {
-                    json_decref(set->destroy);
-                    set->destroy = json_incref(arg);
-                }
+            if (json_is_array(arg)) {
+                destroy = arg;
+                size = json_array_size(destroy);
+            }
+            else if (JNOTNULL(arg)) {
+                jmap_parser_invalid(parser, "destroy");
             }
         }
 
         else if (!args_parse || !args_parse(req, parser, key, arg, args_rock)) {
             jmap_parser_invalid(parser, key);
         }
+
+        if (limit - total < size) {
+            *err = json_pack("{s:s, s:s}", "type", "requestTooLarge",
+                             "description",
+                             "total number of objects exceeds maxObjectsInSet limit");
+            return;
+        }
+
+        total += size;
     }
+
+    if (destroy) {
+        size_t i;
+
+        construct_hash_table(&willDestroy, json_array_size(destroy) + 1, 0);
+        json_array_foreach(destroy, i, val) {
+            if (!json_is_string(val)) {
+                jmap_parser_push_index(parser, "destroy", i, NULL);
+                jmap_parser_invalid(parser, NULL);
+                jmap_parser_pop(parser);
+                continue;
+            }
+
+            id = json_string_value(val);
+            if (!hash_lookup(id, &willDestroy)) {
+                hash_insert(id, (void*)1, &willDestroy);
+                json_array_append(set->destroy, val);
+            }
+        }
+    }
+
+    if (update) {
+        json_object_foreach(update, id, val) {
+            json_t *err = NULL;
+            if (!json_is_object(val)) {
+                jmap_parser_push(parser, "update");
+                jmap_parser_invalid(parser, id);
+                jmap_parser_pop(parser);
+                continue;
+            }
+
+            if (hash_lookup(id, &willDestroy)) {
+                err = json_pack("{s:s}", "type", "willDestroy");
+            }
+            else if (valid_props) {
+                /* Make sure no property is set without its capability */
+                jmap_set_validate_props(req, id, val, valid_props, &err);
+            }
+
+            // TODO We could report the following set errors here:
+            // - invalidPatch
+
+            if (err)
+                json_object_set_new(set->not_updated, id, err);
+            else
+                json_object_set(set->update, id, val);
+        }
+    }
+
+    if (create) {
+        json_object_foreach(create, id, val) {
+            json_t *err = NULL;
+
+            if (!json_is_object(val)) {
+                jmap_parser_push(parser, "create");
+                jmap_parser_invalid(parser, id);
+                jmap_parser_pop(parser);
+                continue;
+            }
+
+            if (valid_props) {
+                /* Make sure no property is set without its capability */
+                jmap_set_validate_props(req, NULL, val, valid_props, &err);
+            }
+
+            if (err)
+                json_object_set_new(set->not_created, id, err);
+            else
+                json_object_set(set->create, id, val);
+        }
+    }
+
+    free_hash_table(&willDestroy, NULL);
 
     if (json_array_size(parser->invalid)) {
         *err = json_pack("{s:s s:O}", "type", "invalidArguments",
                 "arguments", parser->invalid);
-    }
-
-    if (valid_props) {
-        json_t *jval;
-        /* Make sure no property is set without its capability */
-        json_object_foreach(json_object_get(jargs, "create"), key, jval) {
-            json_t *err = NULL;
-            jmap_set_validate_props(req, NULL, jval, valid_props, &err);
-            if (err) {
-                json_object_del(set->create, key);
-                json_object_set_new(set->not_created, key, err);
-            }
-        }
-        json_object_foreach(json_object_get(jargs, "update"), key, jval) {
-            json_t *err = NULL;
-            jmap_set_validate_props(req, key, jval, valid_props, &err);
-            if (err) {
-                json_object_del(set->update, key);
-                json_object_set_new(set->not_updated, key, err);
-            }
-        }
-        // TODO We could report the following set errors here:
-        // -invalidPatch
-        // - willDestroy
     }
 }
 
@@ -1926,7 +2017,7 @@ HIDDEN void jmap_changes_parse(jmap_req_t *req,
     json_t *arg;
     int have_sincemodseq = 0;
 
-    memset(changes, 0, sizeof(struct jmap_changes));
+    // assume that we are given an initialized jmap_changes struct
     changes->created = json_array();
     changes->updated = json_array();
     changes->destroyed = json_array();
@@ -1938,9 +2029,14 @@ HIDDEN void jmap_changes_parse(jmap_req_t *req,
 
         /* sinceState */
         else if (!strcmp(key, "sinceState")) {
-            if (json_is_string(arg) && imparse_isnumber(json_string_value(arg))) {
-                have_sincemodseq = 1;
-                changes->since_modseq = atomodseq_t(json_string_value(arg));
+            if (json_is_string(arg)) {
+                const char *since_state = json_string_value(arg);
+                if ((!changes->prefixed_state ||  // check for mandatory prefix
+                     *since_state++ == JMAP_STATE_STRING_PREFIX) &&
+                    imparse_isnumber(since_state)) {
+                    have_sincemodseq = 1;
+                    changes->since_modseq = atomodseq_t(since_state);
+                }
             }
         }
 
@@ -1982,8 +2078,10 @@ HIDDEN void jmap_changes_fini(struct jmap_changes *changes)
 HIDDEN json_t *jmap_changes_reply(struct jmap_changes *changes)
 {
     json_t *res = json_object();
-    char *old_state = modseqtoa(changes->since_modseq);
-    char *new_state = modseqtoa(changes->new_modseq);
+    char *old_state =
+        _state_string(changes->prefixed_state, changes->since_modseq);
+    char *new_state =
+        _state_string(changes->prefixed_state, changes->new_modseq);
 
     json_object_set_new(res, "oldState", json_string(old_state));
     json_object_set_new(res, "newState", json_string(new_state));
@@ -2006,7 +2104,7 @@ HIDDEN void jmap_copy_parse(jmap_req_t *req, struct jmap_parser *parser,
 {
     json_t *jargs = req->args;
 
-    memset(copy, 0, sizeof(struct jmap_copy));
+    // assume that we are given an initialized jmap_copy struct
     copy->blob_copy = !strcmp(req->method, "Blob/copy");
     copy->create = copy->blob_copy ? json_array() : json_object();
     copy->created = json_object();
@@ -2156,7 +2254,8 @@ HIDDEN json_t *jmap_copy_reply(struct jmap_copy *copy)
 
 /* Foo/query */
 
-HIDDEN jmap_filter *jmap_buildfilter(json_t *arg, jmap_buildfilter_cb *parse)
+HIDDEN jmap_filter *jmap_buildfilter(json_t *arg, jmap_buildfilter_cb *parse,
+                                     void *rock)
 {
     jmap_filter *f = (jmap_filter *) xzmalloc(sizeof(struct jmap_filter));
     int pe;
@@ -2182,12 +2281,12 @@ HIDDEN jmap_filter *jmap_buildfilter(json_t *arg, jmap_buildfilter_cb *parse)
         size_t i, n_conditions = json_array_size(conds);
         for (i = 0; i < n_conditions; i++) {
             json_t *cond = json_array_get(conds, i);
-            ptrarray_push(&f->conditions, jmap_buildfilter(cond, parse));
+            ptrarray_push(&f->conditions, jmap_buildfilter(cond, parse, rock));
         }
     }
 
     if (iscond) {
-        ptrarray_push(&f->conditions, parse(arg));
+        ptrarray_push(&f->conditions, parse(arg, rock));
     }
 
     return f;
@@ -2326,7 +2425,7 @@ HIDDEN void jmap_query_parse(jmap_req_t *req, struct jmap_parser *parser,
     json_t *arg, *val;
     size_t i;
 
-    memset(query, 0, sizeof(struct jmap_query));
+    // assume that we are given an initialized jmap_query struct
     query->ids = json_array();
     query->have_total = 1; /* assume we know the total, we turn it off it not */
 
@@ -2495,7 +2594,7 @@ HIDDEN void jmap_querychanges_parse(jmap_req_t *req,
     json_t *arg, *val;
     size_t i;
 
-    memset(query, 0, sizeof(struct jmap_querychanges));
+    // assume that we are given an initialized jmap_querychanges struct
     query->removed = json_array();
     query->added = json_array();
 
@@ -2643,8 +2742,7 @@ HIDDEN void jmap_parse_parse(jmap_req_t *req,
     const char *key;
     json_t *arg;
 
-    memset(parse, 0, sizeof(struct jmap_parse));
-
+    // assume that we are given an initialized jmap_parse struct
     parse->parsed = json_object();
     parse->not_parsable = json_array();
     parse->not_found = json_array();
@@ -3216,6 +3314,47 @@ EXPORTED const mbentry_t *jmap_mbentry_by_uniqueid_all(jmap_req_t *req,
 EXPORTED mbentry_t *jmap_mbentry_by_uniqueid_copy(jmap_req_t *req, const char *id)
 {
     const mbentry_t *mbentry = _mbentry_by_uniqueid(req, id, 1/*scope*/);
+    if (!mbentry) return NULL;
+    return mboxlist_entry_copy(mbentry);
+}
+
+EXPORTED const mbentry_t *jmap_mbentry_by_mboxid(jmap_req_t *req,
+                                                 const char *mboxid)
+{
+    char *key = strconcat(req->accountid, ".", mboxid, NULL);
+    mbentry_t *mbentry = NULL;
+
+    if (!req->mbentry_byid) {
+        req->mbentry_byid = xzmalloc(sizeof(struct hash_table));
+        construct_hash_table(req->mbentry_byid, 1024, 0);
+    }
+    else mbentry = hash_lookup(key, req->mbentry_byid);
+
+    if (!mbentry) {
+        int r = (*mboxid == JMAP_MAILBOXID_PREFIX) ?
+            mboxlist_lookup_by_jmapid(req->accountid, mboxid, &mbentry, NULL) :
+            mboxlist_lookup_by_uniqueid(mboxid, &mbentry, NULL);
+
+        if (r || !mbentry || (mbentry->mbtype & MBTYPE_DELETED) ||
+            mboxname_isdeletedmailbox(mbentry->name, NULL) ||
+            /* make sure the user can "see" the mailbox */
+            !(jmap_myrights_mbentry(req, mbentry) & JACL_LOOKUP) ||
+            /* keep the lookup scoped to accountid */
+            !mboxname_userownsmailbox(req->accountid, mbentry->name)) {
+            mboxlist_entry_free(&mbentry);
+        }
+        else hash_insert(key, mbentry, req->mbentry_byid);
+    }
+
+    free(key);
+
+    return mbentry;
+}
+
+EXPORTED mbentry_t *jmap_mbentry_by_mboxid_copy(jmap_req_t *req,
+                                                const char *mboxid)
+{
+    const mbentry_t *mbentry = jmap_mbentry_by_mboxid(req, mboxid);
     if (!mbentry) return NULL;
     return mboxlist_entry_copy(mbentry);
 }

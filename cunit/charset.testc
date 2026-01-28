@@ -1,6 +1,6 @@
 #include <stdlib.h>
 
-#include "cunit/cyrunit.h"
+#include "cunit/unit.h"
 #include "charset.h"
 
 extern int charset_debug;
@@ -152,6 +152,64 @@ static void test_to_utf8(void)
     CU_ASSERT_EQUAL(buf_len(&buf), strlen(ASCII_4));
     CU_ASSERT_STRING_EQUAL(buf_cstring(&buf), ASCII_4);
     
+    charset_free(&cs);
+    buf_free(&buf);
+}
+
+static void test_to_utf8_iso2022jp(void)
+{
+    struct test_case {
+        const char *input;
+        const char *want;
+        int encoding;
+    };
+
+    struct test_case test_cases[] = {{
+        .input = "=1B$B!J=1B(B=1B$BGcJ*=\r\n=1B(B=1B$B!K=1B(B",
+        .want = "（買物）",
+        .encoding = ENCODING_QP
+    }, {
+        // ASCII, no text
+        .input = "\x1b$B",
+        .want = "",
+    }, {
+        // ASCII, JIS X 0201-1976, no text
+        .input = "\x1b$B\x1b(B",
+        .want = "",
+    }, {
+        // text, JIS X 0208-1983, ASCII, text
+        .input = "foo\x1b$B\x1b(Bbar",
+        .want = "foobar",
+    }, {
+        // text, ASCII, ASCII, text
+        .input = "foo\x1b(B\x1b(Bbar",
+        .want = "foobar",
+    }, {
+        // text, JIS X 0208-1983, JIS X 0208-1978, ASCII, text
+        .input = "foo\x1b$B\x1b$@\x1b(Bbar",
+        .want = "foobar",
+    }, {
+        // JIS X 0208-1983, JIS X 0201-1976, 2byte-text, JIS X 0201-1976, ASCII
+        .input = "\x1b$B\x1b(J\x5c\x1b(J\x1b(B",
+        .want = "¥",
+    }, {
+        // JIS X 0201-1976, ASCII, JIS X 0208-1983, 2byte-text
+        .input = "\x1b(J\x1b(B\x1b$B\x24\x21",
+        .want = "ぁ",
+    }};
+
+    struct buf buf = BUF_INITIALIZER;
+    charset_t cs = charset_lookupname("iso-2022-jp");
+    CU_ASSERT_PTR_NOT_NULL(cs);
+
+    for (size_t i = 0; i < sizeof(test_cases)/sizeof(test_cases[0]); i++) {
+        struct test_case *tc = &test_cases[i];
+        int r = charset_to_utf8(
+            &buf, tc->input, strlen(tc->input), cs, tc->encoding);
+        CU_ASSERT_EQUAL(r, 0);
+        CU_ASSERT_STRING_EQUAL(buf_cstring(&buf), tc->want);
+    }
+
     charset_free(&cs);
     buf_free(&buf);
 }
@@ -374,9 +432,6 @@ static void test_encode_mimeheader(void)
              "=?UTF-8?Q?01234567890123456789012345678901234567890123456789012345?="
              "\r\n ""=?UTF-8?Q?=E2=82=AC?=", 0);
 
-    /* only encode display-name of address */
-    TESTCASE("\"abc\xe2\x88\x97xyz\" <foo@example.com>", "=?UTF-8?Q?=22abc=E2=88=97xyz=22?= <foo@example.com>", 0);
-
     /* fold long lines with whitespace */
     TESTCASE("012345678 " "012345678 " "012345678 " "012345678 "
              "012345678 " "012345678 " "012345678 " "0123456789",
@@ -409,6 +464,59 @@ static void test_encode_mimeheader(void)
              "=?UTF-8?Q?" "0123456789" "0123456789" "0123456789" "0123456789"
              "0123456789" "0123456789" "01?=\r\n "
              "=?UTF-8?Q?" "2345678901" "2345678?=", 79);
+
+#undef TESTCASE
+}
+
+static void test_encode_addrheader(void)
+{
+    /* corner cases in Quoted-Printable */
+#define TESTCASE(in, exp) \
+    { \
+        static const char _in[] = (in); \
+        static const char _exp[] = (exp); \
+        char *s = charset_encode_addrheader(_in, 0, 0); \
+        CU_ASSERT_PTR_NOT_NULL(s); \
+        char *unfolded = charset_unfold(s, strlen(s), CHARSET_UNFOLD_SKIPWS); \
+        CU_ASSERT_STRING_EQUAL(unfolded, _exp); \
+        free(unfolded); \
+        free(s); \
+    }
+
+    // Encode valid address lists as address list header:
+
+    /* multiple addresses */
+    TESTCASE("foo@local, bar@local", "foo@local, bar@local");
+
+    /* one display-name and address */
+    TESTCASE("\"abc\xe2\x88\x97xyz\" <foo@local>",
+             "=?UTF-8?Q?=22abc=E2=88=97xyz=22?= <foo@local>");
+
+    /* multiple display-names and addresses */
+    TESTCASE("\xf0\x9f\x99\x82 <foo@local>, "
+             "bar@local, "
+             "\xf0\x9f\xa4\xa1 <baz@local>",
+            "=?UTF-8?Q?=F0=9F=99=82?= <foo@local>, "
+             "bar@local, "
+            "=?UTF-8?Q?=F0=9F=A4=A1?= <baz@local>");
+
+    // Fall back encoding invalid address lists as regular header:
+
+    /* address and non-address text */
+    TESTCASE("foo@local, some stuff", "foo@local, some stuff");
+    TESTCASE("some stuff, foo@local", "some stuff, foo@local");
+
+    /* address and non-address non-ASCII text */
+    TESTCASE("foo@local, \xf0\x9f\x99\x82",
+             "=?UTF-8?Q?foo@local,_=F0=9F=99=82?=");
+
+    /* address and non-address text, multiple addresses */
+    TESTCASE("foo@local, some stuff, bar@local, other stuff",
+             "foo@local, some stuff, bar@local, other stuff");
+
+    /* display-name and address and trainling non-address text */
+    TESTCASE("\xc2\xa3 <foo@local>, stuff",
+             "=?UTF-8?Q?=C2=A3_<foo@local>,_stuff?=");
 
 #undef TESTCASE
 }
@@ -1332,6 +1440,14 @@ static void test_charset_decode(void)
     TESTCASE("vu_A3g", 6, "\xbe\xef\xc0\xde", 4, ENCODING_BASE64URL);
     TESTCASE("vu_A3g==", 6, "\xbe\xef\xc0\xde", 4, ENCODING_BASE64URL);
 
+    /* Base64 JMAPID encoding */
+    TESTCASE("-----------", 11,
+             "\x00\x00\x00\x00\x00\x00\x00\x00", 8, ENCODING_BASE64JMAPID);
+    TESTCASE("zzzzzzzzzzw", 11,
+             "\xff\xff\xff\xff\xff\xff\xff\xff", 8, ENCODING_BASE64JMAPID);
+    TESTCASE("012-abc_TUV", 11,
+             "\x04\x20\xc0\x9a\x7a\x25\x79\xf8", 8, ENCODING_BASE64JMAPID);
+
 #undef TESTCASE
 
     struct buf buf = BUF_INITIALIZER;
@@ -1351,6 +1467,11 @@ static void test_charset_decode(void)
 
     /* Base64url with invalid characters */
     r = charset_decode(&buf, "Zm9v@@@YmFy", 11, ENCODING_BASE64URL);
+    CU_ASSERT_EQUAL(-1, r);
+    buf_reset(&buf);
+
+    /* Base64jmapid with invalid characters */
+    r = charset_decode(&buf, "Zm9v@@@YmFy", 11, ENCODING_BASE64JMAPID);
     CU_ASSERT_EQUAL(-1, r);
     buf_reset(&buf);
 

@@ -41,12 +41,14 @@ package Cassandane::Unit::TestCase;
 use strict;
 use warnings;
 
+# We need 0.29 because of a fix for exception handling
+use Test::Unit 0.29 ();
+
 use base qw(Test::Unit::TestCase);
 use Data::Dumper;
 use DateTime;
 use DateTime::Format::ISO8601;
 
-use lib '.';
 use Cassandane::Util::Log;
 use Cassandane::Util::TestUrl;
 
@@ -72,13 +74,15 @@ sub _skip_version
 {
     my ($str) = @_;
 
-    return if not $str =~ m/^(min|max)_version_([\d_]+)$/;
+    return if not $str =~ m/^(min|max)_(other_)?version_([\d_]+)$/;
     my $minmax = $1;
+    my $installation = ($2 ? 'other' : 'default');
     my ($lim_major, $lim_minor, $lim_revision, $lim_commits)
-        = map { 0 + $_ } split /_/, $2;
+        = map { 0 + $_ } split /_/, $3;
     return if not defined $lim_major;
 
-    my ($major, $minor, $revision, $commits) = Cassandane::Instance->get_version();
+    my ($major, $minor, $revision, $commits)
+        = Cassandane::Instance->get_version($installation);
 
     if ($minmax eq 'min') {
         return 1 if $major < $lim_major; # too old, skip!
@@ -151,7 +155,7 @@ sub filter
             my $sub = $self->can($self->{_name});
             return if not defined $sub;
             foreach my $attr (attributes::get($sub)) {
-                next if $attr !~ m/^(?:min|max)_version_[\d_]+$/;
+                next if $attr !~ m/^(?:min|max)_(?:other_)?version_[\d_]+$/;
                 return 1 if _skip_version($attr);
             }
             return;
@@ -521,6 +525,92 @@ sub assert_not_file_test
     die $@ if $@;
     $self->assert(!$result,
                   "'$path' unexpectedly passed '$test_type' test");
+}
+
+sub assert_cmp_deeply
+{
+    my ($self, $expected, $actual, $desc) = @_;
+    $desc ||= "deep comparison matched";
+
+    require Test::Deep;
+    require Test::Deep::JType;
+
+    no warnings 'once';
+    local $Test::Deep::LeafWrapper = sub { Test::Deep::JType::_String->new(@_) };
+    use warnings 'once';
+
+    my ($ok, $stack) = Test::Deep::cmp_details($actual, $expected);
+
+    if ($ok) {
+        return $self->assert(1, $desc);
+    }
+
+    my ($package, $filename, $line) = caller;
+
+    my $diag = join qq{\n},
+               "deep comparison failed at $filename, line $line:\n",
+               Test::Deep::deep_diag($stack);
+
+    return $self->assert(0, $diag);
+}
+
+sub assert_contains
+{
+    my ($self, $needle, $haystack, $expect_count) = @_;
+
+    my $actual_count = 0;
+
+    if (not defined $haystack) {
+        $self->assert($expect_count == 0,
+                      "needle '$needle' not found in undef haystack");
+        return;
+    }
+
+    die 'haystack is not an ARRAY reference: '
+        if ref $haystack ne 'ARRAY';
+
+    my $needle_string;
+    my $haystack_string = q{(}
+                          . join(q{, }, map { "'$_'" } @{$haystack})
+                          . q{)};
+
+    if (not defined $needle) {
+        $needle_string = 'undef';
+        $actual_count = scalar grep { not defined $_ } @{$haystack};
+    }
+    elsif (ref $needle eq '') {
+        $needle_string = "'$needle'";
+        $actual_count = scalar grep { $needle eq $_ } @{$haystack};
+    }
+    elsif (ref $needle eq 'CODE') {
+        $needle_string = 'needle()';
+        # count is how many elements the function returns true for
+        $actual_count = scalar grep { $needle->($_) } @{$haystack};
+    }
+    elsif (lc ref $needle eq 'regexp') { # may be REGEXP or Regexp
+        $needle_string = $needle;
+        $actual_count = scalar grep { m/$needle/ } @{$haystack};
+    }
+    else {
+        die 'needle is not a scalar, CODE reference, or REGEXP reference';
+    }
+
+    if (defined $expect_count) {
+        my $message = "expected $expect_count $needle_string"
+                      . " but got $actual_count in $haystack_string";
+        $self->assert($actual_count == $expect_count, $message);
+    }
+    else {
+        my $message = "$needle_string not found in $haystack_string";
+        $self->assert($actual_count > 0, $message);
+    }
+}
+
+sub assert_not_contains
+{
+    my ($self, $needle, $haystack) = @_;
+
+    $self->assert_contains($needle, $haystack, 0);
 }
 
 sub new_test_url

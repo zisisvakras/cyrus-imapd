@@ -11,8 +11,8 @@ you're running an older version of Cyrus.
 This is under your control! If there's a feature you'd like to see added, or
 testing/documentation you'd like to see improved, we'd love to have your
 involvement to help make it happen. We're here to support you.
-:ref:`Contact us <support>` and take a look at the
-:ref:`Contributor guides <contribute>`.
+:doc:`Contact us </support/index>` and take a look at the
+:doc:`developer resources </developer/index>`.
 
 High Level Roadmap
 ==================
@@ -26,4 +26,4 @@ Future
 * Improved developer experience
 
 ..
-	This is woefully out of date.
+        This is woefully out of date.

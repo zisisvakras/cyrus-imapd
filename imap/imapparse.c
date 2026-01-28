@@ -1,43 +1,6 @@
-/*
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* imapparse.c */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -222,10 +185,11 @@ EXPORTED int getxstring(struct protstream *pin, struct protstream *pout,
                 if (c == EOF || isspace(c) || c == '(' ||
                           c == ')' || c == '\"') {
                     /* gotta handle NIL here too */
-                    if ((flags & GXS_NIL) && buf->len == 3 && !memcmp(buf->s, "NIL", 3))
+                    const char *atom = buf_cstring(buf);
+                    if ((flags & GXS_NIL) && !strcmp(atom, "NIL")) {
+                        /* indicate NIL with a NULL buf.s pointer */
                         buf_free(buf);
-                    else
-                        buf_cstring(buf);
+                    }
                     return c;
                 }
                 buf_putc(buf, c);
@@ -248,7 +212,6 @@ EXPORTED int getxstring(struct protstream *pin, struct protstream *pout,
                 if (matched == strlen("IL") + 1) {
                     if (isspace(sep) || sep == '(' || sep == ')' || sep == '\"') {
                         /* found NIL and a separator, consume it */
-                        prot_ungetc(c, pin);
                         c = getword(pin, buf);
                         /* indicate NIL with a NULL buf.s pointer */
                         buf_free(buf);
@@ -258,10 +221,9 @@ EXPORTED int getxstring(struct protstream *pin, struct protstream *pout,
                 else if (matched > 0) {
                     /* partially matched NIL, but not enough buffer to be sure:
                      * fall back to old behaviour */
-                    prot_ungetc(c, pin);
                     c = getword(pin, buf);
-                    if (buf->len == 3 && !memcmp(buf->s, "NIL", 3)) {
-                        /* indicated NIL with a NULL buf.s pointer */
+                    if (!strcmp(buf_cstring(buf), "IL")) {
+                        /* indicate NIL with a NULL buf.s pointer */
                         buf_free(buf);
                         return c;
                     }
@@ -698,6 +660,7 @@ EXPORTED int get_search_return_opts(struct protstream *pin,
         }
         else if (!strcmp(opt.s, "save")) {      /* RFC 5182 */
             searchargs->returnopts |= SEARCH_RETURN_SAVE;
+            searchargs->client_behavior_mask |= CB_SEARCHRES;
         }
         else if (!strcmp(opt.s, "relevancy")) { /* RFC 6203 */
             searchargs->returnopts |= SEARCH_RETURN_RELEVANCY;
@@ -716,6 +679,7 @@ EXPORTED int get_search_return_opts(struct protstream *pin,
             }
 
             searchargs->returnopts |= SEARCH_RETURN_PARTIAL;
+            searchargs->client_behavior_mask |= CB_PARTIAL;
         }
         else {
             prot_printf(pout,
@@ -1135,7 +1099,7 @@ static int get_search_criterion(struct protstream *pin,
             if (c <= EOF) goto missingarg;
             bytestring_match(parent, arg.s, criteria.s, base);
 
-            base->did_objectid = 1;
+            base->client_behavior_mask |= CB_OBJECTID;
         }
         else goto badcri;
         break;
@@ -1164,6 +1128,8 @@ static int get_search_criterion(struct protstream *pin,
             c = get_search_criterion(pin, pout, parent, base);
             base->fuzzy_depth--;
             if (c <= EOF) return c;
+
+            base->client_behavior_mask |= CB_SEARCHFUZZY;
         }
         else goto badcri;
         break;
@@ -1419,12 +1385,22 @@ static int get_search_criterion(struct protstream *pin,
             string_match(parent, arg.s, criteria.s, base);
         }
         else if (!strcmp(criteria.s, "threadid")) {   /* RFC 8474 */
+            conversation_id_t cid;
             if (c != ' ') goto missingarg;
             c = getastring(pin, pout, &arg);
             if (c <= EOF) goto missingarg;
-            bytestring_match(parent, arg.s, criteria.s, base);
+            if ((arg.s[0] != 'A' && arg.s[0] != 'T') ||
+                !conversation_id_decode(&cid, arg.s+1)) {
+                prot_printf(pout, "%s BAD Invalid threadid in Search command\r\n",
+                            base->tag);
+                if (c != EOF) prot_ungetc(c, pin);
+                return EOF;
+            }
+            e = search_expr_new(parent, SEOP_MATCH);
+            e->attr = search_attr_find("cid");
+            e->value.u = cid;
 
-            base->did_objectid = 1;
+            base->client_behavior_mask |= CB_OBJECTID;
         }
         else goto badcri;
         break;
@@ -1596,9 +1572,41 @@ static int get_search_criterion(struct protstream *pin,
  */
 EXPORTED int get_search_program(struct protstream *pin,
                                 struct protstream *pout,
+                                unsigned client_quirks,
                                 struct searchargs *searchargs)
 {
     int c;
+
+    /* Set FUZZY search according to config and quirks */
+    if (client_quirks & QUIRK_SEARCHFUZZY) {
+        /* Quirks overrule anything */
+        searchargs->fuzzy_depth++;
+    }
+    else {
+        int config_fuzzy = -1;
+
+        if (searchargs->userid) {
+            static const char *annot = IMAP_ANNOT_NS "search-fuzzy-always";
+            char *inbox = mboxname_user_mbox(searchargs->userid, NULL);
+            struct buf val = BUF_INITIALIZER;
+
+            if (!annotatemore_lookupmask(inbox, annot, searchargs->userid, &val)
+                && buf_len(&val)) {
+                /* User may override global config */
+                config_fuzzy = config_parse_switch(buf_cstring(&val));
+                if (config_fuzzy > 0)
+                    searchargs->fuzzy_depth++;
+            }
+
+            buf_free(&val);
+            free(inbox);
+        }
+
+        if (config_fuzzy < 0 && config_getswitch(IMAPOPT_SEARCH_FUZZY_ALWAYS)) {
+            /* Use global config */
+            searchargs->fuzzy_depth++;
+        }
+    }
 
     searchargs->root = search_expr_new(NULL, SEOP_AND);
 

@@ -3,9 +3,9 @@ use Cassandane::Tiny;
 use utf8;
 
 sub test_card_set_create_localizations
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     my $service = $self->{instance}->get_service("http");

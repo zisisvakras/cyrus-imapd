@@ -1,45 +1,6 @@
-/* cyrusdb_bench.c: cyrusdb benchmark tool.
- *                  [Based on the db_bench tool in LevelDB]
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* cyrusdb_bench.c: cyrusdb benchmark, based on LevelDB's db_bench tool */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -236,7 +197,7 @@ static void usage(const char *progname)
     printf("Usage: %s [OPTION]... [DB]...\n", progname);
 
     printf("  -b, --benchmarks     comma separated list of benchmarks to run\n");
-    printf("                       [will run all the benchmarks by default]");
+    printf("                       [will run all the benchmarks by default]\n");
     printf("                       Available benchmarks:\n");
     printf("                       * writeseq       - write values in sequential key order\n");
     printf("                       * writeseqtxn    - write values in sequential key order in separate transactions\n");
@@ -247,7 +208,7 @@ static void usage(const char *progname)
     printf("  -d, --db             the db to run the benchmarks on\n");
     printf("                       (if not provided, will create a new db)\n");
     printf("  -t, --backend        type of the db backend to run benchmarks on\n");
-    printf("                       Available Cyrus DB's: twoskip\n");
+    printf("                       Available Cyrus DB's: twom, twoskip \n");
     printf("  -n, --numrecs        number of records to write[default: 1000]\n");
     printf("  -h, --help           display this help and exit\n");
 }
@@ -368,13 +329,14 @@ static size_t do_write(int txnmode, int insmode)
     return bytes;
 }
 
-static int parse_options(int argc, char **argv, const struct option *options __attribute__((unused)))
+static int parse_options(int argc, char **argv, const struct option *options)
 {
     int option;
     int option_index;
 
     while ((option = getopt_long(argc, argv, "d:b:n:t:h?",
-                                 long_options, &option_index)) != -1) {
+                                 options, &option_index)) != -1)
+    {
         switch (option) {
             case 'b':
                 BENCHMARKS = optarg;
@@ -485,7 +447,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Running benchmarks for `%s` backend\n", BACKEND);
     } else {
         fprintf(stderr, "%s is not a valid CyrusDB backend. ", BACKEND);
-        fprintf(stderr, "Choose between `twom` or `zeroskip`.\n");
+        fprintf(stderr, "Choose between `twom` or `twoskip`.\n");
         ret = EXIT_FAILURE;
         goto done;
     }

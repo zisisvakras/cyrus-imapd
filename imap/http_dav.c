@@ -1,45 +1,7 @@
-/* http_dav.c -- Routines for dealing with DAV properties in httpd
- *
- * Copyright (c) 1994-2011 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_dav.c -- Routines for dealing with DAV properties in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
+
 /*
  * TODO:
  *
@@ -194,6 +156,7 @@ static const struct report_type_t principal_reports[] = {
 };
 
 /* Array of known "live" properties */
+// clang-format off
 static const struct prop_entry principal_props[] = {
 
     /* WebDAV (RFC 4918) properties */
@@ -292,6 +255,7 @@ static const struct prop_entry principal_props[] = {
 
     { NULL, 0, 0, NULL, NULL, NULL }
 };
+// clang-format on
 
 
 struct meth_params princ_params = {
@@ -301,6 +265,7 @@ struct meth_params princ_params = {
 };
 
 /* Namespace for WebDAV principals */
+// clang-format off
 struct namespace_t namespace_principal = {
     URL_NS_PRINCIPAL, 0, "principal", "/dav/principals", NULL,
     http_allow_noauth_get, /*authschemes*/0,
@@ -332,6 +297,7 @@ struct namespace_t namespace_principal = {
         { NULL,                 NULL }                  /* UNLOCK       */
     }
 };
+// clang-format on
 
 
 /* Linked-list of properties for fetching */
@@ -822,7 +788,7 @@ HIDDEN int calcarddav_parse_path(const char *path,
             if (ret == IMAP_MAILBOX_BADNAME)
                 *resultstr = "Invalid name.  Percent encoded HTTP URLs are in theory valid, but in practice not supported.";
             goto done;
-	}
+        }
 
         tgt->allow |= ALLOW_MKCOL;
     }
@@ -1350,7 +1316,7 @@ static int xml_add_ns(xmlNodePtr req, xmlNsPtr *respNs, xmlNodePtr root)
                     xmlFree((char *) nsDef->prefix);
                     nsDef->prefix = xmlStrdup(BAD_CAST myprefix);
                     xmlNewNs(root, nsDef->href, BAD_CAST myprefix); // could again return NULL
-		}
+                }
             }
         }
 
@@ -1946,7 +1912,7 @@ int propfind_getlength(const xmlChar *name, xmlNsPtr ns,
     buf_reset(&fctx->buf);
 
     if (fctx->record) {
-        buf_printf(&fctx->buf, "%u",
+        buf_printf(&fctx->buf, UINT64_FMT,
                    fctx->record->size - fctx->record->header_size);
     }
 
@@ -2368,14 +2334,7 @@ int propfind_owner(const xmlChar *name, xmlNsPtr ns,
 
     mbname = mbname_from_intname(fctx->mbentry->name);
     owner = mbname_userid(mbname);
-    if (!owner) {
-        static strarray_t *admins = NULL;
-
-        if (!admins) admins = strarray_split(config_getstring(IMAPOPT_ADMINS),
-                                             NULL, STRARRAY_TRIM);
-
-        owner = strarray_nth(admins, 0);
-    }
+    if (!owner) owner = strarray_nth(config_admins, 0);
 
     r = propfind_principalurl(name, ns, fctx,
                               prop, resp, propstat, (void *) owner);
@@ -2974,7 +2933,7 @@ EXPORTED int propfind_quota(const xmlChar *name, xmlNsPtr ns,
     }
     else if (fctx->record) {
         /* Bytes used by resource */
-        buf_printf(&fctx->buf, "%u", fctx->record->size);
+        buf_printf(&fctx->buf, UINT64_FMT, fctx->record->size);
     }
     else if (fctx->mailbox) {
         /* Bytes used by calendar collection */
@@ -3225,7 +3184,7 @@ static int proppatch_toresource(xmlNodePtr prop, unsigned set,
 
     r = mailbox_get_annotate_state(pctx->mailbox, pctx->record->uid, &astate);
     if (!r) r = annotate_state_writemask(astate, buf_cstring(&pctx->buf),
-                                         httpd_userid, &value);
+                                         httpd_userisadmin ? "" : httpd_userid, &value);
     /* we need to rewrite the record to update the modseq because the layering
      * of annotations and mailboxes is broken */
     if (!r) r = mailbox_rewrite_index_record(pctx->mailbox, pctx->record);
@@ -3381,7 +3340,7 @@ static int proppatch_todb_internal(xmlNodePtr prop, unsigned set,
     r = mailbox_get_annotate_state(pctx->mailbox, 0, &astate);
     if (!r) r = mask ?
         annotate_state_writemask(astate, buf_cstring(&pctx->buf),
-                httpd_userid, &value) :
+                httpd_userisadmin ? "" : httpd_userid, &value) :
         annotate_state_write(astate, buf_cstring(&pctx->buf),
                 httpd_userid, &value);
 
@@ -3716,7 +3675,7 @@ static int do_proppatch(struct proppatch_ctx *pctx, xmlNodePtr instr)
                                          DAV_PROT_PROP);
                             *pctx->ret = HTTP_FORBIDDEN;
                         }
-                        else if ((pctx->txn->meth == METH_PROPPATCH) &&
+                        else if ((pctx->txn->meth == METH_PROPPATCH) && !httpd_userisadmin &&
                                  !(rights & ((entry->flags & PROP_PERUSER) ?
                                              DACL_READ : DACL_PROPCOL))) {
                             /* DAV:need-privileges */
@@ -4422,7 +4381,9 @@ static int dav_move_collection(struct transaction_t *txn,
         }
     }
 
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(newmailboxname);
+    user_nslock_t *user_nslock = user_nslock_bymboxname(oldmailboxname,
+                                                        newmailboxname,
+                                                        LOCK_EXCLUSIVE);
 
     r = mboxlist_createmailboxcheck(newmailboxname, 0, NULL, httpd_userisadmin,
                                     httpd_userid, httpd_authstate,
@@ -4491,7 +4452,7 @@ static int dav_move_collection(struct transaction_t *txn,
         buf_free(&mrock.newname);
 
         if (mrock.root) {
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
             sync_checkpoint(txn->conn->pin);
             xml_response(HTTP_MULTI_STATUS, txn, mrock.root->doc);
             xmlFreeDoc(mrock.root->doc);
@@ -4500,7 +4461,7 @@ static int dav_move_collection(struct transaction_t *txn,
     }
 
   done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     switch (r) {
     case 0:
         sync_checkpoint(txn->conn->pin);
@@ -4547,6 +4508,7 @@ int meth_copy_move(struct transaction_t *txn, void *params)
     void *src_davdb = NULL, *dest_davdb = NULL, *obj = NULL;
     struct buf msg_buf = BUF_INITIALIZER;
     struct buf body_buf = BUF_INITIALIZER;
+    user_nslock_t *user_nslock = NULL;
 
     memset(&dest_tgt, 0, sizeof(struct request_target_t));
 
@@ -4703,6 +4665,8 @@ int meth_copy_move(struct transaction_t *txn, void *params)
     }
 
     /* Local source and destination mailboxes */
+
+    user_nslock = user_nslock_bymboxname(txn->req_tgt.mbentry->name, dest_tgt.mbentry->name, LOCK_EXCLUSIVE);
 
     if (!strcmp(txn->req_tgt.mbentry->name, dest_tgt.mbentry->name)) {
         /* Same source and destination - Open source mailbox for writing */
@@ -4868,6 +4832,8 @@ int meth_copy_move(struct transaction_t *txn, void *params)
     if (src_davdb) cparams->davdb.close_db(src_davdb);
     if (src_mbox) mailbox_close(&src_mbox);
 
+    user_nslock_release(&user_nslock);
+
     buf_free(&msg_buf);
     buf_free(&body_buf);
     xmlFreeURI(dest_uri);
@@ -4918,11 +4884,11 @@ static int meth_delete_collection(struct transaction_t *txn,
     /* if FastMail sharing, we need to remove ACLs */
     if (config_getswitch(IMAPOPT_FASTMAILSHARING) &&
         !mboxname_userownsmailbox(httpd_userid, txn->req_tgt.mbentry->name)) {
-        struct mboxlock *namespacelock = mboxname_usernamespacelock(txn->req_tgt.mbentry->name);
+        user_nslock_t *user_nslock = user_nslock_lockmb_w(txn->req_tgt.mbentry->name);
         r = mboxlist_setacl(&httpd_namespace, txn->req_tgt.mbentry->name,
                             httpd_userid, /*rights*/NULL, /*isadmin*/1,
                             httpd_userid, httpd_authstate);
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
         if (r) {
             syslog(LOG_ERR, "meth_delete(%s) failed to remove acl: %s",
                    txn->req_tgt.mbentry->name, error_message(r));
@@ -5078,7 +5044,7 @@ static int meth_delete_collection(struct transaction_t *txn,
     mailbox_close(&mailbox);
 
     mbname_t *mbname = mbname_from_intname(txn->req_tgt.mbentry->name);
-    struct mboxlock *namespacelock = user_namespacelock(mbname_userid(mbname));
+    user_nslock_t *user_nslock = user_nslock_lock_w(mbname_userid(mbname));
     struct mboxevent *mboxevent = mboxevent_new(EVENT_MAILBOX_DELETE);
 
     if (mboxlist_delayed_delete_isenabled()) {
@@ -5102,7 +5068,7 @@ static int meth_delete_collection(struct transaction_t *txn,
     else mboxevent_notify(&mboxevent);
 
     mboxevent_free(&mboxevent);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mbname_free(&mbname);
 
   done:
@@ -5724,7 +5690,7 @@ int meth_mkcol(struct transaction_t *txn, void *params)
     char *partition = NULL;
     struct proppatch_ctx pctx;
     struct mailbox *mailbox = NULL;
-    struct mboxlock *namespacelock = NULL;
+    user_nslock_t *user_nslock = NULL;
 
     memset(&pctx, 0, sizeof(struct proppatch_ctx));
 
@@ -5811,7 +5777,7 @@ int meth_mkcol(struct transaction_t *txn, void *params)
         instr = root->children;
     }
 
-    namespacelock = mboxname_usernamespacelock(txn->req_tgt.mbentry->name);
+    user_nslock = user_nslock_lockmb_w(txn->req_tgt.mbentry->name);
 
     /* Create the mailbox */
     mbentry_t mbentry = MBENTRY_INITIALIZER;
@@ -5831,7 +5797,7 @@ int meth_mkcol(struct transaction_t *txn, void *params)
         if (!root) {
             ret = HTTP_SERVER_ERROR;
             txn->error.desc = "Unable to create XML response";
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
             goto done;
         }
 
@@ -5868,7 +5834,7 @@ int meth_mkcol(struct transaction_t *txn, void *params)
                 xml_response(r, txn, outdoc);
             }
 
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
             goto done;
         }
     }
@@ -5894,7 +5860,7 @@ int meth_mkcol(struct transaction_t *txn, void *params)
   done:
     buf_free(&pctx.buf);
     mailbox_close(&mailbox);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     sync_checkpoint(txn->conn->pin);
 
@@ -6165,7 +6131,7 @@ int propfind_by_collection(const mbentry_t *mbentry, void *rock)
     buf_free(&writebuf);
     if (mailbox) mailbox_close(&mailbox);
 
-    return 0;
+    return r;
 }
 
 /* Free an entry list */
@@ -7161,6 +7127,7 @@ int meth_put(struct transaction_t *txn, void *params)
     unsigned flags = 0;
     void *davdb = NULL, *obj = NULL;
     struct buf msg_buf = BUF_INITIALIZER;
+    user_nslock_t *user_nslock = NULL;
 
     if (txn->meth == METH_POST) {
         reqd_rights = DACL_ADDRSRC;
@@ -7266,13 +7233,20 @@ int meth_put(struct transaction_t *txn, void *params)
         }
     }
 
+    mbname_t *mbname = mbname_from_intname(txn->req_tgt.mbentry->name);
+    const char *owner = mbname_userid(mbname);
+    user_nslock = user_nslock_lockdouble(owner,
+                                         txn->req_tgt.userid, LOCK_EXCLUSIVE);
+    mbname_free(&mbname);
+
     /* Open mailbox for writing */
     r = mailbox_open_iwl(txn->req_tgt.mbentry->name, &mailbox);
     if (r) {
         syslog(LOG_ERR, "http_mailbox_open(%s) failed: %s",
                txn->req_tgt.mbentry->name, error_message(r));
         txn->error.desc = error_message(r);
-        return HTTP_SERVER_ERROR;
+        ret = HTTP_SERVER_ERROR;
+        goto done;
     }
 
     /* Open the DAV DB corresponding to the mailbox */
@@ -7280,8 +7254,9 @@ int meth_put(struct transaction_t *txn, void *params)
 
     /* Find message UID for the resource, if exists */
     pparams->davdb.lookup_resource(davdb, txn->req_tgt.mbentry,
-                                   txn->req_tgt.resource, (void *) &ddata, 0);
-    /* XXX  Check errors */
+                                   txn->req_tgt.resource, (void *) &ddata, 1);
+    modseq_t tombstone_modseq =
+        (ddata->imap_uid && !ddata->alive) ? ddata->modseq : 0;
 
     /* Fetch resource validators */
     r = pparams->get_validators(mailbox, (void *) ddata, httpd_userid,
@@ -7316,6 +7291,33 @@ int meth_put(struct transaction_t *txn, void *params)
         obj = mime->to_object(&txn->req_body.payload);
         ret = pparams->put.proc(txn, obj, mailbox,
                                 txn->req_tgt.resource, davdb, flags);
+
+        if (tombstone_modseq && (ret == HTTP_CREATED)) {
+            /* If we create a resource at the same URL as a destroyed one,
+               we can't calculate changes before the original was destroyed */
+            uint32_t mbtype = mailbox_mbtype(mailbox);
+            struct mboxname_counters counters = { 0 };
+            modseq_t *deletedmodseq = NULL;
+
+            switch (mbtype) {
+            case MBTYPE_CALENDAR:
+                deletedmodseq = &counters.caldavdeletedmodseq;
+                break;
+            case MBTYPE_ADDRESSBOOK:
+                deletedmodseq = &counters.carddavdeletedmodseq;
+                break;
+            }
+
+            if (deletedmodseq) {
+                const char *mboxname = mailbox_name(mailbox);
+
+                assert(!mboxname_read_counters(mboxname, &counters));
+                if (tombstone_modseq > *deletedmodseq) {
+                    mboxname_setmodseq(mboxname, tombstone_modseq,
+                                       mbtype, MBOXMODSEQ_ISDELETE);
+                }
+            }
+        }
         break;
 
     case HTTP_PRECOND_FAILED:
@@ -7416,6 +7418,7 @@ int meth_put(struct transaction_t *txn, void *params)
     buf_free(&msg_buf);
     if (davdb) pparams->davdb.close_db(davdb);
     mailbox_close(&mailbox);
+    user_nslock_release(&user_nslock);
 
     // XXX - this is AFTER the response has been sent, we need to
     // refactor this for total safety
@@ -7649,7 +7652,8 @@ int report_sync_col(struct transaction_t *txn, struct meth_params *rparams,
                            &uidvalidity, &syncmodseq, &basemodseq,
                            tokenuri /* test for trailing junk */);
 
-                syslog(LOG_DEBUG, "scanned token %s to %d %u %llu %llu",
+                syslog(LOG_DEBUG,
+                       "scanned token %s to %d %u " MODSEQ_FMT " " MODSEQ_FMT,
                        str, r, uidvalidity, syncmodseq, basemodseq);
                 /* Sanity check the token components */
                 if (r < 2 || r > 3 ||
@@ -8030,6 +8034,7 @@ static int principal_search(const char *userid, void *rock)
 }
 
 
+// clang-format off
 static const struct prop_entry prin_search_props[] = {
 
     /* WebDAV (RFC 4918) properties */
@@ -8041,6 +8046,7 @@ static const struct prop_entry prin_search_props[] = {
 
     { NULL, 0, 0, NULL, NULL, NULL }
 };
+// clang-format on
 
 
 /* DAV:principal-property-search REPORT */

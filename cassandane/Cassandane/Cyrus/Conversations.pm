@@ -43,7 +43,6 @@ use warnings;
 use DateTime;
 use URI::Escape;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::ThreadedGenerator;
 use Cassandane::Util::Log;
@@ -127,13 +126,10 @@ sub choose_cid
 # Test APPEND of messages to IMAP
 #
 sub test_append
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -160,13 +156,10 @@ sub test_append
 # Test APPEND of messages to IMAP
 #
 sub test_append_reply
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -183,13 +176,10 @@ sub test_append_reply
 # Test APPEND of messages to IMAP
 #
 sub test_append_reply_200
-    :min_version_3_1
+    :min_version_3_1 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -217,13 +207,10 @@ sub test_append_reply_200
 # Test MOVE of messages after conversation split
 #
 sub test_move_200
-    :min_version_3_1
+    :min_version_3_1 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -260,8 +247,8 @@ sub test_move_200
     my $threadid1 = $res->{1}{threadid}[0];
     my $emailid2 = $res->{2}{emailid}[0];
     my $threadid2 = $res->{2}{threadid}[0];
-    $self->assert_str_equals($threadid1, 'T' . $exp{A}->make_cid());
-    $self->assert_str_equals($threadid2, 'T' . $exp{B}->make_cid());
+    $self->assert_str_equals($threadid1, $exp{A}->make_thrid());
+    $self->assert_str_equals($threadid2, $exp{B}->make_thrid());
 
     # XXX probably should split the jmap stuff below into a separate
     # XXX test, so we can just mark it :needs_component_jmap instead
@@ -273,32 +260,40 @@ sub test_move_200
 
     my $jmap = $self->{jmap};
     xlog $self, "create bar mailbox";
-    $res = $jmap->CallMethods([
+    $res = $jmap->CallMethods(
+        [
             ['Mailbox/set', { create => { "1" => {
                             name => "bar",
              }}}, "R1"]
-    ]);
+        ],
+        [ qw( urn:ietf:params:jmap:core urn:ietf:params:jmap:mail ) ],
+    );
     $self->assert_str_equals('Mailbox/set', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
     $self->assert_not_null($res->[0][1]{created});
     my $bar = $res->[0][1]{created}{"1"}{id};
 
-    $res = $jmap->CallMethods([
+    $res = $jmap->CallMethods(
+        [
             ['Email/set', { update => {
                  $emailid1 => { mailboxIds => { $bar => $JSON::true } },
                  $emailid2 => { mailboxIds => { $bar => $JSON::true } },
              }}, "R1"]
-    ]);
+        ],
+        [ qw( urn:ietf:params:jmap:core urn:ietf:params:jmap:mail ) ],
+    );
 
     $self->assert_str_equals('Email/set', $res->[0][0]);
     $self->assert(exists $res->[0][1]{updated}{$emailid1});
     $self->assert(exists $res->[0][1]{updated}{$emailid2});
     $self->assert_str_equals('R1', $res->[0][2]);
 
-    $res = $jmap->CallMethods([
-            ['Email/get', { ids => [$emailid1,$emailid2], properties => ['threadId']
-             }, "R1"]
-    ]);
+    $res = $jmap->CallMethods(
+        [
+            ['Email/get', { ids => [$emailid1,$emailid2], properties => ['threadId'] }, "R1"],
+        ],
+        [ qw( urn:ietf:params:jmap:core urn:ietf:params:jmap:mail ) ],
+    );
 
     $self->assert_str_equals('Email/get', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
@@ -318,13 +313,10 @@ sub test_move_200
 # decoded from the real world!
 #
 sub test_normalise_nonascii_whitespace
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     # we saw in the wild a message with an encoded nbsp in the subject...
@@ -343,15 +335,12 @@ sub test_normalise_nonascii_whitespace
 # test upgrade tooling
 #
 sub test_upgrade
-    :min_version_3_12
+    :min_version_3_12 :Conversations
 {
     my ($self) = @_;
     my %exp;
 
     my $talk = $self->{store}->get_client();
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($talk->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -367,6 +356,15 @@ sub test_upgrade
     $self->{instance}->run_command({ cyrus => 1, redirects => { stdout => $outfile } }, 'ctl_conversationsdb', '-U', '-r', '-v');
     my $data = slurp_file($outfile);
     $self->assert_matches(qr/already version/, $data);
+
+    # should reconstruct
+    xlog $self, "Upgrade shouldn't have anything to do, but we also used -R";
+    $self->{instance}->run_command(
+      { cyrus => 1, redirects => { stdout => $outfile } },
+      'ctl_conversationsdb', '-U', '-R', '-r', '-v',
+    );
+    $data = slurp_file($outfile);
+    $self->assert_does_not_match(qr/already version/, $data);
 
     # nuke the version key
     my $dirs = $self->{instance}->run_mbpath(-u => 'cassandane');
@@ -391,15 +389,12 @@ sub test_upgrade
 # test reconstruct of larger conversation
 #
 sub test_reconstruct_splitconv
-    :min_version_3_1
+    :min_version_3_1 :Conversations
 {
     my ($self) = @_;
     my %exp;
 
     my $talk = $self->{store}->get_client();
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($talk->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -478,14 +473,9 @@ sub test_reconstruct_splitconv
 # test clearing the modseq
 #
 sub test_clearmodseq
-    :min_version_3_1
+    :min_version_3_1 :Conversations
 {
     my ($self) = @_;
-
-    my $talk = $self->{store}->get_client();
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($talk->capability()->{xconversations});
 
     my $admintalk = $self->{adminstore}->get_client();
     $admintalk->setquota('user.cassandane', ['STORAGE', 500000]);
@@ -534,18 +524,15 @@ sub _munge_annot_crc
     $fh->close();
 }
 sub test_replication_reply_200
-    :min_version_3_1 :needs_component_replication
+    :min_version_3_1 :needs_component_replication :Conversations :NoReplicaOnly
 {
     my ($self) = @_;
     my %exp;
 
-    # check IMAP server has the XCONVERSATIONS capability
     my $master_store = $self->{master_store};
     my $replica_store = $self->{replica_store};
     $master_store->set_fetch_attributes('uid', 'cid', 'basecid');
     $replica_store->set_fetch_attributes('uid', 'cid', 'basecid');
-
-    $self->assert($master_store->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A", store => $master_store);
@@ -603,18 +590,15 @@ sub test_replication_reply_200
 # Test APPEND of messages to IMAP
 #
 sub test_replication_reconstruct
-    :min_version_3_1 :needs_component_replication
+    :min_version_3_1 :needs_component_replication :Conversations :NoReplicaOnly
 {
     my ($self) = @_;
     my %exp;
 
-    # check IMAP server has the XCONVERSATIONS capability
     my $master_store = $self->{master_store};
     my $replica_store = $self->{replica_store};
     $master_store->set_fetch_attributes('uid', 'cid', 'basecid');
     $replica_store->set_fetch_attributes('uid', 'cid', 'basecid');
-
-    $self->assert($master_store->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A", store => $master_store);
@@ -667,13 +651,10 @@ sub test_replication_reconstruct
 # Test APPEND of messages to IMAP which results in a CID clash.
 #
 sub bogus_test_append_clash
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -713,13 +694,10 @@ sub bogus_test_append_clash
 # Test APPEND of messages to IMAP which results in multiple CID clashes.
 #
 sub bogus_test_double_clash
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A");
@@ -765,7 +743,7 @@ sub bogus_test_double_clash
 # Test that a CID clash resolved on the master is replicated
 #
 sub bogus_test_replication_clash
-    :min_version_3_0 :needs_component_replication
+    :min_version_3_0 :needs_component_replication :Conversations
 {
     my ($self) = @_;
     my %exp;
@@ -782,10 +760,6 @@ sub bogus_test_replication_clash
     # we wanted to be connected to.
     $self->assert($master_store->{host} eq $replica_store->{host});
     $self->assert($master_store->{port} != $replica_store->{port});
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($master_store->get_client()->capability()->{xconversations});
-    $self->assert($replica_store->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A", store => $master_store);
@@ -846,13 +820,10 @@ sub bogus_test_replication_clash
 # conversations but not any of Message-ID, References, or In-Reply-To.
 #
 sub bogus_test_fm_webui_draft
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my %exp;
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->{gen}->generate(subject => 'Draft message A');
@@ -881,16 +852,13 @@ sub bogus_test_fm_webui_draft
 # Test a COPY between folders owned by different users
 #
 sub bogus_test_cross_user_copy
-    :min_version_3_0
+    :min_version_3_0 :Conversations
 {
     my ($self) = @_;
     my $bobuser = "bob";
     my $bobfolder = "user.$bobuser";
 
     xlog $self, "Testing COPY between folders owned by different users [IRIS-893]";
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     my $srv = $self->{instance}->get_service('imap');
 
@@ -938,20 +906,17 @@ sub bogus_test_cross_user_copy
 # Test APPEND of messages to IMAP
 #
 sub test_replication_trashseen
-    :min_version_3_1 :needs_component_replication
+    :min_version_3_1 :needs_component_replication :Conversations
 {
     my ($self) = @_;
     my %exp;
 
-    # check IMAP server has the XCONVERSATIONS capability
     my $master_store = $self->{master_store};
     my $replica_store = $self->{replica_store};
     $master_store->set_fetch_attributes('uid', 'cid');
     $replica_store->set_fetch_attributes('uid', 'cid');
 
     my $mtalk = $master_store->get_client();
-
-    $self->assert($mtalk->capability()->{xconversations});
 
     xlog $self, "generating message A";
     $exp{A} = $self->make_message("Message A", store => $master_store);
@@ -1155,7 +1120,7 @@ sub test_x_me_message_id_nomatch_threading
 }
 
 sub test_rename_between_users
-	:NoAltNameSpace
+        :NoAltNameSpace
 {
     my ($self) = @_;
     my $admintalk = $self->{adminstore}->get_client();
@@ -1166,6 +1131,16 @@ sub test_rename_between_users
     $admintalk->setacl("user.manifold", admin => 'lrswipkxtecdan');
     $admintalk->setacl("user.manifold", manifold => 'lrswipkxtecdan');
     $admintalk->setacl("user.manifold", cassandane => 'lrswipkxtecdn');
+
+    # Reset the conv.db versions to 1 (to force UUID-based MAILBOXIDs)
+    my $dirs = $self->{instance}->run_mbpath(-u => 'cassandane');
+    my $mdirs = $self->{instance}->run_mbpath(-u => 'manifold');
+
+    my $format = $self->{instance}->{config}->get('conversations_db');
+    $self->{instance}->run_dbcommand($dirs->{user}{conversations}, $format,
+                                     ['SET', '$VERSION', '1']);
+    $self->{instance}->run_dbcommand($mdirs->{user}{conversations}, $format,
+                                     ['SET', '$VERSION', '1']);
 
     my $talk = $self->{store}->get_client();
 
@@ -1183,15 +1158,11 @@ sub test_rename_between_users
     $self->{store}->set_folder("user.manifold");
     $self->make_message("Man Msg");
 
-    my $dirs = $self->{instance}->run_mbpath(-u => 'cassandane');
-    my $mdirs = $self->{instance}->run_mbpath(-u => 'manifold');
-
     # folder IDs should be "INBOX", "foo", "bar"
 
     my $res = $talk->status('INBOX.foo', ['mailboxid']);
     my $fooid = $res->{'mailboxid'}->[0];
 
-    my $format = $self->{instance}->{config}->get('conversations_db');
     my %data = $self->{instance}->run_dbcommand($dirs->{user}{conversations}, $format, ['SHOW']);
     my %mdata = $self->{instance}->run_dbcommand($mdirs->{user}{conversations}, $format, ['SHOW']);
 
@@ -1243,7 +1214,7 @@ sub test_rename_between_users
 # Test user rename without splitting conversations
 #
 sub test_rename_user_nosplitconv
-    :AllowMoves :Replication :needs_component_replication
+    :AllowMoves :Replication :needs_component_replication :Conversations
 {
     my ($self) = @_;
 
@@ -1251,10 +1222,7 @@ sub test_rename_user_nosplitconv
 
     my %exp;
 
-    # check IMAP server has the XCONVERSATIONS capability
     my $master_store = $self->{master_store};
-    $self->assert($master_store->get_client()->capability()->{xconversations});
-
     $master_store->set_fetch_attributes('uid', 'cid', 'basecid');
 
     xlog $self, "generating message A";
@@ -1301,6 +1269,53 @@ sub test_rename_user_nosplitconv
 
     $self->run_replication(user => 'newuser');
     $self->check_replication('newuser');
+}
+
+sub test_unmap_failed_appends
+    :NoCheckSyslog
+{
+    my ($self) = @_;
+
+    if (not $self->{instance}->{have_syslog_replacement}) {
+        xlog "syslog replacement unavailable, can't do anything";
+        return;
+    }
+
+    my $imap = $self->{store}->get_client();
+
+    my $mime = <<'EOF';
+From: from@local
+To: to@local
+Subject: test
+Date: Mon, 14 Apr 2020 15:34:03 +0200
+MIME-Version: 1.0
+Content-Type: text/plain
+
+test
+EOF
+    $mime =~ s/\r?\n/\r\n/gs;
+    $imap->append('INBOX', $mime) || die $@;
+
+    # look up the PID of the imapd process
+    my @lines = grep(/imap\[\d+\]: command: \w+ Append$/,
+        $self->{instance}->getsyslog());
+    $self->assert_num_equals(1, scalar @lines);
+
+    my ($pid) = $lines[0] =~ /imap\[(\d+)\]:/;
+    $self->assert_not_null($pid);
+
+    # append duplicate messages until we reach the GUID limit
+    foreach (1..100) {
+        $imap->append('INBOX', $mime);
+        my $res = $imap->get_last_completion_response;
+        if ('ok' ne $res) {
+            last;
+        }
+    }
+
+    # make sure that conversation.db got unmapped completely
+    my $dangling_maps = `grep conversations.db /proc/$pid/maps 2>&1`;
+    $self->assert_str_equals('', $dangling_maps);
 }
 
 1;

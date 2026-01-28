@@ -1,44 +1,6 @@
-/* mboxkey.c -- implementation of URLAUTH mailbox keys
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mboxkey.c -- implementation of URLAUTH mailbox keys */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -339,16 +301,8 @@ EXPORTED int mboxkey_delete_user(const char *user)
     }
 
     /* erp! */
-    r = xunlink(fname);
-    if (r < 0 && errno == ENOENT) {
-        syslog(LOG_DEBUG, "cannot unlink %s: %m", fname);
-        /* but maybe the user just never read anything? */
-        r = 0;
-    }
-    else if (r < 0) {
-        syslog(LOG_ERR, "error unlinking %s: %m", fname);
+    if (xunlink(fname) == -1)
         r = IMAP_IOERROR;
-    }
     free(fname);
 
     if (lastmboxkey) {
@@ -457,7 +411,7 @@ HIDDEN int mboxkey_merge(const char *tmpfile, const char *tgtfile)
     struct db *tmp = NULL, *tgt = NULL;
     struct mboxkey_merge_rock rock;
 
-    /* xxx does this need to be CYRUSDB_CREATE? */
+    /* XXX does this need to be CYRUSDB_CREATE? */
     r = cyrusdb_open(DB, tmpfile, CYRUSDB_CREATE, &tmp);
     if(r) goto done;
 

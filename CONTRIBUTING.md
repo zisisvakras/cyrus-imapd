@@ -3,7 +3,7 @@
 So, you want to contribute to Cyrus?  Great!
 
 You'll probably want to join the [cyrus-devel mailing
-list](https://www.cyrusimap.org/imap/support/feedback-mailing-lists.html#feedback-mailing-lists)
+list](https://www.cyrusimap.org/dev/imap/support/feedback-mailing-lists.html#feedback-mailing-lists)
 where development issues get discussed.  You don't need to, but if you're
 considering doing a substantial amount of work, it's a good idea to ask about
 it first.
@@ -15,11 +15,14 @@ need to know to get your work reviewed, approved, and into Cyrus.
 
 Cyrus doesn't have a hard and fast style guide, *but it will*.  For now,
 consult the [Cyrus hacking
-docs](https://www.cyrusimap.org/imap/developer/guidance/hacking.html), which
+docs](https://www.cyrusimap.org/dev/imap/developer/guidance/hacking.html), which
 spell out some of the standards of formatting and construction.  This document
 is, at present, quite out of date.  You are probably best served by just
 copying the style of the surrounding code.
 
+The repostitory contains a `.clang-format` file that reflects our preferred
+style.  This isn't applied automatically, and existing files are not already in
+that style -- so it's not a silver bullet for styling.  But it might help.
 
 ## The Tests
 
@@ -31,12 +34,16 @@ assumption.
 There are two kinds of tests:
 
 * The [Cassandane test
-  suite](https://www.cyrusimap.org/imap/developer/developer-testing.html) is an
+  suite](https://www.cyrusimap.org/dev/imap/developer/developer-testing.html) is an
   integration test suite.  It can and should be run against your build of
   Cyrus, and it's right there in the repo under `./cassandane`.
-* The [cunit tests](https://www.cyrusimap.org/imap/developer/unit-tests.html)
+* The [cunit tests](https://www.cyrusimap.org/dev/imap/developer/cunit.html)
   are located in the Cyrus IMAP repository, in `./cunit` and run by `make
   check`.  You should run these, too.
+
+The simplest way to run these is by using the `dar` tool along with
+`cyrus-docker`.  You can read more about those in the [Cyrus IMAP Developer
+Guide](https://www.cyrusimap.org/dev/imap/developer/overview.html).
 
 ## Submitting Your Work
 
@@ -65,17 +72,21 @@ when they're found.  The policy on that is something like this:
   merge the fix when it's ready.  Running these in production is *your*
   liability to worry about.  These versions are numbered vX.Y.Z, where Y is
   odd.
-* We release a **new major version** about once a year.  We release these when
+* We release a **new minor version** about once a year.  We release these when
   we believe that all the new features work correctly and there are no known
   regressions, other than those we've documented as intentional.  These
   versions are numbered vX.Y.0, where Y is even.
-* We release **new minor version** for major releases once in a while, when
+* We release **new micro version** for minor releases once in a while, when
   we've built up enough backported bugfixes, or when we've been waiting long
   enough to ship the ones we've already applied.  There are numbered vX.Y.Z,
   where Y is even and Z is nonzero.
 
-We stop releasing minor releases for major releases after two years.  While we
-might push bugfixes for significant problems to the git branch for an old major
+The "macro" part of the version number -- the X in vX.Y.Z -- is updated to
+signify larger changes than the minor version, but otherwise carries no
+particular meaning.
+
+We stop releasing micro releases for minor releases after two years.  While we
+might push bugfixes for significant problems to the git branch for an old minor
 release, we won't undertake a new release.  If you're running an old version of
 Cyrus, it's up to you (or your package manager) to track and package new
 patches.
@@ -84,6 +95,6 @@ If we discover a security vulnerability in a non-development-snapshot version
 of Cyrus, we practice responsible disclosure.  We produce a fix, then inform
 downstream package mangers of that fix, with an embargo date so that the fix
 can be released publicly at the same time that updated packages become
-available.  In general, we do not pursue security fixes for major versions of
+available.  In general, we do not pursue security fixes for minor versions of
 Cyrus over three years old.  There may be exceptions to this, but generally you
 should try to run a recent stable release.

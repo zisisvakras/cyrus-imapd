@@ -1,47 +1,10 @@
-/* search_query.c -- search query routines
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* search_query.c -- search query routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
+#include <errno.h>
 #include <sys/types.h>
 #include <stdlib.h>
 #include <syslog.h>
@@ -370,6 +333,7 @@ static int query_begin_index(search_query_t *query,
         init.want_expunged = query->want_expunged;
         init.want_mbtype = query->want_mbtype;
         init.examine_mode = 1;
+        init.stay_locked = 1;
 
         r = index_open(mboxname, &init, statep);
         if (r == IMAP_PERMISSION_DENIED) r = IMAP_MAILBOX_NONEXISTENT;
@@ -471,6 +435,7 @@ struct subquery_rock {
     search_query_t *query;
     search_subquery_t *sub;
     int is_excluded;
+    int filters_by_header;
 };
 
 static int folder_partnum_cmp QSORT_R_COMPAR_ARGS(const void *va,
@@ -835,6 +800,13 @@ static int add_found_uid(const char *mboxname, uint32_t uidvalidity,
                              void *rock)
 {
     struct subquery_rock *qr = rock;
+
+    if (partid && qr->filters_by_header) {
+        /* This query filters by some header criteria, which means
+         * we must only count results that are a top-level message. */
+        return 0;
+    }
+
     search_folder_t *folder = query_get_valid_folder(qr->query, mboxname, uidvalidity);
     if (folder) {
         bv_set(&folder->found_uids, uid);
@@ -864,7 +836,7 @@ static void subquery_run_indexed(const char *key __attribute__((unused)),
     search_query_t *query = rock;
     search_expr_t *excluded = NULL;
     search_builder_t *bx;
-    struct subquery_rock qr;
+    struct subquery_rock qr = { 0 };
     int r;
 
     if (query->error) return;
@@ -917,6 +889,40 @@ static void subquery_run_indexed(const char *key __attribute__((unused)),
         goto out;
     }
 
+    /* Determine if the query filters by header.*/
+    ptrarray_t nodes = PTRARRAY_INITIALIZER;
+    ptrarray_push(&nodes, sub->indexed);
+    for (search_expr_t *e = ptrarray_pop(&nodes); e && !qr.filters_by_header;
+         e = ptrarray_pop(&nodes))
+    {
+        switch (e->op) {
+        case SEOP_OR: {
+            // XXX this shouldn't happen, we expect DNF subclauses here
+            // only. But in lack of debug_assert let's rather log and
+            // continue evaluating the query instead of aborting.
+            char *s = search_expr_serialise(sub->indexed);
+            xsyslog_ev(LOG_ERR,
+                       "unexpected OR, expected DNF subclause",
+                       lf_s("indexed", s));
+            free(s);
+        }
+        /* fall through */
+        case SEOP_AND:
+        case SEOP_NOT:
+            for (search_expr_t *c = e->children; c; c = c->next)
+                ptrarray_push(&nodes, c);
+            break;
+        case SEOP_MATCH:
+        case SEOP_FUZZYMATCH:
+            if (e->attr && search_part_is_header(e->attr->part))
+                qr.filters_by_header = 1;
+            break;
+        default:;
+        }
+    }
+    ptrarray_fini(&nodes);
+
+    /* Run the query */
     qr.query = query;
     qr.sub = sub;
     qr.is_excluded = excluded != NULL;

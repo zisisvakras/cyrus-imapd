@@ -38,16 +38,14 @@
 #
 
 package Cassandane::Cyrus::LibCyrus;
-use strict;
+use v5.28.0;
 use warnings;
-use v5.010;
 use Cwd qw(abs_path);
 use Data::Dumper;
 use DateTime;
 use File::Copy;
 use File::Find;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;

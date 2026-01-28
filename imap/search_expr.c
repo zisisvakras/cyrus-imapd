@@ -1,44 +1,6 @@
-/* search_expr.c -- query tree handling for SEARCH
- *
- * Copyright (c) 1994-2012 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* search_expr.c -- query tree handling for SEARCH */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -1265,8 +1227,11 @@ EXPORTED char *search_expr_firstmailbox(const search_expr_t *e)
  *
  * The callback function 'cb' is called one or more times with up to two
  * expression trees which have just been detached from the original expression
- * tree.  Both of these trees will be in DNF and will be at most a
- * conjuctive node, i.e. no disjunctions.
+ * tree.
+ *
+ * If at least one of the 'mboxname' or 'indexed' arguments is not
+ * NULL, then both of the search expression trees will be in DNF and
+ * will be at most a conjunctive node, i.e. no disjunctions.
  *
  * The 'indexed' tree, if not NULL, contains all the indexed search terms.
  * The 'scan' tree will never be NULL, although it may be a trivial tree
@@ -1964,7 +1929,7 @@ static int search_uint64_unserialise(struct protstream *prot, union search_value
 
 static void search_cid_serialise(struct buf *b, const union search_value *v)
 {
-    buf_appendcstr(b, conversation_id_encode(v->u));
+    buf_appendcstr(b, conversation_id_encode(0/*hex encoding*/, v->u));
 }
 
 static int search_cid_unserialise(struct protstream *prot, union search_value *v)
@@ -2072,23 +2037,6 @@ static int search_emailid_match(message_t *m, const union search_value *v,
     emailid[25] = '\0';
 
     return !strcmp(v->s, emailid);
-}
-
-static int search_threadid_match(message_t *m, const union search_value *v,
-                                 void *internalised __attribute__((unused)),
-                                 void *data1 __attribute__((unused)))
-{
-    conversation_id_t cid = 0;
-    char threadid[18];
-
-    int r = message_get_cid(m, &cid);
-    if (r) return 0;
-
-    threadid[0] = 'T';
-    memcpy(threadid+1, conversation_id_encode(cid), 16);
-    threadid[17] = '\0';
-
-    return !strcmp(v->s, threadid);
 }
 
 static int search_annotation_match(message_t *m, const union search_value *v,
@@ -3001,22 +2949,6 @@ EXPORTED void search_attr_init(void)
             /*internalise*/NULL,
             /*cmp*/ NULL,
             search_emailid_match,
-            search_string_serialise,
-            search_string_unserialise,
-            /*get_countability*/NULL,
-            search_string_duplicate,
-            search_string_free,
-            /*freeattr*/NULL,
-            /*dupattr*/NULL,
-            (void *)NULL
-        },{
-            "threadid",
-            /* flags */0,
-            SEARCH_PART_NONE,
-            SEARCH_COST_INDEX,
-            /*internalise*/NULL,
-            /*cmp*/ NULL,
-            search_threadid_match,
             search_string_serialise,
             search_string_unserialise,
             /*get_countability*/NULL,

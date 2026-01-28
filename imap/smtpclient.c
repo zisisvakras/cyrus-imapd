@@ -1,44 +1,6 @@
-/* smtpclient.c -- Routines for sending a message via SMTP
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* smtpclient.c -- Routines for sending a message via SMTP */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <assert.h>
 #include <config.h>
@@ -158,7 +120,7 @@ EXPORTED int smtpclient_open(smtpclient_t **smp)
             xsyslog(LOG_ERR,
                     "smtpclient_open: can not determine EHLO hostname, "
                     "either client_bind/client_bind_name or servername option must be set",
-                    "sessionid=<%s>", session_id());
+                    NULL);
             return IMAP_INTERNAL;
         }
         if (smtp_protocol.type == TYPE_STD &&
@@ -167,7 +129,7 @@ EXPORTED int smtpclient_open(smtpclient_t **smp)
         }
         else {
             xsyslog(LOG_ERR, "smtpclient_open: unexpected smtp_protocol value",
-                    "sessionid=<%s>", session_id());
+                             NULL);
             return IMAP_INTERNAL;
         }
     }
@@ -681,19 +643,19 @@ static int validate_envelope_params(ptrarray_t *params)
         smtp_param_t *param = ptrarray_nth(params, i);
         if (!smtp_is_valid_esmtp_keyword(param->key)) {
             syslog(LOG_ERR,
-                   "smtpclient: sessionid=<%s> invalid estmp keyword: \"%s\"",
+                   "smtpclient: sessionid=<%s> invalid esmtp keyword: \"%s\"",
                    session_id(), param->key);
             return IMAP_PROTOCOL_ERROR;
         }
         if (!strcasecmp(param->key, "AUTH")) {
             syslog(LOG_ERR,
-                   "smptclient: sessionid=<%s> rejecting AUTH parameter in envelope",
+                   "smtpclient: sessionid=<%s> rejecting AUTH parameter in envelope",
                    session_id());
             return IMAP_PERMISSION_DENIED;
         }
         if (param->val && !smtp_is_valid_esmtp_value(param->val)) {
             syslog(LOG_ERR,
-                   "smtpclient: sessionid=<%s> invalid estmp value: \"%s\"",
+                   "smtpclient: sessionid=<%s> invalid esmtp value: \"%s\"",
                    session_id(), param->val);
             return IMAP_PROTOCOL_ERROR;
         }
@@ -923,7 +885,7 @@ EXPORTED int smtpclient_open_host(const char *addr, smtpclient_t **smp)
     if (sasl_cb) free_callbacks(sasl_cb);
     if (!bk) {
         syslog(LOG_ERR,
-               "smptclient_open: sessionid=<%s> can't connect to host: %s",
+               "smtpclient_open: sessionid=<%s> can't connect to host: %s",
                session_id(), host);
         if (logfd != -1) close(logfd);
         r = IMAP_INTERNAL;
@@ -1091,7 +1053,7 @@ EXPORTED int smtpclient_open_sendmail(smtpclient_t **smp)
     bk = backend_connect_pipe(ctx->infd, ctx->outfd, &smtp_protocol, 0, logfd);
     if (!bk) {
         syslog(LOG_ERR,
-               "smptclient_open: sessionid=<%s> can't open sendmail backend",
+               "smtpclient_open: sessionid=<%s> can't open sendmail backend",
                session_id());
         r = IMAP_INTERNAL;
         smtpclient_sendmail_freectx(ctx);

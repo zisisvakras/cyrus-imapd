@@ -1,45 +1,6 @@
-/* jmap_util.c -- Helper routines for JMAP
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_util.c -- Helper routines for JMAP */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -64,6 +25,7 @@
 #include "times.h"
 #include "user.h"
 #include "xapian_wrap.h"
+#include "xstrlcpy.h"
 
 #ifdef HAVE_LIBCHARDET
 #include <chardet/chardet.h>
@@ -473,6 +435,7 @@ HIDDEN void jmap_parser_fini(struct jmap_parser *parser)
     json_decref(parser->invalid);
     json_decref(parser->serverset);
     buf_free(&parser->buf);
+    bv_fini(&parser->is_encoded);
 }
 
 HIDDEN void jmap_parser_push(struct jmap_parser *parser, const char *prop)
@@ -501,9 +464,16 @@ HIDDEN void jmap_parser_push_name(struct jmap_parser *parser,
     buf_reset(&parser->buf);
 }
 
+HIDDEN void jmap_parser_push_path(struct jmap_parser *parser, const char *path)
+{
+    strarray_push(&parser->path, path);
+    bv_set(&parser->is_encoded, strarray_size(&parser->path) - 1);
+}
+
 HIDDEN void jmap_parser_pop(struct jmap_parser *parser)
 {
     free(strarray_pop(&parser->path));
+    bv_clear(&parser->is_encoded, strarray_size(&parser->path));
 }
 
 HIDDEN const char* jmap_parser_path(struct jmap_parser *parser, struct buf *buf)
@@ -513,11 +483,12 @@ HIDDEN const char* jmap_parser_path(struct jmap_parser *parser, struct buf *buf)
 
     for (i = 0; i < parser->path.count; i++) {
         const char *p = strarray_nth(&parser->path, i);
-        if (jmap_pointer_needsencode(p)) {
+        if (!bv_isset(&parser->is_encoded, i) && jmap_pointer_needsencode(p)) {
             char *tmp = jmap_pointer_encode(p);
             buf_appendcstr(buf, tmp);
             free(tmp);
-        } else {
+        }
+        else {
             buf_appendcstr(buf, p);
         }
         if ((i + 1) < parser->path.count) {
@@ -1306,18 +1277,76 @@ EXPORTED void jmap_set_blobid(const struct message_guid *guid, char *buf)
     buf[JMAP_BLOBID_SIZE-1] = '\0';
 }
 
-EXPORTED void jmap_set_emailid(const struct message_guid *guid, char *buf)
+EXPORTED void jmap_set_emailid(struct conversations_state *cstate,
+                               const struct message_guid *guid,
+                               uint64_t nanosec,
+                               const struct timespec *ts,
+                               char *emailid)
 {
-    buf[0] = 'M';
-    memcpy(buf+1, message_guid_encode(guid), JMAP_EMAILID_SIZE-2);
-    buf[JMAP_EMAILID_SIZE-1] = '\0';
+    // initialize a struct buf with char emailid[JMAP_MAX_EMAILID_SIZE]
+    struct buf buf = { emailid, 0, JMAP_MAX_EMAILID_SIZE, 0 };
+
+    if (USER_COMPACT_EMAILIDS(cstate)) {
+        buf_putc(&buf, JMAP_EMAILID_PREFIX);
+        NANOSEC_TO_JMAPID(&buf, ts ? TIMESPEC_TO_NANOSEC(ts) : nanosec);
+    }
+    else {
+        buf_putc(&buf, JMAP_LEGACY_EMAILID_PREFIX);
+        buf_appendmap(&buf,
+                      message_guid_encode(guid), JMAP_LEGACY_EMAILID_SIZE-2);
+    }
+
+    buf_cstring(&buf);
 }
 
-EXPORTED void jmap_set_threadid(conversation_id_t cid, char *buf)
+EXPORTED void jmap_set_mailboxid(struct conversations_state *cstate,
+                                 const mbentry_t *mbentry, char *mboxid)
 {
-    buf[0] = 'T';
-    memcpy(buf+1, conversation_id_encode(cid), JMAP_THREADID_SIZE-2);
-    buf[JMAP_THREADID_SIZE-1] = 0;
+    strlcpy(mboxid,
+            USER_COMPACT_EMAILIDS(cstate) ? mbentry->jmapid : mbentry->uniqueid,
+            JMAP_MAX_MAILBOXID_SIZE);
+}
+
+EXPORTED void jmap_set_threadid(struct conversations_state *cstate,
+                                conversation_id_t cid, char *thrid)
+{
+    char prefix = USER_COMPACT_EMAILIDS(cstate) ?
+        JMAP_THREADID_PREFIX : JMAP_LEGACY_THREADID_PREFIX;
+
+    snprintf(thrid, JMAP_THREADID_SIZE, "%c%s",
+             prefix, conversation_id_encode(cstate, cid));
+}
+
+EXPORTED void jmap_set_addrbookid(struct conversations_state *cstate,
+                                  const mbentry_t *mbentry, char *abookid)
+{
+    if (USER_COMPACT_EMAILIDS(cstate)) {
+        strlcpy(abookid, mbentry->jmapid, JMAP_MAX_ADDRBOOKID_SIZE);
+        // replace MAILBOXID prefix with ADDRBOOK prefix
+        abookid[0] = JMAP_ADDRBOOKID_PREFIX;
+    }
+    else {
+        // last segment of mailbox name
+        mbname_t *mbname = mbname_from_intname(mbentry->name);
+        const strarray_t *boxes = mbname_boxes(mbname);
+        const char *id = strarray_nth(boxes, -1);
+        strlcpy(abookid, id, JMAP_MAX_ADDRBOOKID_SIZE);
+        mbname_free(&mbname);
+    }
+}
+
+EXPORTED void jmap_set_contactid(struct conversations_state *cstate,
+                                 const struct carddav_data *cdata,
+                                 struct buf *cid)
+{
+    if (USER_COMPACT_EMAILIDS(cstate)) {
+        buf_reset(cid);
+        buf_putc(cid, JMAP_CONTACTID_PREFIX);
+        MODSEQ_TO_JMAPID(cid, cdata->dav.createdmodseq);
+    }
+    else {
+        buf_setcstr(cid, cdata->vcard_uid);
+    }
 }
 
 EXPORTED char *jmap_role_to_specialuse(const char *role)

@@ -1,44 +1,6 @@
-/* master.c -- IMAP master process to handle recovery, checkpointing, spawning
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* master.c -- IMAP master process to handle recovery, checkpointing, spawning */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -88,19 +50,21 @@
 #define IPV6_V6ONLY     IPV6_BINDV6ONLY
 #endif
 
-#include "masterconf.h"
+#include "master/master.h"
 
-#include "master.h"
-#include "service.h"
+#include "master/cronevent.h"
+#include "master/event.h"
+#include "master/masterconf.h"
+#include "master/service.h"
 
-#include "assert.h"
-#include "cyr_lock.h"
-#include "proc.h"
-#include "retry.h"
-#include "strarray.h"
-#include "util.h"
-#include "xmalloc.h"
-#include "xunlink.h"
+#include "lib/assert.h"
+#include "lib/cyr_lock.h"
+#include "lib/proc.h"
+#include "lib/retry.h"
+#include "lib/strarray.h"
+#include "lib/util.h"
+#include "lib/xmalloc.h"
+#include "lib/xunlink.h"
 
 enum {
     child_table_size = 10000,
@@ -133,18 +97,6 @@ static struct service *WaitDaemons = NULL;
 static int allocwaitdaemons = 0;
 static int nwaitdaemons = 0;
 static pid_t waitdaemon_pgid = -1;
-
-struct event {
-    char *name;
-    struct timeval mark;
-    time_t period;
-    int hour;
-    int min;
-    int periodic;
-    strarray_t *exec;
-    struct event *next;
-};
-static struct event *schedule = NULL;
 
 enum sstate {
     SERVICE_STATE_UNKNOWN = 0,  /* duh */
@@ -182,7 +134,6 @@ static char *prom_report_fname = NULL;
 #ifdef HAVE_SETRLIMIT
 static void limit_fds(rlim_t);
 #endif
-static void schedule_event(struct event *a);
 static void child_sighandler_setup(void);
 
 #if HAVE_PSELECT
@@ -214,16 +165,6 @@ EXPORTED void fatal(const char *msg, int code)
     syslog(LOG_NOTICE, "exiting");
     if (code != EX_PROTOCOL && config_fatals_abort) abort();
     exit(code);
-}
-
-static void event_free(struct event *a)
-{
-    if (a->exec) {
-        strarray_free(a->exec);
-        a->exec = NULL;
-    }
-    free(a->name);
-    free(a);
 }
 
 static void get_daemon(char *path, size_t size, const strarray_t *cmd)
@@ -280,17 +221,6 @@ static void get_statsock(int filedes[2])
                                        fdflags | FD_CLOEXEC);
     if (fdflags == -1)
         fatalf(1, "unable to set close-on-exec: %m");
-}
-
-static int cyrus_cap_bind(int socket, struct sockaddr *addr, socklen_t length)
-{
-    int r;
-
-    set_caps(BEFORE_BIND, /*is_master*/1);
-    r = bind(socket, addr, length);
-    set_caps(AFTER_BIND, /*is_master*/1);
-
-    return r;
 }
 
 /* Return a new 'centry', by malloc'ing it. */
@@ -676,7 +606,7 @@ static void service_create(struct service *s, int is_startup)
 #endif
 
         oldumask = umask((mode_t) 0); /* for linux */
-        r = cyrus_cap_bind(s->socket, res->ai_addr, res->ai_addrlen);
+        r = bind(s->socket, res->ai_addr, res->ai_addrlen);
         umask(oldumask);
         if (r < 0) {
             int e = errno;
@@ -691,12 +621,6 @@ static void service_create(struct service *s, int is_startup)
                 s->name, s->familyname);
             xclose(s->socket);
             continue;
-        }
-
-        if (s->listen[0] == '/') { /* unix socket */
-            /* for DUX, where this isn't the default.
-               (harmlessly fails on some systems) */
-            chmod(s->listen, (mode_t) 0777);
         }
 
         if ((!strcmp(s->proto, "tcp") || !strcmp(s->proto, "tcp4")
@@ -794,8 +718,6 @@ static void run_startup(const char *name, const strarray_t *cmd)
         /* Child - Release our pidfile lock. */
         xclose(pidfd);
 
-        set_caps(AFTER_FORK, /*is_master*/1);
-
         child_sighandler_setup();
 
         syslog(LOG_DEBUG, "about to exec %s", path);
@@ -863,11 +785,12 @@ static int service_is_fork_limited(struct service *s)
     /* (We schedule a wakeup call for sometime soon though to be
      * sure that we don't wait to do the fork that is required forever! */
     if ((unsigned int)s->forkrate >= s->maxforkrate) {
-        struct event *evt = (struct event *) xzmalloc(sizeof(struct event));
+        struct timeval mark;
+        struct event *evt;
 
-        evt->name = xstrdup("forkrate wakeup call");
-        evt->mark = now;
-        timeval_add_double(&evt->mark, FORKRATE_INTERVAL);
+        mark = now;
+        timeval_add_double(&mark, FORKRATE_INTERVAL);
+        evt = event_new_oneshot("forkrate wakeup call", mark);
 
         schedule_event(evt);
 
@@ -920,8 +843,6 @@ static void spawn_waitdaemon(struct service *s, int wdi)
 
         /* Child - Release our pidfile lock. */
         xclose(pidfd);
-
-        set_caps(AFTER_FORK, /*is_master*/1);
 
         child_sighandler_setup();
 
@@ -1112,8 +1033,6 @@ static void spawn_service(struct service *s, int si, int wdi)
         /* Child - Release our pidfile lock. */
         xclose(pidfd);
 
-        set_caps(AFTER_FORK, /*is_master*/1);
-
         child_sighandler_setup();
 
         if (s->listen) {
@@ -1226,141 +1145,86 @@ static void spawn_service(struct service *s, int si, int wdi)
     }
 }
 
-static void schedule_event(struct event *a)
+static void spawn_exec(const char *name,
+                       const strarray_t *exec,
+                       void *rock __attribute__((unused)))
 {
-    struct event *ptr;
+    char path[PATH_MAX];
+    struct centry *c;
+    int i, r;
+    pid_t p;
 
-    if (! a->name)
-        fatal("Serious software bug found: schedule_event() called on unnamed event!",
-                EX_SOFTWARE);
+    get_executable(path, sizeof(path), exec);
+    switch (p = fork()) {
+    case -1:
+        syslog(LOG_CRIT, "can't fork process to run event %s", name);
+        break;
 
-    if (!schedule || timesub(&schedule->mark, &a->mark) < 0.0) {
-        a->next = schedule;
-        schedule = a;
+    case 0:
+        /* Child - Release our pidfile lock. */
+        xclose(pidfd);
 
-        return;
+        /* close all listeners */
+        for (i = 0; i < nservices; i++) {
+            xclose(Services[i].socket);
+            xclose(Services[i].stat[0]);
+            xclose(Services[i].stat[1]);
+        }
+        for (i = 0; i < nwaitdaemons; i++) {
+            xclose(WaitDaemons[i].socket);
+            xclose(WaitDaemons[i].stat[0]);
+            xclose(WaitDaemons[i].stat[1]);
+        }
+
+        syslog(LOG_DEBUG, "about to exec %s", path);
+        execv(path, exec->data);
+        syslog(LOG_ERR, "can't exec %s on schedule: %m", path);
+        exit(EX_OSERR);
+        break;
+
+    default:
+        /* we don't wait for it to complete */
+
+        /* add to child table */
+        c = centry_alloc();
+        centry_set_name(c, "EVENT", name, path);
+        centry_set_state(c, SERVICE_STATE_READY);
+        r = proc_register(&c->proc_handle, p, name, NULL, NULL, NULL, NULL);
+        if (r) {
+            syslog(LOG_ERR, "ERROR: unable to register process %u"
+                            " for event %s",
+                            p, name);
+        }
+        centry_add(c, p);
+        break;
     }
-    for (ptr = schedule;
-         ptr->next && timesub(&a->mark, &ptr->next->mark) <= 0.0;
-         ptr = ptr->next) ;
-
-    /* insert a */
-    a->next = ptr->next;
-    ptr->next = a;
 }
 
 static void spawn_schedule(struct timeval now)
 {
-    struct event *a, *b;
-    int i, r;
-    char path[PATH_MAX];
-    pid_t p;
-    struct centry *c;
+    struct event *due, *next;
 
-    a = NULL;
-    /* update schedule accordingly */
-    while (schedule && timesub(&now, &schedule->mark) <= 0.0) {
-        /* delete from schedule, insert into a */
-        struct event *ptr = schedule;
-
-        /* delete */
-        schedule = schedule->next;
-
-        /* insert */
-        ptr->next = a;
-        a = ptr;
-    }
+    due = schedule_splice_due(now);
 
     /* run all events */
-    while (a && a != schedule) {
-        /* if a->exec is NULL, we just used the event to wake up,
+    while (due) {
+        /* if due->exec is empty, we just used the event to wake up,
          * so we actually don't need to exec anything at the moment */
-        if (a->exec) {
-            get_executable(path, sizeof(path), a->exec);
-            switch (p = fork()) {
-            case -1:
-                syslog(LOG_CRIT,
-                       "can't fork process to run event %s", a->name);
-                break;
-
-            case 0:
-                /* Child - Release our pidfile lock. */
-                xclose(pidfd);
-
-                set_caps(AFTER_FORK, /*is_master*/1);
-
-                /* close all listeners */
-                for (i = 0; i < nservices; i++) {
-                    xclose(Services[i].socket);
-                    xclose(Services[i].stat[0]);
-                    xclose(Services[i].stat[1]);
-                }
-                for (i = 0; i < nwaitdaemons; i++) {
-                    xclose(WaitDaemons[i].socket);
-                    xclose(WaitDaemons[i].stat[0]);
-                    xclose(WaitDaemons[i].stat[1]);
-                }
-
-                syslog(LOG_DEBUG, "about to exec %s", path);
-                execv(path, a->exec->data);
-                syslog(LOG_ERR, "can't exec %s on schedule: %m", path);
-                exit(EX_OSERR);
-                break;
-
-            default:
-                /* we don't wait for it to complete */
-
-                /* add to child table */
-                c = centry_alloc();
-                centry_set_name(c, "EVENT", a->name, path);
-                centry_set_state(c, SERVICE_STATE_READY);
-                r = proc_register(&c->proc_handle, p,
-                                  a->name, NULL, NULL, NULL, NULL);
-                if (r) {
-                    syslog(LOG_ERR, "ERROR: unable to register process %u"
-                                    " for event %s",
-                                    p, a->name);
-                }
-                centry_add(c, p);
-                break;
-            }
-        } /* a->exec */
+        if (strarray_size(&due->exec)) {
+            spawn_exec(due->name, &due->exec, NULL);
+        }
 
         /* reschedule as needed */
-        b = a->next;
-        if (a->period) {
-            if (a->periodic) {
-                a->mark = now;
-                a->mark.tv_sec += a->period;
-            } else {
-                struct tm *tm;
-                int delta;
-                /* Daily Event */
-                while (timesub(&now, &a->mark) <= 0.0)
-                    a->mark.tv_sec += a->period;
-                /* check for daylight savings fuzz... */
-                tm = localtime(&a->mark.tv_sec);
-                if (tm->tm_hour != a->hour || tm->tm_min != a->min) {
-                    /* calculate the same time on the new day */
-                    tm->tm_hour = a->hour;
-                    tm->tm_min = a->min;
-                    delta = mktime(tm) - a->mark.tv_sec;
-                    /* bring it within half a period either way */
-                    while (delta > (a->period/2)) delta -= a->period;
-                    while (delta < -(a->period/2)) delta += a->period;
-                    /* update the time */
-                    a->mark.tv_sec += delta;
-                    /* and let us know about the change */
-                    syslog(LOG_NOTICE, "timezone shift for %s - altering schedule by %d seconds", a->name, delta);
-                }
-            }
-            /* reschedule a */
-            schedule_event(a);
-        } else {
-            event_free(a);
+        next = due->next;
+        if (due->period) {
+            reschedule_event(due, now);
         }
+        else {
+            event_free(due);
+        }
+
         /* examine next event */
-        a = b;
+        due = next;
     }
 }
 
@@ -1514,7 +1378,7 @@ static void reap_child(void)
                     break;
                 }
             } else {
-                /* children from spawn_schedule (events) or
+                /* children from spawn_exec (events) or
                  * children of services removed by reread_conf() */
                 if (c->service_state != SERVICE_STATE_READY) {
                     syslog(LOG_WARNING,
@@ -1542,7 +1406,7 @@ static void reap_child(void)
             syslog(LOG_ERR,
                    "received SIGCHLD from unknown child pid %d, ignoring",
                    pid);
-            /* FIXME: is this something we should take lightly? */
+            /* XXX: is this something we should take lightly? */
         }
         if (verbose && c) {
             if (c->si != SERVICE_NONE) {
@@ -1561,17 +1425,30 @@ static void reap_child(void)
     }
 }
 
+static void init_cronevent(struct timeval now)
+{
+    struct event *evt;
+    time_t mark, extra_seconds;
+
+    /* align initial mark to next whole minute boundary */
+    mark = now.tv_sec;
+    extra_seconds = mark % 60;
+    mark = mark + 60 - extra_seconds;
+
+    evt = event_new_periodic("cronevent periodic wakeup call",
+                             (struct timeval){ mark, 0 },
+                             60);
+    schedule_event(evt);
+}
+
 static void init_janitor(struct timeval now)
 {
-    struct event *evt = (struct event *) xzmalloc(sizeof(struct event));
+    struct event *evt;
 
     janitor_mark = now;
     janitor_position = 0;
 
-    evt->name = xstrdup("janitor periodic wakeup call");
-    evt->period = 10;
-    evt->periodic = 1;
-    evt->mark = janitor_mark;
+    evt = event_new_periodic("janitor periodic wakeup call", janitor_mark, 10);
     schedule_event(evt);
 }
 
@@ -2402,59 +2279,53 @@ done:
 static void add_event(const char *name, struct entry *e, void *rock)
 {
     int ignore_err = rock ? 1 : 0;
-    /* Note: masterconf_getstring() shares a static buffer with
-     * masterconf_getint() so we *must* strdup here */
-    char *cmd = xstrdup(masterconf_getstring(e, "cmd", ""));
+    const char *cmd = masterconf_getstring(e, "cmd", "");
+    const char *cron = masterconf_getstring(e, "cron", NULL);
     int period = 60 * masterconf_getint(e, "period", 0);
-    int at = masterconf_getint(e, "at", -1), hour, min;
+    int at = masterconf_getint(e, "at", -1);
     struct timeval now;
-    struct event *evt;
 
     gettimeofday(&now, 0);
 
     if (!strcmp(cmd,"")) {
-        char buf[256];
+        char buf[4096];
         snprintf(buf, sizeof(buf),
                  "unable to find command or port for event '%s'", name);
 
         if (ignore_err) {
             syslog(LOG_WARNING, "WARNING: %s -- ignored", buf);
-            free(cmd);
             return;
         }
 
         fatal(buf, EX_CONFIG);
     }
 
-    evt = (struct event *) xzmalloc(sizeof(struct event));
-    evt->name = xstrdup(name);
+    if (cron) {
+        cronevent_add(name, cron, cmd, ignore_err);
+    }
+    else if (at >= 0) {
+        char cronspec[16];
+        int hour, min;
 
-    if (at >= 0 && ((hour = at / 100) <= 23) && ((min = at % 100) <= 59)) {
-        struct tm *tm = localtime(&now.tv_sec);
+        hour = at / 100;
+        min = at % 100;
 
-        period = 86400; /* 24 hours */
-        evt->periodic = 0;
-        evt->hour = hour;
-        evt->min = min;
-        tm->tm_hour = hour;
-        tm->tm_min = min;
-        tm->tm_sec = 0;
-        evt->mark.tv_sec = mktime(tm);
-        evt->mark.tv_usec = 0;
-        if (timesub(&now, &evt->mark) < 0.0) {
-            /* already missed it, so schedule for next day */
-            evt->mark.tv_sec += period;
+        if (hour > 23 || min > 59) {
+            xsyslog(LOG_ERR, "invalid at=hhmm specification",
+                             "name=<%s> at=<%d>", name, at);
+            if (ignore_err) return;
+            fatal("invalid at=hhmm specification", EX_CONFIG);
         }
+
+        snprintf(cronspec, sizeof(cronspec), "%d %d * * *", min, hour);
+        cronevent_add(name, cronspec, cmd, ignore_err);
     }
     else {
-        evt->periodic = 1;
-        evt->mark = now;
+        struct event *evt = event_new_periodic(name, now, period);
+
+        event_set_exec(evt, cmd);
+        schedule_event(evt);
     }
-    evt->period = period;
-
-    evt->exec = strarray_splitm(NULL, cmd, NULL, 0);
-
-    schedule_event(evt);
 }
 
 #ifdef HAVE_SETRLIMIT
@@ -2543,14 +2414,12 @@ static void init_prom_report(struct timeval now)
     prom_report_fname = buf_release(&buf);
     cyrus_mkdir(prom_report_fname, 0755);
 
-    evt = xzmalloc(sizeof(*evt));
-    evt->name = xstrdup("master prometheus report periodic wakeup call");
-    evt->period = prom_frequency;
-    evt->periodic = 1;
-    evt->mark = now;
+    evt = event_new_periodic("master prometheus report periodic wakeup call",
+                             now, prom_frequency);
     schedule_event(evt);
 
-    syslog(LOG_DEBUG, "updating %s every %d seconds", prom_report_fname, prom_frequency);
+    syslog(LOG_DEBUG, "updating %s every %d seconds",
+                      prom_report_fname, prom_frequency);
 }
 
 static void do_prom_report(struct timeval now)
@@ -2793,7 +2662,6 @@ static void send_sighup(struct service *s, int si, int wdi)
 static void reread_conf(struct timeval now)
 {
     int i;
-    struct event *ptr;
 
     /* disable all services -
        they will be re-enabled if they appear in config file */
@@ -2812,12 +2680,8 @@ static void reread_conf(struct timeval now)
     }
 
     /* remove existing events */
-    while (schedule) {
-        ptr = schedule;
-        schedule = schedule->next;
-        event_free(ptr);
-    }
-    schedule = NULL;
+    schedule_clear();
+    cronevent_clear();
 
     /* read events */
     masterconf_getsection("EVENTS", &add_event, (void*) 1);
@@ -2827,6 +2691,9 @@ static void reread_conf(struct timeval now)
 
     /* reinit prom report */
     init_prom_report(now);
+
+    /* reinit cronevent subsystem */
+    init_cronevent(now);
 
     /* send some feedback to admin */
     syslog(LOG_NOTICE,
@@ -2927,6 +2794,21 @@ static void master_ready(const char *ready_file, int ready)
     }
 }
 
+static void chdir_cores(void)
+{
+    /* Set the current working directory where cores can go to die. */
+    const char *path = config_getstring(IMAPOPT_CONFIGDIRECTORY);
+
+    /* configdirectory is required, so it should never be NULL... */
+    assert(path != NULL);
+
+    if (chdir(path))
+        fatalf(2, "couldn't chdir to %s: %m", path);
+    /* XXX ignoring error when "cores" subdirectory missing */
+    if (chdir("cores"))
+        errno = 0;
+}
+
 int main(int argc, char **argv)
 {
     static const char lock_suffix[] = ".lock";
@@ -3014,16 +2896,19 @@ int main(int argc, char **argv)
     }
 
     masterconf_init("master", alt_config);
+    if (config_check_partitions(NULL)) {
+        fatal("invalid partition value detected", EX_CONFIG);
+    }
 
     if (close_std || error_log) {
         /* close stdin/out/err */
         for (fd = 0; fd < 3; fd++) {
             const char *file = (error_log && fd > 0 ?
                                 error_log : "/dev/null");
-            int mode = (fd > 0 ? O_WRONLY : O_RDWR) |
-                       (error_log && fd > 0 ? O_CREAT|O_APPEND : 0);
+            int flags = (fd > 0 ? O_WRONLY : O_RDWR)
+                        | (error_log && fd > 0 ? O_CREAT|O_APPEND|O_NOFOLLOW : 0);
             close(fd);
-            if (open(file, mode, 0666) != fd)
+            if (open(file, flags, 0666) != fd)
                 fatalf(2, "couldn't open %s: %m", file);
         }
     }
@@ -3052,7 +2937,7 @@ int main(int argc, char **argv)
 
         pidfile_lock = strconcat(pidfile, lock_suffix, (char *)NULL);
 
-        pidlock_fd = open(pidfile_lock, O_CREAT|O_TRUNC|O_RDWR, 0644);
+        pidlock_fd = open(pidfile_lock, O_CREAT|O_TRUNC|O_RDWR|O_NOFOLLOW, 0644);
         if (pidlock_fd == -1) {
             syslog(LOG_ERR, "can't open pidfile lock: %s (%m)", pidfile_lock);
             exit(EX_OSERR);
@@ -3068,17 +2953,6 @@ int main(int argc, char **argv)
             syslog(LOG_ERR, "can't create startup pipe (%m)");
             exit(EX_OSERR);
         }
-
-        /* Set the current working directory where cores can go to die. */
-        const char *path = config_getstring(IMAPOPT_CONFIGDIRECTORY);
-        if (path == NULL) {
-                path = getenv("TMPDIR");
-                if (path == NULL)
-                        path = "/tmp";
-        }
-        if (chdir(path))
-            fatalf(2, "couldn't chdir to %s: %m", path);
-        r = chdir("cores");
 
         do {
             pid = fork();
@@ -3127,7 +3001,7 @@ int main(int argc, char **argv)
     }
 
     /* Write out the pidfile */
-    pidfd = open(pidfile, O_CREAT|O_RDWR, 0644);
+    pidfd = open(pidfile, O_CREAT|O_RDWR|O_NOFOLLOW, 0644);
     if (pidfd == -1) {
         int exit_result = EX_OSERR;
 
@@ -3205,13 +3079,6 @@ int main(int argc, char **argv)
 
     syslog(LOG_DEBUG, "process started");
 
-#if defined(__linux__) && defined(HAVE_LIBCAP)
-    if (become_cyrus(/*is_master*/1) != 0) {
-        syslog(LOG_ERR, "can't change to the cyrus user: %m");
-        exit(1);
-    }
-#endif
-
     masterconf_getsection("START", &add_start, NULL);
     masterconf_getsection("SERVICES", &add_service, NULL);
     masterconf_getsection("EVENTS", &add_event, NULL);
@@ -3230,12 +3097,11 @@ int main(int argc, char **argv)
                    Services[i].stat[0], Services[i].stat[1]);
     }
 
-#if !defined(__linux__) || !defined(HAVE_LIBCAP)
-    if (become_cyrus(/*is_master*/1) != 0) {
+    if (become_cyrus() != 0) {
         syslog(LOG_ERR, "can't change to the cyrus user: %m");
         exit(1);
     }
-#endif
+    if (daemon_mode) chdir_cores();
 
     /* init ctable janitor */
     gettimeofday(&now, 0);
@@ -3243,6 +3109,9 @@ int main(int argc, char **argv)
 
     /* init prom report */
     init_prom_report(now);
+
+    /* init cronevent subsystem */
+    init_cronevent(now);
 
     /* start up waitdaemons, sequentially in order */
     for (i = 0; i < nwaitdaemons; i++) {
@@ -3257,14 +3126,29 @@ int main(int argc, char **argv)
         struct timeval tv, *tvptr;
         struct notify_message msg;
 
+#if HAVE_PSELECT
+        /* pselect will not reliably/portably deliver pending signals if
+         * a socket is ready or (on some systems) if the timeout is 0.
+         * sigprocmask will cause any unmasked pending signals
+         * to be delivered.
+         * This is essential during shutdown, when undelivered SIGCHLD
+         * signals (and potentially other signals) can prevent shutdown.
+         */
+        sigset_t old_sigmask;
+        sigprocmask(SIG_SETMASK, &pselect_sigmask, &old_sigmask);
+        sigprocmask(SIG_SETMASK, &old_sigmask, &pselect_sigmask);
+#endif
+
         if (gotsigquit) {
             gotsigquit = 0;
             begin_shutdown();
         }
 
         /* run any scheduled processes */
-        if (!in_shutdown)
+        if (!in_shutdown) {
             spawn_schedule(now);
+            cronevent_poll_due(now, &spawn_exec, NULL);
+        }
 
         /* reap first, that way if we need to babysit we will */
         if (gotsigchld) {
@@ -3332,12 +3216,15 @@ int main(int argc, char **argv)
 
         int interrupted = 0;
         do {
+            struct event *next_evt;
+
             /* how long to wait? - do now so that any scheduled wakeup
-            * calls get accounted for*/
+             * calls get accounted for*/
             gettimeofday(&now, 0);
             tvptr = NULL;
-            if (schedule && !in_shutdown) {
-                double delay = timesub(&now, &schedule->mark);
+            next_evt = schedule_peek();
+            if (next_evt && !in_shutdown) {
+                double delay = timesub(&now, &next_evt->mark);
                 if (!interrupted && delay > 0.0) {
                     timeval_set_double(&tv, delay);
                 }
@@ -3479,6 +3366,9 @@ finished:
             }
         }
     }
+
+    schedule_clear();
+    cronevent_clear();
 
     /* tell caller we're done */
     master_ready(ready_file, 0);

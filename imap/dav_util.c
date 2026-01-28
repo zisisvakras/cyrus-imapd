@@ -1,45 +1,6 @@
-/* dav_util.c -- utility functions for dealing with DAV database
- *
- * Copyright (c) 1994-2014 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* dav_util.c -- utility functions for dealing with DAV database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -92,7 +53,7 @@ EXPORTED int dav_get_validators(struct mailbox *mailbox, void *data,
         }
 
         if (etag) *etag = message_guid_encode(&record->guid);
-        if (lastmod) *lastmod = record->internaldate;
+        if (lastmod) *lastmod = record->internaldate.tv_sec;
     }
     else {
         /* Unmapped URL (empty resource) */
@@ -152,7 +113,7 @@ EXPORTED int dav_store_resource(struct transaction_t *txn,
             buf_printf(&txn->buf, "<%s@%s>", txn->userid, config_servername);
         }
 
-        mimehdr = charset_encode_mimeheader(buf_cstring(&txn->buf),
+        mimehdr = charset_encode_addrheader(buf_cstring(&txn->buf),
                                             buf_len(&txn->buf), 0);
         fprintf(f, "From: %s\r\n", mimehdr);
         free(mimehdr);
@@ -210,6 +171,14 @@ EXPORTED int dav_store_resource(struct transaction_t *txn,
     fwrite(data, datalen, 1, f);
     qdiffs[QUOTA_STORAGE] = ftell(f);
 
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
+        syslog(LOG_ERR, "IOERROR: append_commit(%s) failed: %s",
+               mailbox_name(mailbox), strerror(errno));
+        fclose(f);
+        append_removestage(stage);
+        txn->error.desc = "append_commit() failed";
+        return HTTP_SERVER_ERROR;
+    }
     fclose(f);
 
     qdiffs[QUOTA_MESSAGE] = 1;
@@ -257,7 +226,7 @@ EXPORTED int dav_store_resource(struct transaction_t *txn,
         }
 
         /* Append the message to the mailbox */
-        if ((r = append_fromstage(&as, &body, stage, now,
+        if ((r = append_fromstage(&as, &body, stage, NULL,
                                   createdmodseq, flaglist, 0, &annots))) {
             syslog(LOG_ERR, "append_fromstage(%s) failed: %s",
                    mailbox_name(mailbox), error_message(r));

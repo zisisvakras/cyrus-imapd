@@ -1,44 +1,6 @@
-/* mbtool.c - tool to fiddle mailboxes
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mbtool.c - tool to fiddle mailboxes */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -205,17 +167,17 @@ static int do_timestamp(const mbname_t *mbname)
     while ((msg = mailbox_iter_step(iter))) {
         const struct index_record *record = msg_record(msg);
         /* 1 day is close enough */
-        if (llabs(record->internaldate - record->gmtime) < 86400)
+        if (llabs(record->internaldate.tv_sec - record->gmtime.tv_sec) < 86400)
             continue;
 
         struct index_record copyrecord = *record;
 
-        time_to_rfc5322(copyrecord.internaldate, olddate, sizeof(olddate));
-        time_to_rfc5322(copyrecord.gmtime, newdate, sizeof(newdate));
+        time_to_rfc5322(copyrecord.internaldate.tv_sec, olddate, sizeof(olddate));
+        time_to_rfc5322(copyrecord.gmtime.tv_sec, newdate, sizeof(newdate));
         printf("  %u: %s => %s\n", copyrecord.uid, olddate, newdate);
 
         /* switch internaldate */
-        copyrecord.internaldate = copyrecord.gmtime;
+        copyrecord.internaldate.tv_sec = copyrecord.gmtime.tv_sec;
 
         r = mailbox_rewrite_index_record(mailbox, &copyrecord);
         if (r) goto done;

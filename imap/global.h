@@ -1,44 +1,6 @@
-/* global.h -- Header for global/shared variables & functions.
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* global.h -- Header for global/shared variables & functions. */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_GLOBAL_H
 #define INCLUDED_GLOBAL_H
@@ -48,21 +10,14 @@
 #include "auth.h"
 #include "prot.h"
 #include "mboxname.h"
+#include "sessionid.h" /* XXX remove from here once it's auto-logged */
 #include "signals.h"
 #include "imapparse.h"
 #include "libcyr_cfg.h"
 #include "util.h"
 
-#ifdef HAVE_SSL
 #include <openssl/evp.h>
 #define MAX_FINISHED_LEN EVP_MAX_MD_SIZE
-
-#else /* !HAVE_SSL */
-#define MAX_FINISHED_LEN 1
-#endif /* HAVE_SSL */
-
-
-#define MAX_SESSIONID_SIZE 256
 
 /* Flags for cyrus_init() */
 enum {
@@ -159,7 +114,7 @@ extern int saslprops_set_tls(struct saslprops_t *saslprops,
 extern volatile sig_atomic_t in_shutdown;
 extern int config_fulldirhash;
 extern int config_implicitrights;
-extern unsigned long config_metapartition_files;
+extern uint64_t config_metapartition_files;
 extern const char *config_mboxlist_db;
 extern const char *config_quota_db;
 extern const char *config_subscription_db;
@@ -181,11 +136,6 @@ extern int charset_snippet_flags;
 extern size_t config_search_maxsize;
 extern int haproxy_protocol;
 extern int imaply_strict;
-
-/* Session ID */
-extern void session_new_id(void);
-extern const char *session_id(void);
-extern void parse_sessionid(const char *str, char *sessionid);
 
 /* Capability suppression */
 extern int capa_is_disabled(const char *str);

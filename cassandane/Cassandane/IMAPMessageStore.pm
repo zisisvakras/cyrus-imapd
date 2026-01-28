@@ -46,7 +46,6 @@ use Cwd qw(abs_path);
 # runtime dependency of Mail::IMAPTalk. make sure we have it!
 require IO::Socket::SSL;
 
-use lib '.';
 use base qw(Cassandane::MessageStore);
 use Cassandane::Util::Log;
 use Cassandane::Util::DateTime qw(to_rfc822);
@@ -121,6 +120,7 @@ sub connect
                       PreserveINBOX => 1,
                       Uid => 0,
                       NoLiteralPlus => delete $params{NoLiteralPlus} || 0,
+                      UseCompress => delete $params{UseCompress} || 0,
                   )
             or die "Cannot connect to '$self->{host}:$self->{port}': $@";
     }
@@ -136,6 +136,7 @@ sub connect
                       PreserveINBOX => 1,
                       Uid => 0,
                       NoLiteralPlus => delete $params{NoLiteralPlus} || 0,
+                      UseCompress => delete $params{UseCompress} || 0,
                   )
             or die "Cannot connect to server: $@";
     }
@@ -570,19 +571,19 @@ sub get_counters
     }
 
     return {
-	version => $v1,
-	highestmodseq => $all1,
-	mailmodseq => $mail1,
-	calendarmodseq => $cal1,
-	contactsmodseq => $card1,
-	notesmodseq => $notes1,
-	mailfoldersmodseq => $mailfolders1,
-	calendarfoldersmodseq => $calfolders1,
-	contactsfoldersmodseq => $cardfolders1,
-	notesfoldersmodseq => $notesfolders1,
-	quotamodseq => $quota1,
-	raclmodseq => $racl1,
-	uidvalidity => $valid1,
+        version => $v1,
+        highestmodseq => $all1,
+        mailmodseq => $mail1,
+        calendarmodseq => $cal1,
+        contactsmodseq => $card1,
+        notesmodseq => $notes1,
+        mailfoldersmodseq => $mailfolders1,
+        calendarfoldersmodseq => $calfolders1,
+        contactsfoldersmodseq => $cardfolders1,
+        notesfoldersmodseq => $notesfolders1,
+        quotamodseq => $quota1,
+        raclmodseq => $racl1,
+        uidvalidity => $valid1,
     };
 }
 

@@ -1,45 +1,6 @@
-/* http_ws.c - WebSockets support functions
- *
- * Copyright (c) 1994-2020 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_ws.c - WebSockets support functions */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <sysexits.h>
@@ -648,18 +609,8 @@ static void _end_channel(struct transaction_t *txn)
 
     free(ctx);
 
-    /* Clear all references to WS context */
-    txn->conn->ws_ctx = txn->ws_ctx = NULL;
-}
-
-static void _h1_shutdown(struct http_connection *conn)
-{
-    if (!conn->ws_ctx || !*conn->ws_ctx) return;
-
-    struct transaction_t txn =  // dummy transaction
-        { .conn = conn, .ws_ctx = *conn->ws_ctx, .error = { .desc = NULL } };
-
-    _end_channel(&txn);
+    /* Clear reference to WS context */
+    txn->ws_ctx = NULL;
 }
 
 HIDDEN int ws_start_channel(struct transaction_t *txn,
@@ -753,11 +704,6 @@ HIDDEN int ws_start_channel(struct transaction_t *txn,
         if (r != SASL_OK) {
             xsyslog(LOG_WARNING, "WS base64 encode failed", "r=<%d>", r);
         }
-
-        /* Link the WS context into the connection so we can
-           properly close the WS during an abnormal shut_down() */
-        txn->conn->ws_ctx = &txn->ws_ctx;
-        ptrarray_add(&txn->conn->shutdown_callbacks, &_h1_shutdown);
 
         resp_code = HTTP_SWITCH_PROT;
     }

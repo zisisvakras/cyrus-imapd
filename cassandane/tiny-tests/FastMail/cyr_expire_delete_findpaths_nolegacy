@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_cyr_expire_delete_findpaths_nolegacy
     :DelayedDelete :min_version_3_5 :NoMailboxLegacyDirs
+    ($self)
 {
-    my ($self) = @_;
-
     my $adminstore = $self->{adminstore};
     my $admintalk = $adminstore->get_client();
 
@@ -23,6 +22,12 @@ sub test_cyr_expire_delete_findpaths_nolegacy
     # Create the search database.
     xlog $self, "Run squatter";
     $self->{instance}->run_command({cyrus => 1}, 'squatter');
+
+    # Reset the conv.db version to 1 (to force UUID-based MAILBOXIDs)
+    my $dirs = $self->{instance}->run_mbpath(-u => 'magicuser');
+    my $format = $self->{instance}->{config}->get('conversations_db');
+    $self->{instance}->run_dbcommand($dirs->{user}{conversations}, $format,
+                                     ['SET', '$VERSION', '1']);
 
     my $res = $admintalk->status($inbox, ['mailboxid']);
     my $inboxid = $res->{mailboxid}[0];
@@ -58,9 +63,9 @@ sub test_cyr_expire_delete_findpaths_nolegacy
     close(FH);
 
     xlog $self, "files for the inbox still exist";
-    $self->assert(scalar grep { m{$inboxid} } @files);
+    $self->assert_contains(qr{$inboxid}, \@files);
     xlog $self, "no files left for subfolder";
-    $self->assert(not scalar grep { m{$subid} } @files);
+    $self->assert_not_contains(qr{$subid}, \@files);
 
     xlog $self, "Run cyr_expire -D now.";
     $self->{instance}->run_command({ cyrus => 1 }, 'cyr_expire', '-D' => '0' );
@@ -71,5 +76,5 @@ sub test_cyr_expire_delete_findpaths_nolegacy
 
     use Data::Dumper;
     xlog $self, "no files for the inbox still exist" . Dumper(\@files, $inboxid);;
-    $self->assert(not scalar grep { m{$inboxid} } @files);
+    $self->assert_not_contains(qr{$inboxid}, \@files);
 }

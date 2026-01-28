@@ -13,14 +13,13 @@
 *.sig
 *.tar.gz
 *.tar.bz2
-*.*-cunit.c
 *~
 .clang-format
-.cunit-*.c
 .deps
 .dirstamp
 .libs
 .sphinx-build.stamp
+/.tags
 README
 VERSION
 Makefile.in
@@ -50,10 +49,15 @@ com_err/et/compile_et
 coverage.xml
 cscope.out
 cunit/CUnitAutomated-Results.xml
-cunit/default.cunit
-cunit/registers.h
 cunit/reports
+cunit/test-dbdir
 cunit/unit
+### ignore intermediate c files from foo.testc
+cunit/*.c
+### but not the framework files
+!cunit/unit*.c
+### but do ignore the generated registry file
+cunit/unit-registry.c
 debian/
 depcomp
 doc/examples/imapd_conf/imapd.conf.sample
@@ -64,10 +68,11 @@ doc/legacy/netnews.png
 doc/text/
 docsrc/.doctrees/
 docsrc/build/
-docsrc/imap/reference/manpages/configs/imapd.conf.rst
-docsrc/imap/reference/manpages/systemcommands/cyradm.rst
-docsrc/imap/reference/manpages/usercommands/sieveshell.rst
+docsrc/reference/manpages/configs/imapd.conf.rst
+docsrc/reference/manpages/systemcommands/cyradm.rst
+docsrc/reference/manpages/usercommands/sieveshell.rst
 imap/arbitron
+imap/backupcyrusd
 imap/calalarmd
 imap/chk_cyrus
 imap/ctl_conversationsdb
@@ -143,6 +148,9 @@ imap/unexpunge
 imtest/imtest
 install-sh
 lib/chartable.c
+lib/cron-lex.c
+lib/cron-parse.c
+lib/cron-parse.h
 lib/imapopts.c
 lib/imapopts.h
 lib/mkchartable

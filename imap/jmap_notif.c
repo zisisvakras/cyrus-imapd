@@ -1,45 +1,6 @@
-/* jmap_notif.c
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_notif.c */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -78,7 +39,7 @@ HIDDEN int jmap_create_notify_collection(const char *userid, mbentry_t **mbentry
     int r = mboxlist_lookup(notifmboxname, mbentryptr, NULL);
     if (r == IMAP_MAILBOX_NONEXISTENT) {
         /* lock the namespace lock and try again */
-        struct mboxlock *namespacelock = user_namespacelock(userid);
+        user_nslock_t *user_nslock = user_nslock_lock_w(userid);
 
         mbentry_t mbentry = MBENTRY_INITIALIZER;
         mbentry.name = notifmboxname;
@@ -93,7 +54,7 @@ HIDDEN int jmap_create_notify_collection(const char *userid, mbentry_t **mbentry
                       notifmboxname, error_message(r));
 
         r = mboxlist_lookup(notifmboxname, mbentryptr, NULL);
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
     }
 
     free(notifmboxname);
@@ -109,7 +70,7 @@ HIDDEN char *jmap_caleventnotif_format_fromheader(const char *userid)
     else {
         buf_printf(&buf, "<%s@%s>", userid, config_servername);
     }
-    char *notfrom = charset_encode_mimeheader(buf_cstring(&buf), buf_len(&buf), 0);
+    char *notfrom = charset_encode_addrheader(buf_cstring(&buf), buf_len(&buf), 0);
     buf_free(&buf);
     return notfrom;
 }
@@ -140,7 +101,7 @@ static int append_eventnotif(const char *from,
                              const struct auth_state *authstate,
                              struct mailbox *notifmbox,
                              const char *calmboxname,
-                             time_t created,
+                             struct timespec *created,
                              json_t *jnotif)
 {
     struct stagemsg *stage = NULL;
@@ -206,7 +167,7 @@ static int append_eventnotif(const char *from,
     buf_reset(&buf);
 
     // Append new notification.
-    FILE *fp = append_newstage(mailbox_name(notifmbox), created,
+    FILE *fp = append_newstage(mailbox_name(notifmbox), created->tv_sec,
             strhash(ical_uid), &stage);
     if (!fp) {
         xsyslog(LOG_ERR, "append_newstage failed", "name=%s", mailbox_name(notifmbox));
@@ -221,18 +182,18 @@ static int append_eventnotif(const char *from,
     fputs("Subject: " JMAP_NOTIF_CALENDAREVENT "\r\n", fp);
 
     char date5322[RFC5322_DATETIME_MAX+1];
-    time_to_rfc5322(created, date5322, RFC5322_DATETIME_MAX);
+    time_to_rfc5322(created->tv_sec, date5322, RFC5322_DATETIME_MAX);
     fputs("Date: ", fp);
     fputs(date5322, fp);
     fputs("\r\n", fp);
 
     fprintf(fp, "Message-ID: <%s-" TIME_T_FMT "@%s>\r\n",
-                makeuuid(), created, config_servername);
+                makeuuid(), created->tv_sec, config_servername);
     fputs("Content-Type: application/json; charset=utf-8\r\n", fp);
     fputs("Content-Transfer-Encoding: 8bit\r\n", fp);
 
     struct dlist *dl = dlist_newkvlist(NULL, "N");
-    dlist_setdate(dl, "S", created);
+    dlist_setdate(dl, "S", created->tv_sec);
     dlist_setatom(dl, "T", JMAP_NOTIF_CALENDAREVENT);
     dlist_setatom(dl, "ID", ical_uid);
     dlist_setatom(dl, "NT", type);
@@ -250,8 +211,13 @@ static int append_eventnotif(const char *from,
     fputs("\r\n", fp);
     fputs(notifstr, fp);
 
+    if (fflush(fp) || ferror(fp) || fdatasync(fileno(fp))) {
+        r = IMAP_IOERROR;
+        fclose(fp);
+        goto done;
+    }
+
     fclose(fp);
-    if (r) goto done;
 
     struct appendstate as;
     r = append_setup_mbox(&as, notifmbox, authuserid, authstate,
@@ -354,7 +320,8 @@ HIDDEN int jmap_create_caleventnotif(struct mailbox *notifmbox,
         return 0;
     }
 
-    time_t now = time(NULL);
+    struct timespec now;
+    cyrus_gettime(CLOCK_REALTIME, &now);
 
     const char *byemail = schedule_addresses ?
         strarray_nth(schedule_addresses, 0) : NULL;
@@ -365,13 +332,13 @@ HIDDEN int jmap_create_caleventnotif(struct mailbox *notifmbox,
     annotatemore_lookupmask(calhomename, annotname, userid, &byname);
     free(calhomename);
 
-    json_t *jnotif = build_eventnotif(type, now, userid,
+    json_t *jnotif = build_eventnotif(type, now.tv_sec, userid,
             buf_cstring(&byname), byemail, ical_uid, comment,
             is_draft, jevent, jpatch);
 
     char *from = jmap_caleventnotif_format_fromheader(userid);
     int r = append_eventnotif(from, userid, authstate, notifmbox,
-            calmboxname, now, jnotif);
+            calmboxname, &now, jnotif);
     free(from);
 
     json_decref(jnotif);
@@ -393,15 +360,15 @@ HIDDEN int jmap_create_caldaveventnotif(struct transaction_t *txn,
     const char *accountid = mbname_userid(mbname);
     struct mailbox *notifmbox = NULL;
     mbentry_t *notifmb = NULL;
-    time_t now = time(NULL);
+    struct timespec now;
     json_t *jevent = NULL;
     json_t *jpatch = NULL;
     int r = 0;
 
     assert(oldical || newical);
 
-    if ((user_isnamespacelocked(accountid) == LOCK_SHARED) ||
-        (user_isnamespacelocked(userid) == LOCK_SHARED)) {
+    if ((user_nslock_islocked(accountid) == LOCK_SHARED) ||
+        (user_nslock_islocked(userid) == LOCK_SHARED)) {
         /* bail out, before notification mailbox crashes on invalid lock */
         xsyslog(LOG_ERR, "can not exlusively lock jmapnotify collection",
                 "accountid=%s", accountid);
@@ -470,12 +437,13 @@ HIDDEN int jmap_create_caldaveventnotif(struct transaction_t *txn,
         byemail = strarray_nth(schedule_addresses, 0);
     }
 
-    json_t *jnotif = build_eventnotif(type, now,
+    cyrus_gettime(CLOCK_REALTIME, &now);
+    json_t *jnotif = build_eventnotif(type, now.tv_sec,
             byprincipal, buf_cstring(&byname), byemail,
             ical_uid, NULL, is_draft, jevent, jpatch);
 
     r = append_eventnotif(from, userid, authstate, notifmbox,
-                          calmboxname, now, jnotif);
+                          calmboxname, &now, jnotif);
 
     json_decref(jnotif);
     buf_free(&byname);

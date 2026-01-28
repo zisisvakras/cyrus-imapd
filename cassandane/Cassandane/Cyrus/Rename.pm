@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Instance;
@@ -99,7 +98,7 @@ sub test_rename_asuser
 }
 
 sub test_xrename
-	:min_version_3_8_2
+        :min_version_3_8_2
 {
     my ($self) = @_;
 
@@ -997,6 +996,170 @@ sub test_rename_user_sharee
     $list = $newtalk->list([qw( vendor.cmu-dav )], '', '*', 'return', ['subscribed']);
 
     $self->assert_mailbox_structure($list, '.', $structure);
+}
+
+sub test_rename_user_sharer
+    :AllowMoves :NoAltNameSpace :ReverseACLs :Replication
+    :needs_component_replication
+{
+    my ($self) = @_;
+
+    my $admintalk = $self->{adminstore}->get_client();
+
+    xlog $self, "Test user rename with shares";
+
+    my %exp;
+
+    $admintalk->create("user.foo") || die;
+    $admintalk->create("user.foo.shared") || die;
+    $admintalk->setacl("user.foo.shared", 'cassandane' => 'lrs') || die;
+
+    $admintalk->create("user.foo.#calendars") || die;
+    $admintalk->create("user.foo.#calendars.events") || die;
+    $admintalk->setacl("user.foo.#calendars.events",
+                       'cassandane' => 'lrs') || die;
+
+    $admintalk->setacl("user.foo", 'cassandane' => 'lrs') || die;
+
+    my $imaptalk = $self->{store}->get_client();
+    $imaptalk->create("INBOX.sub");
+    $imaptalk->subscribe("INBOX.sub");
+    $imaptalk->subscribe("user.foo.shared");
+    $imaptalk->subscribe("user.foo.#calendars.events");
+
+    my $structure = {
+        'INBOX' => [ '\\HasChildren' ],
+        'INBOX.sub'  => [ '\\Subscribed', '\\HasNoChildren' ],
+        'user.foo'  => [ '\\HasChildren' ],
+        'user.foo.#calendars.events'  => [ '\\Subscribed', '\\HasNoChildren' ],
+        'user.foo.shared'  => [ '\\Subscribed', '\\HasNoChildren' ],
+    };
+
+    xlog $self, "Verify initial mailbox list";
+    my $list = $imaptalk->list(['vendor.cmu-dav'], '', '*',
+                               'return', ['subscribed']);
+
+    $self->assert_mailbox_structure($list, '.', $structure);
+
+    xlog $self, "Replicate and verify initial mailbox list";
+    $self->run_replication(user => 'cassandane');
+    $self->run_replication(user => 'foo');
+
+    my $replicatalk = $self->{replica_store}->get_client();
+    $list = $replicatalk->list(['vendor.cmu-dav'], '', '*',
+                               'return', ['subscribed']);
+
+    $self->assert_mailbox_structure($list, '.', $structure);
+
+    xlog $self, "Rename sharer";
+    $admintalk = $self->{adminstore}->get_client();
+    my $res = $admintalk->rename('user.foo', 'user.bar');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    $structure->{$_ =~ s/\.foo/.bar/r} =
+        delete $structure->{$_} for keys %$structure;
+
+    xlog $self, "Verify shares and subscriptions have been renamed";
+    $imaptalk = $self->{store}->get_client();
+    $list = $imaptalk->list(['vendor.cmu-dav'], '', '*',
+                            'return', ['subscribed']);
+
+    $self->assert_mailbox_structure($list, '.', $structure);
+
+    delete $structure->{'INBOX'};
+    delete $structure->{'user.bar'};
+
+    $imaptalk = $self->{store}->get_client();
+    $list = $imaptalk->list(['vendor.cmu-dav', 'subscribed'], '', '*');
+
+    $self->assert_mailbox_structure($list, '.', $structure);
+
+    xlog $self, "Replicate and verify subscriptions have been renamed";
+    $self->run_replication(user => 'cassandane');
+    $self->run_replication(user => 'bar');
+
+    $replicatalk = $self->{replica_store}->get_client();
+    $list = $replicatalk->list(['vendor.cmu-dav', 'subscribed'], '', '*');
+
+    $self->assert_mailbox_structure($list, '.', $structure);
+}
+
+sub test_rename_intermediate_noperms
+    :NoAltNameSpace
+{
+    my ($self) = @_;
+
+    my $admintalk = $self->{adminstore}->get_client();
+
+    $self->setup_mailbox_structure($admintalk, [
+        [ 'create' => [qw( shared shared.intermed.child)] ],
+    ]);
+    $admintalk->setacl('shared', cassandane => 'lrs');
+    # no 'x' permission
+    $admintalk->setacl('shared.intermed', cassandane => 'lrs');
+    # must have permission to rename first child, otherwise we don't even get
+    # as far as mboxlist_renamemailbox!
+    $admintalk->setacl('shared.intermed.child', cassandane => 'lrsx');
+
+    my $uniqueid_key = '/shared/vendor/cmu/cyrus-imapd/uniqueid';
+    my $res = $admintalk->getmetadata('shared.intermed', $uniqueid_key);
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+    my $uniqueid = $res->{'shared.intermed'}{$uniqueid_key};
+    $self->assert_not_null($uniqueid);
+
+    # instance will be stopped and restarted, drop connection first
+    $admintalk->logout();
+    undef $admintalk;
+
+    # n.b. stops the instance, fiddles around, restarts it!
+    $self->{instance}->make_folder_intermediate($uniqueid);
+
+    # okay we're back, make sure it's an intermediate now
+    $admintalk = $self->{adminstore}->get_client();
+    my $data = $admintalk->list('', 'shared.intermed');
+    $self->assert_mailbox_structure($data, '.', {
+        'shared.intermed' => [ '\\NoSelect', '\\HasChildren' ],
+    });
+
+    # try to rename it as non-admin, expect NO Permission denied
+    my $imaptalk = $self->{store}->get_client();
+    $imaptalk->rename('shared.intermed', 'INBOX.shared_renamed');
+    $self->assert_str_equals('no', $imaptalk->get_last_completion_response());
+    $self->assert_matches(qr{Permission denied}, $imaptalk->get_last_error());
+}
+
+sub test_rename_jmapid
+    :AllowMoves :Conversations :min_version_3_12
+{
+    my ($self) = @_;
+
+    my $synclogfname = "$self->{instance}->{basedir}/conf/sync/log";
+
+    my $admintalk = $self->{adminstore}->get_client();
+
+    xlog $self, "Test user rename";
+
+    $admintalk->create("user.cassandane.foo") || die;
+    $admintalk->create("user.cassandane.bar") || die;
+    $admintalk->create("user.cassandane.bar.sub folder") || die;
+
+    # get the J keys
+    my $mailboxes_db = "$self->{instance}->{basedir}/conf/mailboxes.db";
+    my $format = $self->{instance}->{config}->get('mboxlist_db');
+    my $pre = { $self->{instance}->run_dbcommand($mailboxes_db, $format, ['SHOW', 'J']) };
+
+    $self->assert_num_equals(4, scalar keys %$pre);
+
+    my $res = $admintalk->rename('user.cassandane', 'user.newuser');
+    $self->assert(not $admintalk->get_last_error());
+
+    $res = $admintalk->select("user.newuser.bar.sub folder");
+    $self->assert(not $admintalk->get_last_error());
+
+    my $post = { $self->{instance}->run_dbcommand($mailboxes_db, $format, ['SHOW', 'J']) };
+
+    $self->assert_contains(qr{newuser}, [ keys %{$post} ], 4);
+    $self->assert_not_contains(qr{cassandane}, [ keys %{$post} ]);
 }
 
 1;

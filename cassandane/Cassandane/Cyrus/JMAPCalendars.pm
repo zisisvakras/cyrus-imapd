@@ -44,7 +44,6 @@ use DateTime;
 use JSON::XS;
 use Net::CalDAVTalk 0.09;
 use Net::CardDAVTalk 0.03;
-use Mail::JMAPTalk 0.13;
 use Data::ICal;
 use Data::Dumper;
 use Data::GUID qw(guid_string);
@@ -54,7 +53,6 @@ use File::Basename;
 use XML::Spice;
 use MIME::Base64 qw(encode_base64url decode_base64url);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
@@ -573,32 +571,23 @@ sub create_user
     $admin->setacl("user.$username", admin => 'lrswipkxtecdan') or die;
     $admin->setacl("user.$username", $username => 'lrswipkxtecdn') or die;
 
-    my $http = $self->{instance}->get_service("http");
-    my $userJmap = Mail::JMAPTalk->new(
-        user => $username,
+    my $user_obj = Cassandane::TestUser->new({
+        username => $username,
         password => 'pass',
-        host => $http->host(),
-        port => $http->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
-    $userJmap->DefaultUsing([
+        instance => $self->{instance},
+    });
+
+    my $jmap = $user_obj->new_jmaptester;
+
+    $jmap->DefaultUsing([
         'urn:ietf:params:jmap:core',
         'urn:ietf:params:jmap:calendars',
         'https://cyrusimap.org/ns/jmap/calendars',
     ]);
 
-    my $userCalDAV = Net::CalDAVTalk->new(
-        user => $username,
-        password => 'pass',
-        host => $http->host(),
-        port => $http->port(),
-        scheme => 'http',
-        url => '/',
-        expandurl => 1,
-    );
+    my $caldav = $user_obj->caldav;
 
-    return ($userJmap, $userCalDAV);
+    return ($jmap, $caldav);
 }
 
 sub deliver_imip {

@@ -1,44 +1,6 @@
-/* sievedir.c -- functions for managing scripts in a sievedir
- *
- * Copyright (c) 1994-2020 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* sievedir.c -- functions for managing scripts in a sievedir */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -242,7 +204,7 @@ EXPORTED int sievedir_activate_script(const char *sievedir, const char *name)
         return SIEVEDIR_IOERROR;
     }
 
-    if (rename(tmp, active) < 0) {
+    if (cyrus_rename(tmp, active) < 0) {
         xsyslog(LOG_ERR, "IOERROR: failed to rename active script link",
                 "oldpath=<%s> newpath=<%s>", tmp, active);
         xunlink(tmp);
@@ -259,7 +221,7 @@ EXPORTED int sievedir_deactivate_script(const char *sievedir)
     assert(sievedir);
 
     snprintf(active, sizeof(active), "%s/defaultbc", sievedir);
-    if (xunlink(active) != 0 && errno != ENOENT) {
+    if (xunlink(active) == -1) {
         xsyslog(LOG_ERR, "IOERROR: failed to delete active script link",
                 "link=<%s>", active);
         return SIEVEDIR_IOERROR;
@@ -276,7 +238,7 @@ EXPORTED int sievedir_delete_script(const char *sievedir, const char *name)
 
     /* delete bytecode */
     snprintf(path, sizeof(path), "%s/%s%s", sievedir, name, BYTECODE_SUFFIX);
-    if (xunlink(path) != 0 && errno != ENOENT) {
+    if (xunlink(path) == -1) {
         xsyslog(LOG_ERR, "IOERROR: failed to delete bytecode file",
                 "path=<%s>", path);
         return SIEVEDIR_IOERROR;
@@ -298,7 +260,7 @@ EXPORTED int sievedir_rename_script(const char *sievedir,
              "%s/%s%s", sievedir, oldname, BYTECODE_SUFFIX);
     snprintf(newpath, sizeof(newpath),
              "%s/%s%s", sievedir, newname, BYTECODE_SUFFIX);
-    r = rename(oldpath, newpath);
+    r = cyrus_rename(oldpath, newpath);
     if (r) {
         xsyslog(LOG_ERR, "IOERROR: failed to rename bytecode file",
                 "oldpath=<%s> newpath=<%s>", oldpath, newpath);
@@ -375,7 +337,7 @@ EXPORTED int sievedir_put_script(const char *sievedir, const char *name,
     /* rename */
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s%s", sievedir, name, BYTECODE_SUFFIX);
-    r = rename(new_bcpath, path);
+    r = cyrus_rename(new_bcpath, path);
     if (r) {
         xsyslog(LOG_ERR, "IOERROR: failed to rename bytecode file",
                 "oldpath=<%s> newpath=<%s>", new_bcpath, path);

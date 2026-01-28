@@ -42,6 +42,7 @@
 use strict;
 use warnings;
 use File::Slurp;
+use List::Util qw(uniq);
 
 use lib '.';
 use Cassandane::Util::Setup;
@@ -61,6 +62,7 @@ $Data::Dumper::Sortkeys = 1;
 $Data::Dumper::Trailingcomma = 1;
 
 my %want_formats = ();
+my %format_params = ();
 my $output_dir = 'reports';
 my $do_list = 0;
 # The default really should be --no-keep-going like make
@@ -143,31 +145,32 @@ my %formatters = (
     tap => {
         writes_to_stdout => 1,
         formatter => sub {
-            my ($fh) = @_;
+            my ($params, $fh) = @_;
             return Cassandane::Unit::FormatTAP->new($fh);
         },
     },
     pretty => {
         writes_to_stdout => 1,
         formatter => sub {
-            my ($fh) = @_;
-            return Cassandane::Unit::FormatPretty->new({}, $fh);
+            my ($params, $fh) = @_;
+            $params->{quiet} = 0;
+            return Cassandane::Unit::FormatPretty->new($params, $fh);
         },
     },
     prettier => {
         writes_to_stdout => 1,
         formatter => sub {
-            my ($fh) = @_;
-            return Cassandane::Unit::FormatPretty->new({quiet=>1}, $fh);
+            my ($params, $fh) = @_;
+            $params->{quiet} = 1;
+            return Cassandane::Unit::FormatPretty->new($params, $fh);
         },
     },
     xml => {
         writes_to_stdout => 0,
         formatter => sub {
-            my ($fh) = @_;
-            return Cassandane::Unit::FormatXML->new({
-                directory => $output_dir
-            });
+            my ($params, $fh) = @_;
+            $params->{directory} = $output_dir;
+            return Cassandane::Unit::FormatXML->new($params);
         },
     },
 );
@@ -202,7 +205,7 @@ my $cassini_filename;
 my @cassini_overrides;
 my $want_rerun;
 
-while (my $a = shift)
+while (defined(my $a = shift))
 {
     if ($a eq '--config')
     {
@@ -294,13 +297,23 @@ while (my $a = shift)
     {
         $want_rerun = 1;
     }
+    elsif ($a eq '--rerun-suite')
+    {
+        $want_rerun = 2;
+    }
+    elsif ($a eq '--no-ok')
+    {
+        # suppress success reports in formatters that support that
+        # (i.e. only report errors and failures)
+        $format_params{no_ok} = 1;
+    }
     elsif ($a =~ m/^-/)
     {
         usage;
     }
     else
     {
-        push(@names, $a);
+        push(@names, split(/\s+/, $a));
     }
 }
 
@@ -321,6 +334,10 @@ if ($want_rerun) {
     }
 
     if (scalar @failed) {
+        if ($want_rerun > 1) {
+            # rerun whole suites for failed tests
+            @failed = uniq sort map { s/\..*$//r } @failed;
+        }
         push @names, @failed;
     }
     else {
@@ -375,7 +392,8 @@ else
 
     my $runner = Cassandane::Unit::Runner->new();
     foreach my $f (keys %want_formats) {
-        $runner->add_formatter($formatters{$f}->{formatter}->());
+        my $formatter = $formatters{$f}->{formatter}->({%format_params});
+        $runner->add_formatter($formatter);
     }
     $runner->filter(@filters);
 

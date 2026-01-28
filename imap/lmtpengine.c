@@ -1,44 +1,6 @@
-/* lmtpengine.c: LMTP protocol engine
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* lmtpengine.c: LMTP protocol engine */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -67,6 +29,8 @@
 #include <sasl/saslutil.h>
 
 #include "assert.h"
+#include "auditlog.h"
+#include "loginlog.h"
 #include "util.h"
 #include "auth.h"
 #include "prot.h"
@@ -113,9 +77,7 @@ struct clientdata {
         DIDAUTH = 1
     } authenticated;
 
-#ifdef HAVE_SSL
     SSL *tls_conn;
-#endif /* HAVE_SSL */
     int starttls_done;
 };
 
@@ -171,8 +133,12 @@ static void send_lmtp_error(struct protstream *pout, int r, strarray_t *resp)
 
     case IMAP_PERMISSION_DENIED:
         if (LMTP_LONG_ERROR_MSGS) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+            /* format string comes from lmtp_err.et */
             prot_printf(pout, error_message(LMTP_NOT_AUTHORIZED_LONG),
                         config_getstring(IMAPOPT_POSTMASTER));
+#pragma GCC diagnostic pop
         }
         code = LMTP_NOT_AUTHORIZED;
         break;
@@ -227,7 +193,11 @@ static void send_lmtp_error(struct protstream *pout, int r, strarray_t *resp)
         break;
     }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    /* format string comes from lmtp_err.et */
     prot_printf(pout, error_message(code), text, session_id());
+#pragma GCC diagnostic pop
     prot_puts(pout, "\r\n");
 }
 
@@ -626,11 +596,9 @@ static int savemsg(struct clientdata *cd,
     addlen = 8 + strlen(cd->lhlo_param) + strlen(cd->clienthost);
     if (m->authuser) addlen += 28 + strlen(m->authuser) + 5; /* +5 for ssf */
     addlen += 25 + strlen(config_servername) + strlen(CYRUS_VERSION);
-#ifdef HAVE_SSL
     if (cd->tls_conn) {
         addlen += 3 + tls_get_info(cd->tls_conn, tls_info, sizeof(tls_info));
     }
-#endif
     addlen += 2 + strlen(datestr);
     p = addbody = xmalloc(addlen + 1);
 
@@ -743,8 +711,7 @@ static int savemsg(struct clientdata *cd,
         return r;
     }
 
-    fflush(f);
-    if (ferror(f)) {
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
         while (nrcpts--) {
             prot_printf(cd->pout,
                "451 4.3.%c cannot copy message to temporary file: %s\r\n",
@@ -933,9 +900,7 @@ void lmtpmode(struct lmtp_func *func,
     cd.clienthost = "";
     cd.lhlo_param[0] = '\0';
     cd.authenticated =  NOAUTH;
-#ifdef HAVE_SSL
     cd.tls_conn = NULL;
-#endif
     cd.starttls_done = 0;
 
     max_msgsize = config_getbytesize(IMAPOPT_MAXMESSAGESIZE, 'B');
@@ -948,6 +913,10 @@ void lmtpmode(struct lmtp_func *func,
     /* don't leak old connections */
     saslprops_reset(&saslprops);
 
+    /* new session id and blank trace id for this connection */
+    session_new_id();
+    trace_set_id(NULL, 0);
+
     /* determine who we're talking to */
     cd.clienthost = get_clienthost(fd, &localip, &remoteip);
     if (!strcmp(cd.clienthost, UNIX_SOCKET)) {
@@ -959,9 +928,10 @@ void lmtpmode(struct lmtp_func *func,
         buf_setcstr(&saslprops.iplocalport, localip);
     }
 
-    syslog(LOG_DEBUG, "connection from %s%s",
-           cd.clienthost,
-           func->preauth ? " preauth'd as postman" : "");
+    xsyslog(LOG_DEBUG, "new connection",
+                       "clienthost=<%s> preauth=<%s>",
+                       cd.clienthost,
+                       func->preauth ? "postman" : "none");
 
     /* Setup SASL to go.  We need to do this *after* we decide if
      *  we are preauthed or not. */
@@ -1026,7 +996,7 @@ void lmtpmode(struct lmtp_func *func,
       }
 
       if (config_getswitch(IMAPOPT_CHATTY))
-        syslog(LOG_NOTICE, "command: %s", buf);
+        xsyslog(LOG_NOTICE, "parsed command", "command=<%s>", buf);
 
       switch (buf[0]) {
       case 'a':
@@ -1066,7 +1036,7 @@ void lmtpmode(struct lmtp_func *func,
 
               if (r) {
                   const char *errorstring = NULL;
-                  const char *userid = "-notset-";
+                  const char *userid = NULL;
 
                   switch (r) {
                   case IMAP_SASL_CANCEL:
@@ -1087,11 +1057,13 @@ void lmtpmode(struct lmtp_func *func,
                           continue;
                       }
                       else {
-                          if (r != SASL_NOUSER)
-                              sasl_getprop(cd.conn, SASL_USERNAME, (const void **) &userid);
+                          if (r != SASL_NOUSER) {
+                              sasl_getprop(cd.conn, SASL_USERNAME,
+                                           (const void **) &userid);
+                          }
 
-                          syslog(LOG_ERR, "badlogin: %s %s (%s) [%s]",
-                                 cd.clienthost, mech, userid, sasl_errdetail(cd.conn));
+                          loginlog_bad(cd.clienthost, userid, mech, NULL,
+                                       sasl_errdetail(cd.conn));
 
                           prometheus_increment(CYRUS_IMAP_AUTHENTICATE_TOTAL_RESULT_NO);
 
@@ -1127,9 +1099,7 @@ void lmtpmode(struct lmtp_func *func,
               /* authenticated successfully! */
 
               prometheus_increment(CYRUS_IMAP_AUTHENTICATE_TOTAL_RESULT_YES);
-              syslog(LOG_NOTICE, "login: %s %s %s%s %s",
-                     cd.clienthost, user, mech,
-                     cd.starttls_done ? "+TLS" : "", "User logged in");
+              loginlog_good(cd.clienthost, user, mech, cd.starttls_done);
 
               cd.authenticated = DIDAUTH;
               prot_printf(pout, "235 Authenticated!\r\n");
@@ -1198,7 +1168,7 @@ void lmtpmode(struct lmtp_func *func,
                                 "250-SIZE %" PRIu64 "\r\n",
                           config_servername, max_msgsize);
 
-              if (tls_enabled() && !cd.starttls_done &&
+              if (tls_starttls_enabled() && !cd.starttls_done &&
                   cd.authenticated == NOAUTH) {
                   prot_printf(pout, "250-STARTTLS\r\n");
               }
@@ -1209,11 +1179,10 @@ void lmtpmode(struct lmtp_func *func,
                   prot_printf(pout,"250-%s\r\n", mechs);
               }
               prot_printf(pout, "250-IGNOREQUOTA\r\n");
+              prot_printf(pout, "250-TRACE\r\n");
               prot_printf(pout, "250 Ok SESSIONID=<%s>\r\n", session_id());
 
               strlcpy(cd.lhlo_param, buf + 5, sizeof(cd.lhlo_param));
-
-              session_new_id();
               continue;
           }
           goto syntaxerr;
@@ -1408,6 +1377,7 @@ void lmtpmode(struct lmtp_func *func,
             }
             else if (!strcasecmp(buf, "rset")) {
                 session_new_id();
+                trace_set_id(NULL, 0);
                 prot_printf(pout, "250 2.0.0 Ok SESSIONID=<%s>\r\n", session_id());
 
               rset:
@@ -1420,8 +1390,7 @@ void lmtpmode(struct lmtp_func *func,
 
       case 's':
       case 'S':
-#ifdef HAVE_SSL
-            if (!strcasecmp(buf, "starttls") && tls_enabled() &&
+            if (!strcasecmp(buf, "starttls") && tls_starttls_enabled() &&
                 !func->preauth) { /* don't need TLS for preauth'd connect */
 
                 /* XXX  discard any input pipelined after STARTTLS */
@@ -1444,9 +1413,7 @@ void lmtpmode(struct lmtp_func *func,
                                         NULL);
 
                 if (r == -1) {
-
-                    syslog(LOG_ERR, "[lmtpd] error initializing TLS");
-
+                    xsyslog(LOG_ERR, "error initializing TLS", NULL);
                     prot_printf(pout, "454 4.3.3 %s\r\n", "Error initializing TLS");
                     continue;
                 }
@@ -1464,8 +1431,9 @@ void lmtpmode(struct lmtp_func *func,
 
                 /* if error */
                 if (r==-1) {
-                    syslog(LOG_NOTICE,
-                           "TLS negotiation failed: %s", cd.clienthost);
+                    xsyslog(LOG_NOTICE, "TLS negotiation failed",
+                                        "clienthost=<%s>",
+                                        cd.clienthost);
                     func->shutdown(EX_PROTOCOL);
                 }
 
@@ -1479,6 +1447,12 @@ void lmtpmode(struct lmtp_func *func,
                     cd.authenticated = TLSCERT_AUTHED;
                 }
 
+                /* new session id and blank trace id for the encrypted session.
+                 * client will learn the new session id when they send LHLO again
+                 */
+                session_new_id();
+                trace_set_id(NULL, 0);
+
                 /* tell the prot layer about our new layers */
                 prot_settls(pin, cd.tls_conn);
                 prot_settls(pout, cd.tls_conn);
@@ -1487,7 +1461,24 @@ void lmtpmode(struct lmtp_func *func,
 
                 continue;
             }
-#endif /* HAVE_SSL*/
+            goto syntaxerr;
+
+      case 't':
+      case 'T':
+            if (!strncasecmp(buf, "trace ", 6)) {
+                r = trace_set_id(buf + 6, 0);
+                if (r) {
+                    /* LMTP_PROTOCOL_ERROR */
+                    prot_printf(pout, "501 5.5.4 Invalid TRACE id.\r\n");
+                }
+                else {
+                    prot_printf(pout,
+                                "250 2.0.0 Ok SESSIONID=<%s> TRACEID=<%s>\r\n",
+                                session_id(), trace_id());
+                }
+
+                continue;
+            }
             goto syntaxerr;
 
       case 'v':
@@ -1516,12 +1507,10 @@ void lmtpmode(struct lmtp_func *func,
     saslprops_reset(&saslprops);
 
     cd.starttls_done = 0;
-#ifdef HAVE_SSL
     if (cd.tls_conn) {
         tls_reset_servertls(&cd.tls_conn);
         cd.tls_conn = NULL;
     }
-#endif
 }
 
 /************** client-side LMTP ****************/
@@ -1699,8 +1688,9 @@ static void pushmsg(struct protstream *in, struct protstream *out,
 int lmtp_runtxn(struct backend *conn, struct lmtp_txn *txn)
 {
     int j, code, r = 0;
-    char buf[8192], rsessionid[MAX_SESSIONID_SIZE];
+    char buf[8192];
     int onegood;
+    const char *traceid = trace_id();
 
     assert(conn && txn);
     /* pipelining v. no pipelining? */
@@ -1713,10 +1703,15 @@ int lmtp_runtxn(struct backend *conn, struct lmtp_txn *txn)
     if (!ISGOOD(code)) {
         goto failall;
     }
+    auditlog_proxy(NULL, buf);
 
-    if (config_auditlog) {
-        parse_sessionid(buf, rsessionid);
-        syslog(LOG_NOTICE, "auditlog: proxy sessionid=<%s> remote=<%s>", session_id(), rsessionid);
+    /* forward traceid if remote supports it */
+    if (traceid && CAPA(conn, CAPA_TRACE)) {
+        prot_printf(conn->out, "TRACE %s\r\n", traceid);
+        r = getlastresp(buf, sizeof(buf)-1, &code, conn->in, NULL);
+        if (!ISGOOD(code)) {
+            goto failall;
+        }
     }
 
     /* mail from */

@@ -41,7 +41,6 @@ package Cassandane::Config;
 use strict;
 use warnings;
 
-use lib '.';
 use Cassandane::Cassini;
 use Cassandane::Util::Log;
 
@@ -103,6 +102,7 @@ sub default
             configdirectory => '@basedir@/conf',
             syslog_prefix => '@name@',
             sievedir => '@basedir@/conf/sieve',
+            master_pid_file => '@basedir@/run/master.pid',
             master_ready_file => '@basedir@/master.ready',
             defaultpartition => 'default',
             defaultdomain => 'defdomain',
@@ -119,30 +119,10 @@ sub default
             debug => 'yes',
             httpprettytelemetry => 'yes',
 
-            # from cyr_info conf-default | grep _db:
-            annotation_db => 'twoskip',
-            backup_db => 'twoskip',
-            conversations_db => 'skiplist',
-            duplicate_db => 'twoskip',
-            mboxkey_db => 'twoskip',
-            mboxlist_db => 'twoskip',
-            ptscache_db => 'twoskip',
-            quota_db => 'quotalegacy',
-            search_indexed_db => 'twoskip',
-            seenstate_db => 'twoskip',
-            sortcache_db => 'twoskip',
-            subscription_db => 'flat',
-            statuscache_db => 'twoskip',
-            sync_cache_db => 'twoskip',
-            tlscache_db => 'twoskip',
-            tls_sessions_db => 'twoskip',
-            userdeny_db => 'flat',
-            zoneinfo_db => 'twoskip',
-
             # smtpclient_open should fail by default!
             #
             # If your test fails and writes something like
-            #     smptclient_open: can't connect to host: bogus:0/noauth
+            #     smtpclient_open: can't connect to host: bogus:0/noauth
             # in syslog, then Cyrus is calling smtpclient_open(), and you
             # will need to arrange for fakesmtpd to be listening.  To do
             # this add :want_smtpdaemon to the test attributes, or enable
@@ -193,6 +173,24 @@ sub set
         }
         else {
             $self->{params}->{$n} = $v;
+        }
+    }
+}
+
+sub set_if_undef
+{
+    my ($self, %nv) = @_;
+
+    while (my ($n, $v) = each %nv) {
+        if (exists $bitfields{$n}) {
+            # XXX bitfield behaviour?
+            die "can't set_if_undef with bitfield '$n'";
+        }
+        elsif (not defined $self->get($n)) {
+            $self->{params}->{$n} = $v;
+        }
+        else {
+            # nothing to do
         }
     }
 }

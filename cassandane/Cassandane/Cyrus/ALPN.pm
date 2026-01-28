@@ -46,7 +46,6 @@ use HTTP::Tiny;
 use IO::Socket::SSL;
 use XML::Spice;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -55,6 +54,7 @@ use Cassandane::Util::Log;
 # https://github.com/openssl/openssl/issues/24300
 my $alpn_fail_pattern = qr{(?: tlsv1\salert\sno\sapplication\sprotocol
                             |  ssl3_read_bytes:reason\(1120\)
+                            |  SSL\sroutines::reason\(1120\)
                             )}x;
 
 sub new
@@ -64,6 +64,7 @@ sub new
     my $config = Cassandane::Config->default()->clone();
     $config->set(tls_server_cert => '@basedir@/conf/certs/cert.pem',
                  tls_server_key => '@basedir@/conf/certs/key.pem',
+                 allowstarttls => 'on',
                  httpmodules => 'caldav');
 
     my $self = $class->SUPER::new({

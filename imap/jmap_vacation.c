@@ -1,45 +1,6 @@
-/* jmap_vacation.c -- Routines for handling JMAP vacation responses
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_vacation.c -- Routines for handling JMAP vacation responses */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -73,6 +34,7 @@
 static int jmap_vacation_get(jmap_req_t *req);
 static int jmap_vacation_set(jmap_req_t *req);
 
+// clang-format off
 static jmap_method_t jmap_vacation_methods_standard[] = {
     {
         "VacationResponse/get",
@@ -88,10 +50,13 @@ static jmap_method_t jmap_vacation_methods_standard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_vacation_methods_nonstandard[] = {
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 static int sieve_vacation_enabled = 0;
 
@@ -113,8 +78,8 @@ HIDDEN void jmap_vacation_init(jmap_settings_t *settings)
     }
 
 #ifdef USE_SIEVE
-    unsigned long config_ext = config_getbitfield(IMAPOPT_SIEVE_EXTENSIONS);
-    unsigned long required =
+    uint64_t config_ext = config_getbitfield(IMAPOPT_SIEVE_EXTENSIONS);
+    uint64_t required =
         IMAP_ENUM_SIEVE_EXTENSIONS_VACATION   |
         IMAP_ENUM_SIEVE_EXTENSIONS_RELATIONAL |
         IMAP_ENUM_SIEVE_EXTENSIONS_DATE;
@@ -142,6 +107,7 @@ HIDDEN void jmap_vacation_capabilities(json_t *account_capabilities)
 }
 
 /* VacationResponse/get method */
+// clang-format off
 static const jmap_property_t vacation_props[] = {
     {
         "id",
@@ -181,6 +147,7 @@ static const jmap_property_t vacation_props[] = {
 
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 #define STATUS_ACTIVE    (1<<0)
 #define STATUS_CUSTOM    (1<<1)
@@ -198,11 +165,10 @@ static const jmap_property_t vacation_props[] = {
 static json_t *vacation_read(jmap_req_t *req, struct mailbox *mailbox,
                              struct sieve_data *sdata, unsigned *status)
 {
-    const char *sieve_dir = user_sieve_path(req->accountid);
     struct buf content = BUF_INITIALIZER;
     json_t *vacation = NULL;
 
-    sieve_script_fetch(mailbox, sdata, &content);
+    if (mailbox && sdata) sieve_script_fetch(mailbox, sdata, &content);
 
     /* Parse JMAP from vacation script */
     if (buf_len(&content)) {
@@ -224,6 +190,7 @@ static json_t *vacation_read(jmap_req_t *req, struct mailbox *mailbox,
 
         if (isEnabled && !isActive) {
 #ifdef USE_SIEVE
+            const char *sieve_dir = user_sieve_path(req->accountid);
             /* Check if vacation script is really active */
             const char *activebc =  sievedir_get_active(sieve_dir);
             struct buf *buf = NULL;
@@ -302,7 +269,7 @@ static void vacation_get(jmap_req_t *req, struct mailbox *mailbox,
 static int jmap_vacation_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     struct sieve_db *db = NULL;
     struct mailbox *mailbox = NULL;
@@ -317,10 +284,14 @@ static int jmap_vacation_get(jmap_req_t *req)
         goto done;
     }
 
-    r = sieve_ensure_folder(req->accountid, &mailbox, /*silent*/0);
+    char *mboxname = sieve_mboxname(req->accountid);
+    r = mailbox_open_irl(mboxname, &mailbox);
+    free(mboxname);
+    if (r == IMAP_MAILBOX_NONEXISTENT) {
+        r = 0;
+        goto respond;
+    }
     if (r) goto done;
-
-    mailbox_unlock_index(mailbox, NULL);
 
     db = sievedb_open_userid(req->accountid);
     if (!db) {
@@ -336,6 +307,8 @@ static int jmap_vacation_get(jmap_req_t *req)
             goto done;
         }
     }
+
+respond:
 
     /* Does the client request specific responses? */
     if (JNOTNULL(get.ids)) {
@@ -355,7 +328,7 @@ static int jmap_vacation_get(jmap_req_t *req)
 
     /* Build response */
     struct buf buf = BUF_INITIALIZER;
-    buf_printf(&buf, MODSEQ_FMT, sdata->modseq);
+    buf_printf(&buf, MODSEQ_FMT, sdata ? sdata->modseq : 0L);
     get.state = buf_release(&buf);
     jmap_ok(req, jmap_get_reply(&get));
 
@@ -545,7 +518,7 @@ static void vacation_update(struct jmap_req *req,
 static int jmap_vacation_set(struct jmap_req *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_set set;
+    struct jmap_set set = JMAP_SET_INITIALIZER;
     json_t *jerr = NULL;
     struct sieve_db *db = NULL;
     struct mailbox *mailbox = NULL;

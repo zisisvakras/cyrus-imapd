@@ -4,8 +4,8 @@ use Cassandane::Tiny;
 sub test_email_query_fromcontactgroupid
     :min_version_3_1 :needs_component_sieve
     :JMAPExtensions
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     my $admintalk = $self->{adminstore}->get_client();
@@ -111,22 +111,6 @@ sub test_email_query_fromcontactgroupid
     $self->assert_str_equals($emailId1, $res->[0][1]{ids}[0]);
     $self->assert_str_equals($emailId2, $res->[0][1]{ids}[1]);
 
-    # Filter by contact group and addressbook.
-    $res = $jmap->CallMethods([
-        ['Email/query', {
-            filter => {
-                fromContactGroupId => $contactGroupId2
-            },
-            sort => [
-                { property => "subject" }
-            ],
-            addressbookId => 'Addrbook2'
-        }, 'R1']
-    ], $using);
-    $self->assert_num_equals(1, scalar @{$res->[0][1]{ids}});
-    $self->assert_str_equals($emailId1, $res->[0][1]{ids}[0]);
-
-
     # Negate filter by contact group.
     $res = $jmap->CallMethods([
         ['Email/query', {
@@ -144,7 +128,7 @@ sub test_email_query_fromcontactgroupid
     $self->assert_num_equals(1, scalar @{$res->[0][1]{ids}});
     $self->assert_str_equals($emailId3, $res->[0][1]{ids}[0]);
 
-    # Reject unknown contact groups.
+    # Unknown contact group should return an empty set.
     $res = $jmap->CallMethods([
         ['Email/query', {
             filter => {
@@ -155,35 +139,7 @@ sub test_email_query_fromcontactgroupid
             ],
         }, 'R1']
     ], $using);
-    $self->assert_str_equals('invalidArguments', $res->[0][1]{type});
-
-    # Reject contact groups in wrong addressbook.
-    $res = $jmap->CallMethods([
-        ['Email/query', {
-            filter => {
-                fromContactGroupId => $contactGroupId1
-            },
-            sort => [
-                { property => "subject" }
-            ],
-            addressbookId => 'Addrbook2',
-        }, 'R1']
-    ], $using);
-    $self->assert_str_equals('invalidArguments', $res->[0][1]{type});
-
-    # Reject unknown addressbooks.
-    $res = $jmap->CallMethods([
-        ['Email/query', {
-            filter => {
-                fromContactGroupId => $contactGroupId1,
-            },
-            sort => [
-                { property => "subject" }
-            ],
-            addressbookId => 'doesnotexist',
-        }, 'R1']
-    ], $using);
-    $self->assert_str_equals('invalidArguments', $res->[0][1]{type});
+    $self->assert_deep_equals([], $res->[0][1]{ids});
 
     # Support also to, cc, bcc
     $res = $jmap->CallMethods([

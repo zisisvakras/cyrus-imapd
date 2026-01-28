@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_error_flag
     :min_version_3_3
+    ($self)
 {
-    my ($self) = @_;
-
     xlog $self, "Install a sieve script filing all mail into a nonexistant folder";
     $self->{instance}->install_sieve_script(<<EOF);
 require ["ihave", "fileinto"];
@@ -42,8 +41,8 @@ EOF
 
     my $res = $imaptalk->fetch('1:*', 'flags');
 
-    $self->assert_null(grep { $_ eq '$SieveFailed' } @{$res->{1}{flags}});
-    $self->assert_not_null(grep { $_ eq '$SieveFailed' } @{$res->{2}{flags}});
-    $self->assert_null(grep { $_ eq '$SieveFailed' } @{$res->{3}{flags}});
-    $self->assert_not_null(grep { $_ eq '$SieveFailed' } @{$res->{4}{flags}});
+    $self->assert_not_contains('$SieveFailed', $res->{1}{flags});
+    $self->assert_contains('$SieveFailed', $res->{2}{flags});
+    $self->assert_not_contains('$SieveFailed', $res->{3}{flags});
+    $self->assert_contains('$SieveFailed', $res->{4}{flags});
 }

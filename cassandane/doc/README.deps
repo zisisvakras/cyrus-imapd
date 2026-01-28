@@ -8,12 +8,14 @@ Cassandane needs the following software to work:
    Used for standing up local test HTTP servers for testing various bits of
    Cyrus callout capabilities
 
+ * Email::MIME
+    This is a generic MIME email parser and generator.
+
  * Mail::IMAPTalk
     This is a fully featured IMAP client package, available on CPAN.
 
     There is an Ubuntu package for this, libmail-imaptalk-perl.
 
- * Mail::JMAPTalk
  * Net::DAVTalk
  * Net::CalDAVTalk
  * Net::CardDAVTalk
@@ -137,6 +139,11 @@ Cassandane needs the following software to work:
     Calculates various types of CRC sums
     Debian/Ubuntu package libdigest-crc-perl
 
+
+ * Archive::Tar::Stream
+    Used for the backupcyrusd format
+    cpan Archive::Tar::Stream
+
  * AnyEvent
  * Convert::Base64
  * DateTime::Format::ISO8601
@@ -147,7 +154,7 @@ Cassandane needs the following software to work:
 
 Debian/Ubuntu copypasta:
   sudo apt-get -y install liburi-perl libdigest-sha-perl \
-       libdatetime-perl libbsd-resource-perl libtest-unit-perl \
+       libdatetime-perl libbsd-resource-perl \
        libxml-generator-perl libxml-xpath-perl libclone-perl \
        libencode-imaputf7-perl libconfig-inifiles-perl \
        libio-socket-inet6-perl libio-socket-ssl-perl libnet-server-perl \
@@ -160,11 +167,12 @@ Debian/Ubuntu copypasta:
        libdatetime-format-ical-perl libuniversal-require-perl \
        libtest-nowarnings-perl libtest-longstring-perl \
        libtest-warn-perl libnet-ldap-server-perl \
-       libdbd-sqlite3-perl libdigest-crc-perl libxml-simple-perl
+       libdbd-sqlite3-perl libdigest-crc-perl libxml-simple-perl \
+       libemail-mime-perl
 
-  sudo cpan Math::Int64 Mail::JMAPTalk Mail::IMAPTalk \
+  sudo cpan Math::Int64 Mail::IMAPTalk \
        Net::CalDAVTalk Net::CardDAVTalk String::CRC32 \
-       IO::File::Lockable
+       IO::File::Lockable Archive::Tar::Stream Test::Unit
 
 Fedora copypasta:
    # there's heaps more to add here... needs to be tested
@@ -177,6 +185,6 @@ Fedora copypasta:
         perl-Unix-Syslog perl-File-chdir perl-Math-Int64 \
         perl-Mail-IMAPTalk perl-String-CRC32 perl-File-chdir \
         perl-Unix-Syslog perl-Net-Server perl-Net-CalDAVTalk \
-        perl-Net-CardDAVTalk perl-Mail-JMAPTalk perl-AnyEvent \
+        perl-Net-CardDAVTalk perl-AnyEvent \
         perl-File-Slurp perl-Pod-POM perl-experimental
 

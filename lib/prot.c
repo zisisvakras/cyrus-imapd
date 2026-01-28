@@ -1,44 +1,6 @@
-/* prot.c -- stdio-like module that handles SASL protection mechanisms
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* prot.c -- stdio-like module that handles SASL protection mechanisms */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <stdio.h>
@@ -125,7 +87,7 @@ EXPORTED struct protstream *prot_writebuf(struct buf *buf)
 
 /* Create a protstream which is just an interface to a mapped piece of
  * memory, allowing prot commands to be used to read from it */
-EXPORTED struct protstream *prot_readmap(const char *base, uint32_t len)
+EXPORTED struct protstream *prot_readmap(const char *base, size_t len)
 {
     struct protstream *newstream;
 
@@ -195,6 +157,8 @@ EXPORTED int prot_free(struct protstream *s)
     if (s->zbuf) free(s->zbuf);
 #endif
 
+    buf_free(&s->vbuf);
+
     free(s);
 
     return 0;
@@ -215,8 +179,6 @@ EXPORTED int prot_setisclient(struct protstream *s, int val)
     return 0;
 }
 
-#ifdef HAVE_SSL
-
 /*
  * Turn on TLS for this connection
  */
@@ -232,8 +194,6 @@ EXPORTED int prot_settls(struct protstream *s, SSL *tlsconn)
 
     return 0;
 }
-
-#endif /* HAVE_SSL */
 
 /*
  * Decode data sent via a SASL security layer. Returns EOF on error.
@@ -628,7 +588,7 @@ EXPORTED int prot_fill(struct protstream *s)
 {
     int n;
     unsigned char *ptr;
-    int left;
+    size_t left;
     int r;
     struct timeval timeout;
     fd_set rfds;
@@ -675,12 +635,10 @@ EXPORTED int prot_fill(struct protstream *s)
         /* wait until get input */
         haveinput = 0;
 
-#ifdef HAVE_SSL
         /* maybe there's data stuck in the SSL buffer? */
         if (s->tls_conn != NULL) {
             haveinput = SSL_pending(s->tls_conn);
         }
-#endif
 
         /* if we've promised to call something before blocking or
            flush an output stream, check to see if we're going to block */
@@ -767,12 +725,10 @@ EXPORTED int prot_fill(struct protstream *s)
             if (s->fillcallback_proc != NULL) {
                 n = (*s->fillcallback_proc)(s->buf, PROT_BUFSIZE, s->fillcallback_rock);
             }
-#ifdef HAVE_SSL
             /* just do a SSL read instead if we're under a tls layer */
             else if (s->tls_conn != NULL) {
                 n = SSL_read(s->tls_conn, (char *) s->buf, PROT_BUFSIZE);
             }
-#endif /* HAVE_SSL */
             else {
                 n = read(s->fd, s->buf, PROT_BUFSIZE);
             }
@@ -867,7 +823,7 @@ static void prot_flush_log(struct protstream *s)
 {
     if(s->logfd != PROT_NO_FD) {
         unsigned char *ptr = s->buf;
-        int left = s->ptr - s->buf;
+        size_t left = s->ptr - s->buf;
         int n;
         time_t newtime;
         char timebuf[20];
@@ -896,10 +852,10 @@ static void prot_flush_log(struct protstream *s)
 /* Do the encoding part of prot_flush */
 static int prot_flush_encode(struct protstream *s,
                              const char **output_buf,
-                             unsigned *output_len)
+                             size_t *output_len)
 {
     unsigned char *ptr = s->buf;
-    int left = s->ptr - s->buf;
+    size_t left = s->ptr - s->buf;
 
 #ifdef HAVE_ZLIB
     if (s->zstrm) {
@@ -914,7 +870,7 @@ static int prot_flush_encode(struct protstream *s,
         do {
             /* should never be needed, but it's better to always check! */
             if (!s->zstrm->avail_out) {
-                syslog(LOG_DEBUG, "growing compress buffer from %u to %u bytes",
+                syslog(LOG_DEBUG, "growing compress buffer from %lu to %lu bytes",
                        s->zbuf_size, s->zbuf_size + PROT_BUFSIZE);
 
                 s->zbuf = (unsigned char *)
@@ -947,9 +903,13 @@ static int prot_flush_encode(struct protstream *s,
 
     if (s->saslssf != 0) {
         /* encode the data */
+        unsigned len = 0;
         int result = sasl_encode(s->conn, (char *) ptr, left,
-                                 output_buf, output_len);
-        if (result != SASL_OK) {
+                                 output_buf, &len);
+        if (result == SASL_OK) {
+            *output_len = len;
+        }
+        else {
             char errbuf[256];
             const char *ed = sasl_errdetail(s->conn);
 
@@ -975,15 +935,11 @@ static int prot_flush_writebuffer(struct protstream *s,
 
     do {
         cmdtime_netstart();
-#ifdef HAVE_SSL
         if (s->tls_conn != NULL) {
             n = SSL_write(s->tls_conn, (char *)buf, len);
         } else {
             n = write(s->fd, buf, len);
         }
-#else  /* HAVE_SSL */
-        n = write(s->fd, buf, len);
-#endif /* HAVE_SSL */
         cmdtime_netend();
     } while (n == -1 && errno == EINTR && !signals_poll());
 
@@ -996,7 +952,7 @@ int prot_flush_internal(struct protstream *s, int force)
     int save_dontblock = s->dontblock;
 
     const char *ptr = (char *) s->buf; /* Memory buffer info */
-    unsigned left = s->ptr - s->buf;
+    size_t left = s->ptr - s->buf;
 
     assert(s->write);
 
@@ -1209,7 +1165,7 @@ int prot_flush_internal(struct protstream *s, int force)
 /*
  * Write to the output stream 's' the 'len' bytes of data at 'buf'
  */
-EXPORTED int prot_write(struct protstream *s, const char *buf, unsigned len)
+EXPORTED int prot_write(struct protstream *s, const char *buf, size_t len)
 {
     assert(s->write);
     if(s->error || s->eof) return EOF;
@@ -1250,10 +1206,11 @@ EXPORTED int prot_write(struct protstream *s, const char *buf, unsigned len)
         /* XXX can we manage to write data from 'buf' without copying it
            to s->ptr ? */
         memcpy(s->ptr, buf, s->cnt);
-        s->ptr += s->cnt;
         buf += s->cnt;
         len -= s->cnt;
+        s->ptr += s->cnt;
         s->cnt = 0;
+        s->bytes_out += s->cnt;
         if (prot_flush_internal(s,0) == EOF) return EOF;
     }
     memcpy(s->ptr, buf, len);
@@ -1293,13 +1250,11 @@ EXPORTED int prot_printf(struct protstream *s, const char *fmt, ...)
 
 EXPORTED int prot_vprintf(struct protstream *s, const char *fmt, va_list pvar)
 {
-    struct buf buf = BUF_INITIALIZER;
-
     assert(s->write);
 
-    buf_vprintf(&buf, fmt, pvar);
-    prot_puts(s, buf_cstring(&buf));
-    buf_free(&buf);
+    buf_vprintf(&s->vbuf, fmt, pvar);
+    prot_write(s, buf_base(&s->vbuf), buf_len(&s->vbuf));
+    buf_reset(&s->vbuf);
 
     if (s->error || s->eof) return EOF;
     return 0;
@@ -1430,7 +1385,7 @@ EXPORTED int prot_printastring(struct protstream *out, const char *s)
  * Read from the protections stream 's' up to 'size' bytes into the buffer
  * 'buf'.  Returns the number of bytes read, or 0 for some error.
  */
-EXPORTED int prot_read(struct protstream *s, char *buf, unsigned size)
+EXPORTED int prot_read(struct protstream *s, char *buf, size_t size)
 {
     int c;
 
@@ -1458,7 +1413,7 @@ EXPORTED int prot_read(struct protstream *s, char *buf, unsigned size)
  * Read from the protections stream 's' up to 'size' bytes, and append them
  * to the buffer 'buf'.  Returns the number of bytes read, or 0 for some error.
  */
-EXPORTED int prot_readbuf(struct protstream *s, struct buf *buf, unsigned size)
+EXPORTED int prot_readbuf(struct protstream *s, struct buf *buf, size_t size)
 {
     buf_ensure(buf, size);
     size = prot_read(s, buf->s + buf->len, size);
@@ -1549,7 +1504,6 @@ EXPORTED int prot_select(struct protgroup *readstreams, int extra_read_fd,
             protgroup_insert(retval, s);
 
         }
-#ifdef HAVE_SSL
         else if(s->tls_conn != NULL && SSL_pending(s->tls_conn)) {
             found_fds++;
 
@@ -1558,10 +1512,9 @@ EXPORTED int prot_select(struct protgroup *readstreams, int extra_read_fd,
 
             protgroup_insert(retval, s);
         }
-#endif
     }
 
-    /* xxx we should probably do a nonblocking select on the remaining
+    /* XXX we should probably do a nonblocking select on the remaining
      * protstreams instead of skipping this part entirely */
     if(!retval) {
         time_t sleepfor;
@@ -1631,7 +1584,7 @@ EXPORTED int prot_select(struct protgroup *readstreams, int extra_read_fd,
 /*
  * Version of fgets() that works with protection streams.
  */
-EXPORTED char *prot_fgets(char *buf, unsigned size, struct protstream *s)
+EXPORTED char *prot_fgets(char *buf, size_t size, struct protstream *s)
 {
     char *p = buf;
     int c;

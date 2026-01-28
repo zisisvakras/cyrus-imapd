@@ -1,44 +1,6 @@
-/* lmtp_sieve.c -- Sieve implementation for lmtpd
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* lmtp_sieve.c -- Sieve implementation for lmtpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -58,6 +20,7 @@
 #include "annotate.h"
 #include "append.h"
 #include "assert.h"
+#include "auditlog.h"
 #include "auth.h"
 #include "duplicate.h"
 #include "global.h"
@@ -191,7 +154,9 @@ static int getmailboxidexists(void *sc, const char *extname)
 {
     script_data_t *sd = (script_data_t *)sc;
     const char *userid = mbname_userid(sd->mbname);
-    char *intname = mboxlist_find_uniqueid(extname, userid, sd->authstate);
+    char *intname = (*extname == JMAP_MAILBOXID_PREFIX) ?
+        mboxlist_find_jmapid(extname, userid, sd->authstate) :
+        mboxlist_find_uniqueid(extname, userid, sd->authstate);
     int exists = 0;
 
     if (intname && !mboxname_isnondeliverymailbox(intname, 0)) {
@@ -402,8 +367,9 @@ static int getinclude(void *sc, const char *script, int isglobal,
     int r;
 
     if (strstr(script, "../")) {
-        syslog(LOG_NOTICE, "Illegal script name '%s' for user '%s'",
-               script, mbname_userid(sdata->mbname));
+        xsyslog(LOG_NOTICE, "illegal script name",
+                            "script=<%s> userid=<%s>",
+                            script, mbname_userid(sdata->mbname));
         return SIEVE_FAIL;
     }
 
@@ -522,8 +488,7 @@ static int send_rejection(const char *userid,
         r = smtpclient_send(sm, &sm_env, &msgbuf);
     }
     if (r) {
-        syslog(LOG_ERR, "sieve: send_rejection: SMTP error: %s",
-                error_message(r));
+        xsyslog(LOG_ERR, "sieve SMTP error", "error=<%s>", error_message(r));
     }
     smtpclient_close(&sm);
 
@@ -590,8 +555,9 @@ void sieve_srs_init(void)
     if (srs_status != SRS_SUCCESS) {
         sieve_srs_free();
 
-        syslog(LOG_ERR, "sieve SRS configuration error: %s",
-               srs_strerror(srs_status));
+        xsyslog(LOG_ERR, "sieve SRS configuration error",
+                         "error=<%s>",
+                         srs_strerror(srs_status));
     }
 }
 
@@ -626,8 +592,9 @@ static char *sieve_srs_forward(char *return_path)
                                    return_path, srs_domain);
 
     if (srs_status != SRS_SUCCESS) {
-        syslog(LOG_ERR, "sieve SRS forward failed (%s, %s): %s",
-               return_path, srs_domain, srs_strerror(srs_status));
+        xsyslog(LOG_ERR, "sieve SRS forward failed",
+                         "return_path=<%s> srs_domain=<%s> error=<%s>",
+                         return_path, srs_domain, srs_strerror(srs_status));
         if (srs_return_path) {
             free(srs_return_path);
             srs_return_path = NULL;
@@ -866,11 +833,11 @@ static int sieve_redirect(void *ac, void *ic,
     /* if we have a msgid, we can track our redirects */
     if (m->id) {
         snprintf(buf, sizeof(buf), "%s-%s", m->id, rc->addr);
-        sievedb = make_sieve_db(mbname_recipient(sd->mbname, ((deliver_data_t *) mc)->ns));
+        sievedb = make_sieve_db(mbname_recipient(sd->mbname, mdata->ns));
 
         dkey.id = buf;
         dkey.to = sievedb;
-        dkey.date = ((deliver_data_t *) mc)->m->date;
+        dkey.date = m->date;
         /* ok, let's see if we've redirected this message before */
         if (duplicate_check(&dkey)) {
             duplicate_log(&dkey, "redirect");
@@ -893,12 +860,12 @@ static int sieve_redirect(void *ac, void *ic,
         if (sievedb) duplicate_mark(&dkey, time(NULL), 0);
 
         prometheus_increment(CYRUS_LMTP_SIEVE_REDIRECT_TOTAL);
-        syslog(LOG_INFO, "sieve redirected: %s to: %s",
-               m->id ? m->id : "<nomsgid>", rc->addr);
-        if (config_auditlog)
-            syslog(LOG_NOTICE,
-                   "auditlog: redirect sessionid=<%s> message-id=%s target=<%s> userid=<%s>",
-                   session_id(), m->id ? m->id : "<nomsgid>", rc->addr, ctx->userid);
+        xsyslog(LOG_INFO, "sieve redirect",
+                          "message-id=%s target=<%s>",
+                          m->id ? m->id : "<nomsgid>",
+                          rc->addr);
+        auditlog_sieve("sieve.redirect",
+                       ctx->userid, m->id, NULL, rc->addr, NULL, NULL);
         return SIEVE_OK;
     } else {
         if (res == -1) {
@@ -921,11 +888,10 @@ static int sieve_discard(void *ac __attribute__((unused)),
     prometheus_increment(CYRUS_LMTP_SIEVE_DISCARD_TOTAL);
 
     /* ok, we won't file it, but log it */
-    syslog(LOG_INFO, "sieve discarded: %s",
-           md->id ? md->id : "<nomsgid>");
-    if (config_auditlog)
-        syslog(LOG_NOTICE, "auditlog: discard sessionid=<%s> message-id=%s",
-               session_id(), md->id ? md->id : "<nomsgid>");
+    xsyslog(LOG_INFO, "sieve discard",
+                      "message-id=%s",
+                      md->id ? md->id : "<nomsgid>");
+    auditlog_sieve("sieve.discard", NULL, md->id, NULL, NULL, NULL, NULL);
 
     return SIEVE_OK;
 }
@@ -972,13 +938,11 @@ static int sieve_reject(void *ac, void *ic,
         msg_setrcpt_status(md, mydata->cur_rcpt, LMTP_MESSAGE_REJECTED, resp);
 
         prometheus_increment(CYRUS_LMTP_SIEVE_REJECT_TOTAL);
-        syslog(LOG_INFO, "sieve LMTP rejected: %s",
-               md->id ? md->id : "<nomsgid>");
-        if (config_auditlog)
-            syslog(LOG_NOTICE,
-                   "auditlog: LMTP reject sessionid=<%s> message-id=%s userid=<%s>",
-                   session_id(), md->id ? md->id : "<nomsgid>", ctx->userid);
-
+        xsyslog(LOG_INFO, "sieve LMTP reject",
+                          "message-id=%s",
+                          md->id ? md->id : "<nomsgid>");
+        auditlog_sieve("sieve.lmtp-reject",
+                       ctx->userid, md->id, NULL, NULL, NULL, NULL);
         return SIEVE_OK;
     }
 
@@ -989,12 +953,12 @@ static int sieve_reject(void *ac, void *ic,
     }
 
     if (strlen(md->return_path) == 0) {
-        syslog(LOG_INFO, "sieve: discarded reject to <> for %s id %s",
-               mbname_userid(sd->mbname), md->id ? md->id : "<nomsgid>");
-        if (config_auditlog)
-            syslog(LOG_NOTICE,
-                   "auditlog: discard-reject sessionid=<%s> message-id=%s userid=<%s>",
-                   session_id(), md->id ? md->id : "<nomsgid>", ctx->userid);
+        xsyslog(LOG_INFO, "sieve discard-reject",
+                          "userid=<%s> message-id=%s",
+                          mbname_userid(sd->mbname),
+                          md->id ? md->id : "<nomsgid>");
+        auditlog_sieve("sieve.discard-reject",
+                       ctx->userid, md->id, NULL, NULL, NULL, NULL);
         return SIEVE_OK;
     }
 
@@ -1004,13 +968,12 @@ static int sieve_reject(void *ac, void *ic,
                               origreceip, mbname_recipient(sd->mbname, ((deliver_data_t *) mc)->ns),
                               rc->msg, md->data)) == 0) {
         prometheus_increment(CYRUS_LMTP_SIEVE_REJECT_TOTAL);
-        syslog(LOG_INFO, "sieve rejected: %s to: %s",
-               md->id ? md->id : "<nomsgid>", md->return_path);
-        if (config_auditlog)
-            syslog(LOG_NOTICE,
-                   "auditlog: reject sessionid=<%s> message-id=%s target=<%s> userid=<%s>",
-                   session_id(), md->id ? md->id : "<nomsgid>", md->return_path,
-                   ctx->userid);
+        xsyslog(LOG_INFO, "sieve reject",
+                          "message-id=%s target=<%s>",
+                          md->id ? md->id : "<nomsgid>",
+                          md->return_path);
+        auditlog_sieve("sieve.reject",
+                       ctx->userid, md->id, NULL, md->return_path, NULL, NULL);
         return SIEVE_OK;
     } else {
         if (res == -1) {
@@ -1047,31 +1010,32 @@ static deliver_data_t *setup_special_delivery(deliver_data_t *mydata,
     md.f = append_newstage(intname, time(0),
                            strhash(intname) /* unique msgnum for modified msg */,
                            &dd.stage);
-    if (md.f) {
-        char buf[4096];
-
-        /* write updated message headers */
-        fwrite(buf_base(headers), buf_len(headers), 1, md.f);
-
-        /* get offset of message body */
-        md.body_offset = ftell(md.f);
-
-        /* write message body */
-        fseek(mydata->m->f, mydata->m->body_offset, SEEK_SET);
-        while (fgets(buf, sizeof(buf), mydata->m->f)) fputs(buf, md.f);
-        fflush(md.f);
-
-        /* XXX  do we look for updated Date and Message-ID? */
-        md.size = ftell(md.f);
-        md.data = prot_new(fileno(md.f), 0);
-
-        mydata = &dd;
-    }
-    else mydata = NULL;
-
     mbname_free(&mbname);
+    if (!md.f) return NULL;
 
-    return mydata;
+    char buf[4096];
+
+    /* write updated message headers */
+    fwrite(buf_base(headers), buf_len(headers), 1, md.f);
+
+    /* get offset of message body */
+    md.body_offset = ftell(md.f);
+
+    /* write message body */
+    fseek(mydata->m->f, mydata->m->body_offset, SEEK_SET);
+    while (fgets(buf, sizeof(buf), mydata->m->f)) fputs(buf, md.f);
+
+    if (fflush(md.f) || ferror(md.f) || fdatasync(fileno(md.f))) {
+        syslog(LOG_ERR, "IOERROR: setup special delivery failed %s: %s",
+               mbname_intname(origmbname), strerror(errno));
+        fclose(md.f);
+        return NULL;
+    }
+
+    /* XXX  do we look for updated Date and Message-ID? */
+    md.size = ftell(md.f);
+    md.data = prot_new(fileno(md.f), 0);
+    return &dd;
 }
 
 static void cleanup_special_delivery(deliver_data_t *mydata)
@@ -1108,7 +1072,9 @@ static int sieve_fileinto(void *ac,
     }
     else {
         if (fc->mailboxid) {
-            intname = mboxlist_find_uniqueid(fc->mailboxid, userid, sd->authstate);
+            intname = (*fc->mailboxid == JMAP_MAILBOXID_PREFIX) ?
+                mboxlist_find_jmapid(fc->mailboxid, userid, sd->authstate) :
+                mboxlist_find_uniqueid(fc->mailboxid, userid, sd->authstate);
             if (intname && mboxname_isnondeliverymailbox(intname, 0)) {
                 free(intname);
                 intname = NULL;
@@ -1245,8 +1211,8 @@ static int sieve_snooze(void *ac,
     if (!intname) {
         xsyslog(LOG_NOTICE,
                 "Sieve: can't find \\Snoozed mailbox",
-                "sessionid=<%s> userid=<%s> msgid=<%s>",
-                session_id(), userid, md->id);
+                "userid=<%s> msgid=<%s>",
+                userid, md->id);
         goto done;
     }
 
@@ -1267,8 +1233,8 @@ static int sieve_snooze(void *ac,
         if (!tz) {
             xsyslog(LOG_NOTICE,
                     "Sieve: unknown time zone",
-                    "sessionid=<%s> userid=<%s> msgid=<%s> tzid=<%s>",
-                    session_id(), userid, md->id, sn->tzid);
+                    "userid=<%s> msgid=<%s> tzid=<%s>",
+                    userid, md->id, sn->tzid);
             ret = IMAP_NOTFOUND;
             goto done;
         }
@@ -1330,8 +1296,11 @@ static int sieve_snooze(void *ac,
         mbentry_t *mbentry = NULL;
 
         if (sn->awaken_mboxid) {
-            awaken = mboxlist_find_uniqueid(sn->awaken_mboxid,
-                                            userid, sd->authstate);
+            awaken = (*sn->awaken_mboxid == JMAP_MAILBOXID_PREFIX) ?
+                mboxlist_find_jmapid(sn->awaken_mboxid,
+                                     userid, sd->authstate) :
+                mboxlist_find_uniqueid(sn->awaken_mboxid,
+                                       userid, sd->authstate);
             if (awaken) awakenid = sn->awaken_mboxid;
         }
         if (!awakenid && sn->awaken_spluse) {
@@ -1410,8 +1379,8 @@ static int sieve_snooze(void *ac,
     if (ret) {
         xsyslog(LOG_NOTICE,
                 "Sieve: delivery to \\Snoozed mailbox failed",
-                "sessionid=<%s> userid=<%s> msgid=<%s> err=<%s>",
-                session_id(), userid, md->id, error_message(ret));
+                "userid=<%s> msgid=<%s> err=<%s>",
+                userid, md->id, error_message(ret));
     }
 
     strarray_free(imapflags);
@@ -1501,9 +1470,10 @@ static int sieve_processcal(void *ac, void *ic, void *sc, void *mc,
         buf_setcstr(&cal->outcome, "error");
         buf_setcstr(&cal->reason,
                     "MUST have exactly one VCALENDAR component");
-        syslog(LOG_NOTICE,
-               "Sieve: message %s does not have exactly one VCALENDAR component",
-               mydata->m->id ? mydata->m->id : "<no-msgid>");
+        xsyslog(LOG_NOTICE, "Sieve: message does not have"
+                            " exactly one VCALENDAR component",
+                            "message-id=%s",
+                            mydata->m->id ? mydata->m->id : "<nomsgid>");
         goto done;
     }
 
@@ -1512,8 +1482,9 @@ static int sieve_processcal(void *ac, void *ic, void *sc, void *mc,
         if (cal->allow_public) meth = ICAL_METHOD_PUBLISH;
         else {
             buf_setcstr(&cal->reason, "missing METHOD property");
-            syslog(LOG_NOTICE, "Sieve: message %s contains non-iTIP iCalendar data",
-                   mydata->m->id ? mydata->m->id : "<no-msgid>");
+            xsyslog(LOG_NOTICE, "Sieve: message contains non-iTIP iCalendar data",
+                                "message-id=%s",
+                                mydata->m->id ? mydata->m->id : "<nomsgid>");
             goto done;
         }
     }
@@ -1728,15 +1699,14 @@ static int sieve_processcal(void *ac, void *ic, void *sc, void *mc,
     }
 
   done:
-    syslog(LOG_INFO, "sieve iMIP: %s: %s (%s)",
-           m->id ? m->id : "<nomsgid>",
-           buf_cstring(&cal->outcome), buf_cstring(&cal->reason));
-    if (config_auditlog)
-        syslog(LOG_NOTICE,
-               "auditlog: processed iMIP sessionid=<%s> message-id=%s"
-               " outcome=%s errstr='%s'",
-               session_id(), m->id ? m->id : "<nomsgid>",
-               buf_cstring(&cal->outcome), buf_cstring(&cal->reason));
+    xsyslog(LOG_INFO, "sieve iMIP",
+                      "message-id=%s outcome=<%s> error=<%s>",
+                      m->id ? m->id : "<nomsgid>",
+                      buf_cstring(&cal->outcome),
+                      buf_cstring(&cal->reason));
+    auditlog_imip(m->id,
+                  buf_cstring(&cal->outcome),
+                  buf_cstringnull_ifempty(&cal->reason));
 
     strarray_fini(&sched_addresses);
     if (parts) {
@@ -1948,8 +1918,9 @@ static void do_fcc(script_data_t *sdata, sieve_fileinto_context_t *fcc,
     userid = mbname_userid(sdata->mbname);
 
     if (fcc->mailboxid) {
-        intname = mboxlist_find_uniqueid(fcc->mailboxid, userid,
-                                         sdata->authstate);
+        intname = (*fcc->mailboxid == JMAP_MAILBOXID_PREFIX) ?
+            mboxlist_find_jmapid(fcc->mailboxid, userid, sdata->authstate) :
+            mboxlist_find_uniqueid(fcc->mailboxid, userid, sdata->authstate);
         if (intname && mboxname_isnondeliverymailbox(intname, 0)) {
             free(intname);
             intname = NULL;
@@ -1986,10 +1957,13 @@ static void do_fcc(script_data_t *sdata, sieve_fileinto_context_t *fcc,
     }
     if (!r) {
         struct stagemsg *stage;
+        struct timespec internaldate;
+
+        cyrus_gettime(CLOCK_REALTIME, &internaldate);
         /* post-date by 1 sec in an effort to have
            the FCC threaded AFTER the incoming message */
-        time_t internaldate = time(NULL) + 1;
-        FILE *f = append_newstage(intname, internaldate,
+        internaldate.tv_sec += 1;
+        FILE *f = append_newstage(intname, internaldate.tv_sec,
                                   strhash(intname) /* unique msgnum for reply */,
                                   &stage);
         if (f) {
@@ -1999,7 +1973,7 @@ static void do_fcc(script_data_t *sdata, sieve_fileinto_context_t *fcc,
             fclose(f);
 
             r = append_fromstage(&as, &body, stage,
-                                 internaldate, /* createdmodseq */ 0,
+                                 &internaldate, /* createdmodseq */ 0,
                                  fcc->imapflags, 0, /* annotations */ NULL);
             if (!r) r = append_commit(&as);
 
@@ -2014,8 +1988,9 @@ static void do_fcc(script_data_t *sdata, sieve_fileinto_context_t *fcc,
     }
 
     if (r) {
-        syslog(LOG_NOTICE, "sieve fcc '%s' failed: %s",
-               fcc->mailbox, error_message(r));
+        xsyslog(LOG_NOTICE, "sieve fcc failed",
+                            "mailbox=<%s> error=<%s>",
+                            fcc->mailbox, error_message(r));
     }
 
     free(intname);
@@ -2096,6 +2071,13 @@ static int send_response(void *ac, void *ic,
     smtpclient_close(&sm);
 
     if (r == 0) {
+        struct buf fromaddr = BUF_INITIALIZER;
+
+        if (strchr(src->fromaddr, '<'))
+            buf_init_ro_cstr(&fromaddr, src->fromaddr);
+        else
+            buf_printf(&fromaddr, "<%s>", src->fromaddr);
+
         sievedb = make_sieve_db(mbname_recipient(sdata->mbname, ((deliver_data_t *) mc)->ns));
 
         dkey.id = outmsgid;
@@ -2108,6 +2090,15 @@ static int send_response(void *ac, void *ic,
         }
 
         prometheus_increment(CYRUS_LMTP_SIEVE_AUTORESPOND_SENT_TOTAL);
+
+        xsyslog(LOG_INFO, "sieve autoresponded",
+                          "in.msgid=%s out.msgid=%s from=%s to=<%s>",
+                          md->id ? md->id : "", outmsgid,
+                          buf_cstring(&fromaddr), src->addr);
+        auditlog_sieve("sieve.vacation",
+                       ctx->userid, md->id, outmsgid,
+                       NULL, buf_cstring(&fromaddr), src->addr);
+        buf_free(&fromaddr);
 
         ret = SIEVE_OK;
     } else {
@@ -2227,7 +2218,7 @@ static int jmapquery(void *ic, void *sc, void *mc, const char *json)
             priority = LOG_ERR;
         }
 
-        syslog(priority, "sieve: jmapquery error: %s", errstr);
+        xsyslog(priority, "sieve jmapquery error", "error=<%s>", errstr);
 
         free(errstr);
         json_decref(err);
@@ -2245,8 +2236,9 @@ static int sieve_parse_error_handler(int lineno, const char *msg,
 {
     script_data_t *sd = (script_data_t *) sc;
 
-    syslog(LOG_INFO, "sieve parse error for %s: line %d: %s",
-           mbname_userid(sd->mbname), lineno, msg);
+    xsyslog(LOG_INFO, "sieve parse error",
+                      "userid=<%s> lineno=<%d> error=<%s>",
+                      mbname_userid(sd->mbname), lineno, msg);
 
     return SIEVE_OK;
 }
@@ -2258,8 +2250,11 @@ static int sieve_execute_error_handler(const char *msg,
     script_data_t *sd = (script_data_t *) sc;
     message_data_t *md = ((deliver_data_t *) mc)->m;
 
-    syslog(LOG_INFO, "sieve runtime error for %s id %s: %s",
-           mbname_userid(sd->mbname), md->id ? md->id : "(null)", msg);
+    xsyslog(LOG_INFO, "sieve runtime error",
+                      "userid=<%s> message-id=%s error=<%s>",
+                      mbname_userid(sd->mbname),
+                      md->id ? md->id : "<null>",
+                      msg);
 
     return SIEVE_OK;
 }
@@ -2269,8 +2264,11 @@ void sieve_log(void *sc, void *mc, const char *text)
     script_data_t *sd = (script_data_t *) sc;
     message_data_t *md = ((deliver_data_t *) mc)->m;
 
-    syslog(LOG_INFO, "sieve log: userid=%s messageid=%s text=%s",
-           mbname_userid(sd->mbname), md->id ? md->id : "(null)", text);
+    xsyslog(LOG_INFO, "sieve log",
+                      "userid=<%s> message-id=<%s> text=<%s>",
+                      mbname_userid(sd->mbname),
+                      md->id ? md->id : "<null>",
+                      text);
 }
 
 sieve_interp_t *setup_sieve(struct sieve_interp_ctx *ctx)
@@ -2325,7 +2323,7 @@ sieve_interp_t *setup_sieve(struct sieve_interp_ctx *ctx)
 
     res = sieve_register_vacation(interp, &vacation);
     if (res != SIEVE_OK) {
-        syslog(LOG_ERR, "sieve_register_vacation() returns %d", res);
+        xsyslog(LOG_ERR, "sieve_register_vacation failed", "return=<%d>", res);
         fatal("sieve_register_vacation()", EX_SOFTWARE);
     }
 
@@ -2333,7 +2331,7 @@ sieve_interp_t *setup_sieve(struct sieve_interp_ctx *ctx)
         config_getduration(IMAPOPT_SIEVE_DUPLICATE_MAX_EXPIRATION, 's');
     res = sieve_register_duplicate(interp, &duplicate);
     if (res != SIEVE_OK) {
-        syslog(LOG_ERR, "sieve_register_duplicate() returns %d", res);
+        xsyslog(LOG_ERR, "sieve_register_duplicate failed", "return=<%d>", res);
         fatal("sieve_register_duplicate()", EX_SOFTWARE);
     }
 
@@ -2482,8 +2480,9 @@ static int autosieve_createfolder(const char *userid, const struct auth_state *a
     if (userid == NULL || internalname == NULL)
         return IMAP_MAILBOX_NONEXISTENT;
 
-    syslog(LOG_DEBUG, "autosievefolder: autosieve_createfolder() was called for user %s, folder %s",
-           userid, internalname);
+    xsyslog(LOG_DEBUG, "autosieve_createfolder() called",
+                       "userid=<%s> mailbox=<%s>",
+                       userid, internalname);
 
     if (config_getswitch(IMAPOPT_ANYSIEVEFOLDER)) {
         createsievefolder = 1;
@@ -2509,7 +2508,7 @@ static int autosieve_createfolder(const char *userid, const struct auth_state *a
     if (!createsievefolder) return IMAP_MAILBOX_NONEXISTENT;
 
     // lock the namespace and check again before trying to create
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(internalname);
+    user_nslock_t *user_nslock = user_nslock_lock_w(userid);
 
     // did we lose the race?
     r = mboxlist_lookup(internalname, 0, 0);
@@ -2523,14 +2522,16 @@ static int autosieve_createfolder(const char *userid, const struct auth_state *a
                                0/*isadmin*/, userid, auth_state,
                                MBOXLIST_CREATE_NOTIFY, NULL/*mailboxptr*/);
     if (r) {
-        syslog(LOG_ERR, "autosievefolder: User %s, folder %s creation failed. %s",
-               userid, internalname, error_message(r));
+        xsyslog(LOG_ERR, "mailbox creation failed",
+                         "userid=<%s> mailbox=<%s> error=<%s>",
+                         userid, internalname, error_message(r));
         goto done;
     }
 
     mboxlist_changesub(internalname, userid, auth_state, 1, 1, 1, 1);
-    syslog(LOG_DEBUG, "autosievefolder: User %s, folder %s creation succeeded",
-           userid, internalname);
+    xsyslog(LOG_DEBUG, "mailbox creation succeeded",
+                       "userid=<%s> mailbox=<%s>",
+                       userid, internalname);
 
     /* Attempt to inherit the color of parent mailbox,
        as long as the parent is NOT a top-level user mailbox */
@@ -2545,9 +2546,9 @@ static int autosieve_createfolder(const char *userid, const struct auth_state *a
         if (buf.len) {
             int r1 = annotatemore_writemask(internalname, annot, userid, &buf);
             if (r1) {
-                syslog(LOG_NOTICE,
-                       "failed to write annotation %s on mailbox %s: %s",
-                       annot, internalname, error_message(r1));
+                xsyslog(LOG_NOTICE, "failed to write annotation",
+                                    "annotation=<%s> mailbox=<%s> error=<%s>",
+                                    annot, internalname, error_message(r1));
             }
         }
 
@@ -2556,7 +2557,7 @@ static int autosieve_createfolder(const char *userid, const struct auth_state *a
     free(parent);
 
 done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 

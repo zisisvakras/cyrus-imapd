@@ -1,7 +1,7 @@
 #if HAVE_CONFIG_H
 #include <config.h>
 #endif
-#include "cunit/cyrunit.h"
+#include "cunit/unit.h"
 #include "imap/conversations.h"
 #include "imap/global.h"
 #include "retry.h"
@@ -137,7 +137,7 @@ static void test_prune(void)
     struct conversations_state *state = NULL;
     static const char C_MSGID1[] = "<0003.1288854309@example.com>";
     static const conversation_id_t C_CID1 = 0x1045689abcdef23ULL;
-    time_t stamp1 __attribute__((unused));  /* FIXME did this have a use? it's not being used */
+    time_t stamp1 __attribute__((unused));  /* XXX did this have a use? it's not being used */
     static const char C_MSGID2[] = "<0004.1288854309@example.com>";
     static const conversation_id_t C_CID2 = 0x105689abcdef234ULL;
     time_t stamp2;
@@ -331,10 +331,10 @@ static void test_cid_encode(void)
     static const char STR2[] = "NIL";
     const char *r;
 
-    r = conversation_id_encode(CID1);
+    r = conversation_id_encode(0/*hex encoding*/, CID1);
     CU_ASSERT_STRING_EQUAL(r, STR1);
 
-    r = conversation_id_encode(CID2);
+    r = conversation_id_encode(0/*hex encoding*/, CID2);
     CU_ASSERT_STRING_EQUAL(r, STR2);
 }
 
@@ -983,7 +983,7 @@ static void test_folder_ordering(void)
 }
 
 #ifdef TEST_SENDERS_COMPILES
-/* FIXME this doesn't currently compile, but i can't tell what the broken bit is trying to do */
+/* XXX this doesn't currently compile, but i can't tell what the broken bit is trying to do */
 static void __test_senders(void)
 {
     int r;

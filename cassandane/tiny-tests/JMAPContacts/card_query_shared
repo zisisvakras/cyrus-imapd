@@ -2,10 +2,9 @@
 use Cassandane::Tiny;
 
 sub test_card_query_shared
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap      = $self->{jmap};
     my $carddav   = $self->{carddav};
     my $admintalk = $self->{adminstore}->get_client();
@@ -36,6 +35,8 @@ sub test_card_query_shared
             accountId => 'manifold',
             create    => {
                 card1 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     name => {
                         isOrdered  => JSON::false,
                         components => [
@@ -65,6 +66,8 @@ sub test_card_query_shared
                     }
                 },
                 card2 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     name => {
                         isOrdered  => JSON::false,
                         components => [
@@ -118,6 +121,8 @@ sub test_card_query_shared
                     }
                 },
                 card3 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     name => {
                         isOrdered  => JSON::false,
                         components => [
@@ -171,6 +176,8 @@ sub test_card_query_shared
                     }
                 },
                 card4 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     name => {
                         isOrdered  => JSON::false,
                         components => [
@@ -207,16 +214,22 @@ sub test_card_query_shared
             accountId => 'manifold',
             create    => {
                 group1 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     kind    => 'group',
                     name    => { full => "group1" },
                     members => { $id1 => JSON::true, $id2 => JSON::true }
                 },
                 group2 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     kind    => 'group',
                     name    => { full => "group2" },
                     members => { $id3 => JSON::true }
                 },
                 group3 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     kind    => 'group',
                     name    => { full => "group3" },
                     members => { $id4 => JSON::true }
@@ -347,12 +360,12 @@ sub test_card_query_shared
     $self->assert_num_equals(2, $res->[0][1]{total});
     $self->assert_num_equals(2, scalar @{ $res->[0][1]{ids} });
 
-    xlog $self, "filter by nickName";
+    xlog $self, "filter by nickname";
     $res = $jmap->CallMethods([ [
         'ContactCard/query',
         {
             accountId => 'manifold',
-            filter    => { nickName => "nick1" }
+            filter    => { nickname => "nick1" }
         },
         "R1"
     ] ]);
@@ -371,18 +384,6 @@ sub test_card_query_shared
     ] ]);
     $self->assert_num_equals(2, $res->[0][1]{total});
     $self->assert_num_equals(2, scalar @{ $res->[0][1]{ids} });
-
-    xlog $self, "filter by hobby";
-    $res = $jmap->CallMethods([ [
-        'ContactCard/query',
-        {
-            accountId => 'manifold',
-            filter    => { hobby => "reading" }
-        },
-        "R1"
-    ] ]);
-    $self->assert_num_equals(1, $res->[0][1]{total});
-    $self->assert_num_equals(1, scalar @{ $res->[0][1]{ids} });
 
     xlog $self, "filter by note";
     $res = $jmap->CallMethods([ [

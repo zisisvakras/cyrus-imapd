@@ -46,7 +46,6 @@ use DateTime;
 use JSON::XS qw(encode_json);
 use File::Find;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Cassini;
@@ -66,6 +65,8 @@ my %notbefore = (
     't:Email:get:header-header-field-name' => '3.5',
     't:Email:import:good-imports' => '3.8',
     't:Email:import:one-fails-another-succeeds' => '3.8',
+    't:core:jmap-session-resource' => '3.13',
+    't:core:jmap-session-resource' => '3.13',
 );
 
 # Tests which JMAP-TestSuite will skip anyway when it detects it's

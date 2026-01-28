@@ -1,48 +1,10 @@
-/* cyrusdb_skiplist.c -- cyrusdb skiplist implementation
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* cyrusdb_skiplist.c -- cyrusdb skiplist implementation */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
-/* xxx check retry_xxx for failure */
+/* XXX check retry_xxx for failure */
 
-/* xxx all offsets should be uint32_ts i think */
+/* XXX all offsets should be uint32_ts i think */
 
 #include <config.h>
 
@@ -201,7 +163,7 @@ static void getsyncfd(struct dbengine *db, struct txn *t)
         t->syncfd = db->fd;
     } else if (t->syncfd == -1) {
         t->syncfd = open(db->fname, O_RDWR | O_DSYNC, 0666);
-        assert(t->syncfd != -1); /* xxx do better error recovery */
+        assert(t->syncfd != -1); /* XXX do better error recovery */
     }
 }
 
@@ -1339,7 +1301,7 @@ static int mystore(struct dbengine *db,
             db->curlevel = lvl;
 
             /* write out that change */
-            write_header(db); /* xxx errors? */
+            write_header(db); /* XXX errors? */
         }
 
         /* we point to what we're updating used to point to */
@@ -1535,7 +1497,7 @@ static int mycommit(struct dbengine *db, struct txn *tid)
         goto done;
     }
 
-    /* xxx consider unlocking the database here: the transaction isn't
+    /* XXX consider unlocking the database here: the transaction isn't
        yet durable but the file is in a form that is consistent for
        other transactions to use. releasing the lock here would give
        ACI properties. */
@@ -1862,7 +1824,7 @@ static int mycheckpoint(struct dbengine *db)
     }
 
     /* move new file to original file name */
-    if (!r && (rename(fname, db->fname) < 0)) {
+    if (!r && (cyrus_rename(fname, db->fname) < 0)) {
         xsyslog(LOG_ERR, "DBERROR: rename failed",
                          "source=<%s> destination=<%s>",
                          fname, db->fname);
@@ -2125,9 +2087,9 @@ static int recovery(struct dbengine *db, int flags)
 
         db->listsize++;
 
-        /* xxx check \0 fill on key */
+        /* XXX check \0 fill on key */
 
-        /* xxx check \0 fill on data */
+        /* XXX check \0 fill on data */
 
         /* update previous pointers, record these for updating */
         for (i = 0; !r && i < LEVEL_safe(db, ptr); i++) {

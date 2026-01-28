@@ -1,45 +1,6 @@
-/* jmap_backup.c -- Routines for handling JMAP Backup/restoreXxx requests
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_backup.c -- Routines for handling JMAP Backup/restoreXxx requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -77,41 +38,45 @@ static int jmap_backup_restore_mail(jmap_req_t *req);
 
 static char *_prodid = NULL;
 
+// clang-format off
 static jmap_method_t jmap_backup_methods_standard[] = {
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 /* NOTE: we don't set flags to require CSTATE, because that holds
  * a user lock (exclusive if READ_WRITE is requested) for the entire
  * time the method is running.  Backup restores can be quite slow,
  * and we release locks in batches so that the user can keep working */
+// clang-format off
 static jmap_method_t jmap_backup_methods_nonstandard[] = {
     {
         "Backup/restoreContacts",
         JMAP_BACKUP_EXTENSION,
         &jmap_backup_restore_contacts,
-        /*flags*/0
+        JMAP_NEED_CSTATE | JMAP_READ_WRITE,
     },
     {
         "Backup/restoreCalendars",
         JMAP_BACKUP_EXTENSION,
         &jmap_backup_restore_calendars,
-        /*flags*/0
+        JMAP_NEED_CSTATE | JMAP_READ_WRITE,
     },
     {
         "Backup/restoreNotes",
         JMAP_BACKUP_EXTENSION,
         &jmap_backup_restore_notes,
-        /*flags*/0
+        JMAP_NEED_CSTATE | JMAP_READ_WRITE,
     },
     {
         "Backup/restoreMail",
         JMAP_BACKUP_EXTENSION,
         &jmap_backup_restore_mail,
-        /*flags*/0
+        JMAP_NEED_CSTATE | JMAP_READ_WRITE,
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 HIDDEN void jmap_backup_init(jmap_settings_t *settings)
 {
@@ -192,7 +157,7 @@ static void jmap_restore_parse(jmap_req_t *req,
                 icaldurationtype_from_string(json_string_value(arg));
 
             if (!icaldurationtype_is_bad_duration(dur)) {
-                restore->cutoff = time(0) - icaldurationtype_as_int(dur);
+                restore->cutoff = time(0) - icaldurationtype_as_utc_seconds(dur);
             }
         }
 
@@ -378,11 +343,11 @@ static int restore_collection_cb(const mbentry_t *mbentry, void *rock)
     }
 
     if ((rrock->jrestore->mode & UNDO_ALL) &&
-        rrock->jrestore->cutoff < rrock->mailbox->i.changes_epoch) {
+        rrock->jrestore->cutoff < rrock->mailbox->i.changes_epoch.tv_sec) {
         syslog(log_level,
                "skipping '%s': cutoff (" TIME_T_FMT ") prior to mailbox history (" TIME_T_FMT")",
                mailbox_name(rrock->mailbox), rrock->jrestore->cutoff,
-               rrock->mailbox->i.changes_epoch);
+               rrock->mailbox->i.changes_epoch.tv_sec);
 
         mailbox_close(&rrock->mailbox);
         return HTTP_UNPROCESSABLE;
@@ -401,7 +366,7 @@ static int restore_collection_cb(const mbentry_t *mbentry, void *rock)
                "UID %u: expunged: %x, savedate: " TIME_T_FMT ","
                " updated: " TIME_T_FMT ", name: %s",
                record->uid, (record->internal_flags & FLAG_INTERNAL_EXPUNGED),
-               record->savedate, record->last_updated,
+               record->savedate.tv_sec, record->last_updated.tv_sec,
                resource ? resource : "NULL");
 
         if (!resource) {
@@ -423,7 +388,7 @@ static int restore_collection_cb(const mbentry_t *mbentry, void *rock)
                 continue;
             }
 
-            if (record->savedate > rrock->jrestore->cutoff &&
+            if (record->savedate.tv_sec > rrock->jrestore->cutoff &&
                 (rrock->jrestore->mode & UNDO_ALL)) {
                 syslog(log_level, "skipping UID %u: created AND deleted",
                        record->uid);
@@ -435,7 +400,7 @@ static int restore_collection_cb(const mbentry_t *mbentry, void *rock)
             /* Most recent version of the resource before cutoff */
 
             if (!restore &&
-                record->last_updated > rrock->jrestore->cutoff) {
+                record->last_updated.tv_sec > rrock->jrestore->cutoff) {
                 /* Resource has been destroyed after cutoff */
                 restore = xzmalloc(sizeof(struct restore_info));
                 hash_insert(resource, restore, &resources);
@@ -464,7 +429,7 @@ static int restore_collection_cb(const mbentry_t *mbentry, void *rock)
                        record->uid);
             }
         }
-        else if (record->savedate > rrock->jrestore->cutoff) {
+        else if (record->savedate.tv_sec > rrock->jrestore->cutoff) {
             /* Resource has been created or updated after cutoff - 
                assume its a create unless we find a tombstone before cutoff.
                Either way, we need to destroy this version of the resource */
@@ -561,8 +526,12 @@ static int recreate_resource(message_t *msg, struct mailbox *tomailbox,
         /* mark as $restored */ 
         strarray_add(flags, "$restored");
 
+        /* disable annotator */
+        as.disable_annotator = true;
+
         /* append the message to the mailbox. */
-        r = append_fromstage(&as, &body, stage, record->internaldate,
+        r = append_fromstage(&as, &body, stage,
+                             (struct timespec *) &record->internaldate,
                              is_update ? record->createdmodseq : 0,
                              flags, /*nolink*/0, &annots);
 
@@ -664,11 +633,7 @@ struct contact_rock {
     struct buf buf;
 
     /* per-addressbook */
-#ifdef HAVE_LIBICALVCARD
     vcardcomponent *group_vcard;
-#else
-    struct vparse_card *group_vcard;
-#endif
 };
 
 static char *contact_resource_name(message_t *msg, void *rock)
@@ -739,7 +704,6 @@ static int restore_contact(message_t *recreatemsg, message_t *destroymsg,
             const mbentry_t mbentry = { .name = (char *)mailbox_name(mailbox),
                                         .uniqueid = (char *)mailbox_uniqueid(mailbox) };
             struct contact_rock *crock = (struct contact_rock *) rock;
-#ifdef HAVE_LIBICALVCARD
             vcardcomponent *vcard = record_to_vcard_x(mailbox, record);
 
             if (!vcard) {
@@ -790,51 +754,6 @@ static int restore_contact(message_t *recreatemsg, message_t *destroymsg,
             }
 
             vcardcomponent_free(vcard);
-#else /* !HAVE_LIBICALVCARD */
-            struct vparse_card *vcard = record_to_vcard(mailbox, record);
-
-            if (!vcard || !vcard->objects) {
-                r = IMAP_INTERNAL;
-            }
-            else {
-                if (!crock->group_vcard) {
-                    /* Create the group vCard */
-                    char datestr[RFC3339_DATETIME_MAX];
-                    struct vparse_card *gcard = vparse_new_card("VCARD");
-
-                    time_to_rfc3339(time(0), datestr, RFC3339_DATETIME_MAX);
-                    buf_reset(&crock->buf);
-                    buf_printf(&crock->buf, "Restored %.10s", datestr);
-
-                    /* Look for existing group vCard with same date prefix */
-                    struct group_rock grock = { buf_cstring(&crock->buf), 0 };
-                    enum carddav_sort sort = CARD_SORT_FULLNAME | CARD_SORT_DESC;
-                    if (carddav_foreach_sort(crock->carddavdb, &mbentry,
-                                             &sort, 1, _group_name_cb, &grock)) {
-                        buf_printf(&crock->buf, " (%u)", grock.num+1);
-                    }
-
-                    vparse_add_entry(gcard, NULL, "PRODID", _prodid);
-                    vparse_add_entry(gcard, NULL, "VERSION", "3.0");
-                    vparse_add_entry(gcard, NULL, "UID", makeuuid());
-                    vparse_add_entry(gcard, NULL,
-                                     "FN", buf_cstring(&crock->buf));
-                    vparse_add_entry(gcard, NULL,
-                                     "X-ADDRESSBOOKSERVER-KIND", "group");
-                    crock->group_vcard = gcard;
-                }
-
-                /* Add the recreated contact as a member of the group */
-                buf_reset(&crock->buf);
-                buf_printf(&crock->buf, "urn:uuid:%s",
-                           vparse_stringval(vcard->objects, "uid"));
-                vparse_add_entry(crock->group_vcard, NULL,
-                                 "X-ADDRESSBOOKSERVER-MEMBER",
-                                 buf_cstring(&crock->buf));
-            }
-
-            vparse_free_card(vcard);
-#endif /* HAVE_LIBICALVCARD */
         }
     }
 
@@ -858,7 +777,6 @@ static int restore_addressbook_cb(const mbentry_t *mbentry, void *rock)
     rrock->keep_open = 1;
     r = restore_collection_cb(mbentry, rock);
 
-#ifdef HAVE_LIBICALVCARD
     if (!r && crock->group_vcard) {
         /* Store the group vCard of recreated contacts */
         r = carddav_store_x(*mailboxp, crock->group_vcard, NULL, 0, NULL, 
@@ -866,15 +784,6 @@ static int restore_addressbook_cb(const mbentry_t *mbentry, void *rock)
                             /*ignorequota*/ 0, /*oldsize*/ UINT32_MAX);
     }
     vcardcomponent_free(crock->group_vcard);
-#else
-    if (!r && crock->group_vcard) {
-        /* Store the group vCard of recreated contacts */
-        r = carddav_store(*mailboxp, crock->group_vcard, NULL, 0, NULL, NULL, 
-                          rrock->req->accountid, rrock->req->authstate,
-                          /*ignorequota*/ 0, /*oldsize*/ UINT32_MAX);
-    }
-    vparse_free_card(crock->group_vcard);
-#endif
     crock->group_vcard = NULL;
 
     mailbox_close(mailboxp);
@@ -896,7 +805,6 @@ static int jmap_backup_restore_contacts(jmap_req_t *req)
         goto done;
     }
 
-    struct mboxlock *namespacelock = user_namespacelock(req->accountid);
     char *addrhomeset = carddav_mboxname(req->accountid, NULL);
 
     syslog(restore.log_level, "jmap_backup_restore_contacts(%s, " TIME_T_FMT ")",
@@ -922,7 +830,6 @@ static int jmap_backup_restore_contacts(jmap_req_t *req)
     free(addrhomeset);
     carddav_close(crock.carddavdb);
     buf_free(&crock.buf);
-    mboxname_release(&namespacelock);
 
     /* Build response */
     if (r) {
@@ -1389,7 +1296,6 @@ static int jmap_backup_restore_calendars(jmap_req_t *req)
         goto done;
     }
 
-    struct mboxlock *namespacelock = user_namespacelock(req->accountid);
     char *calhomeset = caldav_mboxname(req->accountid, NULL);
 
     syslog(restore.log_level, "jmap_backup_restore_calendars(%s, " TIME_T_FMT ")",
@@ -1413,7 +1319,6 @@ static int jmap_backup_restore_calendars(jmap_req_t *req)
     free(crock.inboxname);
     free(crock.outboxname);
     caldav_close(crock.caldavdb);
-    mboxname_release(&namespacelock);
 
     /* Build response */
     if (r) {
@@ -1482,7 +1387,6 @@ static int jmap_backup_restore_notes(jmap_req_t *req)
         goto done;
     }
 
-    struct mboxlock *namespacelock = user_namespacelock(req->accountid);
     const char *subfolder = config_getstring(IMAPOPT_NOTESMAILBOX);
 
     syslog(restore.log_level, "jmap_backup_restore_notes(%s, " TIME_T_FMT ")",
@@ -1502,8 +1406,6 @@ static int jmap_backup_restore_notes(jmap_req_t *req)
         }
         free(notes);
     }
-
-    mboxname_release(&namespacelock);
 
     /* Build response */
     if (r) {
@@ -1642,7 +1544,7 @@ static int restore_message_list_cb(const mbentry_t *mbentry, void *rock)
                " intdate: " TIME_T_FMT ", updated: " TIME_T_FMT,
                record->uid, (record->internal_flags & FLAG_INTERNAL_EXPUNGED),
                (record->system_flags & FLAG_DRAFT),
-               record->internaldate, record->last_updated);
+               record->internaldate.tv_sec, record->last_updated.tv_sec);
 
         /* Suppress fetching of Message-ID if not restoring drafts */
         if (rrock->jrestore->mode & UNDO_DRAFTS) {
@@ -1689,7 +1591,7 @@ static int restore_message_list_cb(const mbentry_t *mbentry, void *rock)
             (record->internal_flags & FLAG_INTERNAL_EXPUNGED)) {
             /* Destroyed message */
 
-            if (record->last_updated <= rrock->jrestore->cutoff) {
+            if (record->last_updated.tv_sec <= rrock->jrestore->cutoff) {
                 /* Message has been destroyed before cutoff - ignore */
                 syslog(log_level, "skipping UID %u: destroyed before cutoff",
                        record->uid);
@@ -1746,7 +1648,7 @@ static int restore_message_list_cb(const mbentry_t *mbentry, void *rock)
                 rmail->guid = 
                     (record->system_flags & FLAG_DRAFT) ? xstrdup(guid) : NULL;
                 rmail->removed =
-                    isdestroyed_mbox ? timestamp : record->last_updated;
+                    isdestroyed_mbox ? timestamp : record->last_updated.tv_sec;
                 rmail->uid = record->uid;
                 rmail->size = record->size;
                 ptrarray_append(&message->deleted, rmail);
@@ -2133,7 +2035,6 @@ static int jmap_backup_restore_mail(jmap_req_t *req)
         goto done;
     }
 
-    struct mboxlock *namespacelock = user_namespacelock(req->accountid);
     hash_table mailboxes = HASH_TABLE_INITIALIZER;
     hash_table emailids = HASH_TABLE_INITIALIZER;
     hash_table msgids = HASH_TABLE_INITIALIZER;
@@ -2181,7 +2082,6 @@ static int jmap_backup_restore_mail(jmap_req_t *req)
     free_hash_table(&emailids, &message_t_free);
     free_hash_table(&msgids, &message_t_free);
     free(inbox);
-    mboxname_release(&namespacelock);
 
     /* Build response */
     if (r) {

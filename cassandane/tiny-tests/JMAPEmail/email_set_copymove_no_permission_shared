@@ -3,8 +3,8 @@ use Cassandane::Tiny;
 
 sub test_email_set_copymove_no_permission_shared
     :min_version_3_5 :NoAltNameSpace
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     my $admin = $self->{adminstore}->get_client();
@@ -13,14 +13,9 @@ sub test_email_set_copymove_no_permission_shared
     $admin->setacl("user.other", other => 'lrswipkxtecdn') or die;
 
     my $service = $self->{instance}->get_service("http");
-    my $otherJmap = Mail::JMAPTalk->new(
-        user => 'other',
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
+
+    my $other_user = $self->{instance}->create_user_without_setup('other');
+    my $otherJmap = $other_user->new_jmaptester;
     $otherJmap->DefaultUsing([
         'urn:ietf:params:jmap:core',
         'urn:ietf:params:jmap:mail',

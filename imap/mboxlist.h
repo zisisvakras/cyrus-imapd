@@ -1,44 +1,6 @@
-/* mboxlist.h -- Mailbox list manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mboxlist.h -- Mailbox list manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_MBOXLIST_H
 #define INCLUDED_MBOXLIST_H
@@ -120,6 +82,7 @@ struct mboxlist_entry {
     char *acl;
     /* extra fields */
     char *uniqueid;
+    char *jmapid;
     /* legacy upgrade support */
     char *legacy_specialuse;
     /* replication support */
@@ -127,7 +90,7 @@ struct mboxlist_entry {
 };
 
 #define MBENTRY_INITIALIZER  { NULL, NULL, 0, 0, 0, 0, 0, NULL, NULL, NULL, \
-                               NULL, NULL, PTRARRAY_INITIALIZER }
+                               NULL, NULL, NULL, PTRARRAY_INITIALIZER }
 
 typedef struct mboxlist_entry mbentry_t;
 
@@ -151,6 +114,8 @@ char *mbentry_metapath(const struct mboxlist_entry *mbentry, int metatype, int i
 char *mbentry_datapath(const struct mboxlist_entry *mbentry, uint32_t);
 char *mbentry_archivepath(const struct mboxlist_entry *mbentry, uint32_t);
 
+json_t *mbentry_paths_json(const struct mboxlist_entry *mbentry);
+
 int mbentry_is_local_mailbox(const struct mboxlist_entry *mbentry);
 #define mbentry_is_remote_mailbox(mbentry) (!mbentry_is_local_mailbox(mbentry))
 
@@ -172,10 +137,14 @@ int mboxlist_lookup_allow_all(const char *name,
 int mboxlist_lookup_by_uniqueid(const char *uniqueid,
                                 mbentry_t **entryptr, struct txn **tid);
 
+int mboxlist_lookup_by_jmapid(const char *userid, const char *jmapid,
+                              mbentry_t **entryptr, struct txn **tid);
+
 char *mboxlist_find_specialuse(const char *use, const char *userid);
 char *mboxlist_find_uniqueid(const char *uniqueid, const char *userid,
                              const struct auth_state *auth_state);
-
+char *mboxlist_find_jmapid(const char *jmapid, const char *userid,
+                           const struct auth_state *auth_state);
 
 /* insert/delete stub entries */
 int mboxlist_insertremote(mbentry_t *mbentry, struct txn **rettid);
@@ -214,11 +183,13 @@ int mboxlist_createmailboxcheck(const char *name, int mbtype,
 /* create mailbox */
 /* if given a mailbox pointer, return the still-locked mailbox
  * for further manipulation */
-int mboxlist_createmailbox(const mbentry_t *mbentry,
-                           unsigned mboxopts, modseq_t highestmodseq,
-                           unsigned isadmin, const char *userid,
-                           const struct auth_state *auth_state,
-                           unsigned flags, struct mailbox **mboxptr);
+#define mboxlist_createmailbox(m, o, h, a, u, s, f, p) \
+    mboxlist_createmailbox_version(m, 0, o, h, a, u, s, f, p)
+int mboxlist_createmailbox_version(const mbentry_t *mbentry, int minor_version,
+                                   unsigned mboxopts, modseq_t highestmodseq,
+                                   unsigned isadmin, const char *userid,
+                                   const struct auth_state *auth_state,
+                                   unsigned flags, struct mailbox **mboxptr);
 
 /* create mailbox with wrapping namespacelock */
 int mboxlist_createmailboxlock(const mbentry_t *mbentry,
@@ -406,7 +377,7 @@ int mboxlist_setquotas(const char *root,
 int mboxlist_unsetquota(const char *root, int silent);
 
 /* handle interemediates */
-int mboxlist_update_intermediaries(const char *mboxname, int mbtype, modseq_t modseq);
+int mboxlist_update_intermediaries(const char *mboxname, int mbtype);
 int mboxlist_haschildren(const char *mboxname);
 
 /* open the mailboxes db */

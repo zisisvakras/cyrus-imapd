@@ -4,9 +4,8 @@ use Cassandane::Tiny;
 sub test_get_session
     :min_version_3_1 :JMAPExtensions :NoAltNameSpace
     :want_smtpdaemon
+    ($self)
 {
-    my ($self) = @_;
-
     # need to version-gate jmap features that aren't in 3.2...
     my ($maj, $min) = Cassandane::Instance->get_version();
 
@@ -42,18 +41,7 @@ sub test_get_session
     # Account 3: no access
 
     # GET session
-    my $RawRequest = {
-        headers => {
-            'Authorization' => $jmap->auth_header(),
-        },
-        content => '',
-    };
-    my $RawResponse = $jmap->ua->get($jmap->uri(), $RawRequest);
-    if ($ENV{DEBUGJMAP}) {
-        warn "JMAP " . Dumper($RawRequest, $RawResponse);
-    }
-    $self->assert_str_equals('200', $RawResponse->{status});
-    my $session = eval { decode_json($RawResponse->{content}) };
+    my $session = $jmap->get_client_session->client_session;
     $self->assert_not_null($session);
 
     # Validate session
@@ -94,9 +82,7 @@ sub test_get_session
             $self->assert_deep_equals({}, $capabilities->{'https://cyrusimap.org/ns/jmap/sieve'});
         }
     }
-    if ($buildinfo->get('dependency', 'icalvcard')) {
-        $self->assert_deep_equals({}, $capabilities->{'urn:ietf:params:jmap:contacts'});
-    }
+    $self->assert_deep_equals({}, $capabilities->{'urn:ietf:params:jmap:contacts'});
 
     # primaryAccounts
     my $expect_primaryAccounts = {
@@ -104,6 +90,7 @@ sub test_get_session
         'urn:ietf:params:jmap:mail' => 'cassandane',
         'urn:ietf:params:jmap:submission' => 'cassandane',
         'urn:ietf:params:jmap:calendars' => 'cassandane',
+        'urn:ietf:params:jmap:contacts' => 'cassandane',
         'urn:ietf:params:jmap:principals' => 'cassandane',
         'https://cyrusimap.org/ns/jmap/contacts' => 'cassandane',
         'https://cyrusimap.org/ns/jmap/calendars' => 'cassandane',
@@ -124,10 +111,6 @@ sub test_get_session
             = 'cassandane';
         }
     }
-    if ($buildinfo->get('dependency', 'icalvcard')) {
-        $expect_primaryAccounts->{'urn:ietf:params:jmap:contacts'}
-            = 'cassandane';
-    }
     $self->assert_deep_equals($expect_primaryAccounts,
                               $session->{primaryAccounts});
 
@@ -146,8 +129,37 @@ sub test_get_session
     $self->assert_equals(JSON::true, $primaryAccount->{isPersonal});
     my $accountCapabilities = $primaryAccount->{accountCapabilities};
     $self->assert_not_null($accountCapabilities->{'urn:ietf:params:jmap:blob'});
-    $self->assert_not_null($accountCapabilities->{'urn:ietf:params:jmap:mail'});
-    $self->assert_equals(JSON::true, $accountCapabilities->{'urn:ietf:params:jmap:mail'}{mayCreateTopLevelMailbox});
+
+    {
+        my $ac_mail = $accountCapabilities->{'urn:ietf:params:jmap:mail'};
+
+        $self->assert_cmp_deeply(
+            {
+                # Presented in the same order as found in RFC 8621.
+                maxMailboxesPerEmail => 20,
+                maxMailboxDepth      => JSON::null(),
+                maxSizeMailboxName   => 255,
+                maxSizeAttachmentsPerEmail => 1048576,
+                emailQuerySortOptions => superbagof(),
+                mayCreateTopLevelMailbox => JSON::true(),
+            },
+            $ac_mail,
+            "mail accountCapabilities look right",
+        );
+
+        # Cyrus-specific
+        $ac_mail = $accountCapabilities->{'https://cyrusimap.org/ns/jmap/mail'};
+
+        $self->assert_cmp_deeply(
+            {
+                maxKeywordsPerEmail => 100,
+                hasCompactIds => JSON::true
+            },
+            $ac_mail,
+            "extended mail accountCapabilities look right",
+        );
+    }
+
     $self->assert_not_null($accountCapabilities->{'urn:ietf:params:jmap:submission'});
     if ($buildinfo->get('component', 'sieve')) {
         $self->assert_not_null($accountCapabilities->{'urn:ietf:params:jmap:vacationresponse'});

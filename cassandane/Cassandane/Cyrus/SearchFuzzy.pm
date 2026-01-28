@@ -48,7 +48,6 @@ use File::stat;
 use MIME::Base64 qw(encode_base64);
 use Encode qw(decode encode);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -85,22 +84,9 @@ sub set_up
 
     xlog $self, "Xapian CJK tokeniser '$self->{xapian_cjk_tokens}' detected.\n";
 
-    use experimental 'smartmatch';
-    my $skipdiacrit = $self->{instance}->{config}->get('search_skipdiacrit');
-    if (not defined $skipdiacrit) {
-        $skipdiacrit = 1;
-    }
-    if ($skipdiacrit ~~ ['no', 'off', 'f', 'false', '0']) {
-        $skipdiacrit = 0;
-    }
-    $self->{skipdiacrit} = $skipdiacrit;
-
-    my $fuzzyalways = $self->{instance}->{config}->get('search_fuzzy_always');
-    if ($fuzzyalways ~~ ['yes', 'on', 't', 'true', '1']) {
-        $self->{fuzzyalways} = 1;
-    } else {
-        $self->{fuzzyalways} = 0 ;
-    }
+    my $config = $self->{instance}->{config};
+    $self->{skipdiacrit} = $config->get_bool('search_skipdiacrit', 'on');
+    $self->{fuzzyalways} = $config->get_bool('search_fuzzy_always', 'off');
 }
 
 sub tear_down
@@ -149,6 +135,9 @@ sub create_testmessages
     $self->{instance}->run_command({cyrus => 1}, 'squatter');
 }
 
+# Tests that call this function must have :needs_component_jmap
+# We could add that to new() but then NO tests would run without jmap,
+# and most tests don't need snippets.
 sub get_snippets
 {
     # Previous versions of this test module used XSNIPPETS to
@@ -166,12 +155,15 @@ sub get_snippets
     my $res = $imap->fetch($uids, ['emailid']);
     my %emailIdToImapUid = map { $res->{$_}{emailid}[0] => $_ } keys %$res;
 
-    $res = $jmap->CallMethods([
-        ['SearchSnippet/get', {
-            filter => $filter,
-            emailIds => [ keys %emailIdToImapUid ],
-        }, 'R1'],
-    ]);
+    $res = $jmap->CallMethods(
+        [
+            ['SearchSnippet/get', {
+                filter => $filter,
+                emailIds => [ keys %emailIdToImapUid ],
+            }, 'R1'],
+        ],
+        [ qw( urn:ietf:params:jmap:core urn:ietf:params:jmap:mail ) ],
+    );
 
     my @snippets;
     foreach (@{$res->[0][1]{list}}) {

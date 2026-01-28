@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_mailbox_changes_notes
     :min_version_3_7 :JMAPExtensions
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
     my $state;
     my $res;
@@ -24,12 +23,6 @@ sub test_mailbox_changes_notes
     my @using = @{ $jmap->DefaultUsing() };
     push @using, 'https://cyrusimap.org/ns/jmap/notes';
     $jmap->DefaultUsing(\@using);
-
-    # force creation of notes mailbox prior to creating notes
-    $res = $jmap->CallMethods([
-        ['Note/set', {
-         }, "R0"]
-    ]);
 
     xlog "create note";
     $res = $jmap->CallMethods([['Note/set',

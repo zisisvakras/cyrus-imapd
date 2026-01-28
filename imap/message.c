@@ -1,44 +1,6 @@
-/* message.c -- Message manipulation/parsing
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* message.c -- Message manipulation/parsing */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -48,6 +10,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sysexits.h>
@@ -253,9 +216,8 @@ EXPORTED int message_copy_strict(struct protstream *from, FILE *to,
     if (r) goto done;
 
     if (to) {
-        fflush(to);
-        if (ferror(to) || fsync(fileno(to))) {
-            xsyslog(LOG_ERR, "IOERROR: writing message", NULL);
+        if (fflush(to) || ferror(to) || fdatasync(fileno(to))) {
+            syslog(LOG_ERR, "IOERROR: writing message: %s", strerror(errno));
             r = IMAP_IOERROR;
             goto done;
         }
@@ -721,12 +683,12 @@ EXPORTED int message_create_record(struct index_record *record,
                                    const struct body *body)
 {
     /* used for sent time searching, truncated to day with no TZ */
-    if (time_from_rfc5322(body->date, &record->sentdate, DATETIME_DATE_ONLY) < 0)
-        record->sentdate = 0;
+    if (time_from_rfc5322(body->date, &record->sentdate.tv_sec, DATETIME_DATE_ONLY) < 0)
+        record->sentdate.tv_sec = 0;
 
     /* used for sent time sorting, full gmtime of Date: header */
-    if (time_from_rfc5322(body->date, &record->gmtime, DATETIME_FULL) < 0)
-        record->gmtime = 0;
+    if (time_from_rfc5322(body->date, &record->gmtime.tv_sec, DATETIME_FULL) < 0)
+        record->gmtime.tv_sec = 0;
 
     record->size = body->filesize;
     record->header_size = body->header_size;
@@ -874,14 +836,23 @@ static void message_parse_headers(struct msg *msg, struct body *body,
     buf_putc(&headers, '\n');   /* Leading newline to prime the pump */
 
     /* Slurp up all of the headers into 'headers' */
-    while ((next = message_getline(&headers, msg)) &&
-           (next[-1] != '\n' ||
-            (*next != '\r' || next[1] != '\n'))) {
+    while ((next = message_getline(&headers, msg))) {
+
+        // Continue reading until end of line.
+        if (next[-1] != '\n') continue;
+
+        // Line is empty and ends with CRLF, stop reading headers.
+        if (next[0] == '\r' && next[1] == '\n') break;
+
+        // Line is empty and ends with LF, stop reading headers.
+        // Note: this is invalid MIME but leniently accepted.
+        if (next[0] == '\n') break;
 
         len = strlen(next);
 
-        if (next[-1] == '\n' && *next == '-' &&
+        if (next[0] == '-' &&
             message_pendingboundary(next, len, boundaries)) {
+            // Found multi-part boundary of next body part.
             body->boundary_size = len;
             body->boundary_lines++;
             if (next - 1 > headers.s) {
@@ -890,8 +861,9 @@ static void message_parse_headers(struct msg *msg, struct body *body,
                 next[-2] = '\0';
             }
             else {
-                *next = '\0';
+                next[0] = '\0';
             }
+            // Indicate that we saw boundary and stop reading headers.
             if (sawboundaryp) *sawboundaryp = 1;
             break;
         }
@@ -1223,7 +1195,7 @@ EXPORTED void message_parse_string(const char *hdr, char **hdrp)
     while ((he = strchr(he, '\n'))!=NULL) {
         if (he > *hdrp && he[-1] == '\r') {
             he--;
-            memmove(he, he+2, strlen(he+2)+1);
+            if (he) memmove(he, he+2, strlen(he+2)+1);
         }
         else {
             memmove(he, he+1, strlen(he+1)+1);
@@ -1338,7 +1310,7 @@ EXPORTED void message_parse_type(const char *hdr, char **typep, char **subtypep,
                 }
                 if (!has_highbit) continue;
                 /* Reencode the parameter value */
-                char *encvalue = charset_encode_mimeheader(param->value, strlen(param->value), 0);
+                char *encvalue = charset_encode_addrheader(param->value, strlen(param->value), 0);
                 if (encvalue) {
                     free(param->value);
                     param->value = encvalue;
@@ -1972,8 +1944,15 @@ static void message_parse_content(struct msg *msg, struct body *body,
                 body->boundary_lines++;
             }
             if (body->content_size > 1) {
-                body->content_size -= 2;
-                body->boundary_size += 2;
+                if (line[-1] == '\n') {
+                    body->content_size--;
+                    body->boundary_size++;
+                    // Leniently handle bare LF.
+                    if (line[-2] == '\r') {
+                        body->content_size--;
+                        body->boundary_size++;
+                    }
+                }
             }
             break;
         }
@@ -3501,6 +3480,9 @@ static void de_nstring_buf(struct buf *src, struct buf *dst)
     buf_cstring(src); /* ensure nstring parse doesn't overrun */
     q = src->s;
     p = parse_nstring(&q);
+    /* if parse_nstring results are bad, that's probably cache corruption! */
+    assert(p != NULL);
+    assert(q >= p);
     buf_setmap(dst, p, q-p);
     buf_cstring(dst);
 }
@@ -3573,7 +3555,7 @@ static int getconvmailbox(const char *mboxname, struct mailbox **mailboxptr)
     int r = mailbox_open_iwl(mboxname, mailboxptr);
     if (r != IMAP_MAILBOX_NONEXISTENT) return r;
 
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mboxname);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(mboxname);
 
     // try again - maybe we lost the race!
     r = mailbox_open_iwl(mboxname, mailboxptr);
@@ -3589,53 +3571,17 @@ static int getconvmailbox(const char *mboxname, struct mailbox **mailboxptr)
                                    0/*flags*/, mailboxptr);
     }
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
 
 /*
- * This is the legacy code version to generate conversation subjects.
+ * This is the legacy code version 0 to generate conversation subjects.
  * We keep it here to allow matching messages to conversations that
  * already got that oldstyle subject set.
  */
-/*
- * Normalise a subject string, to a form which can be used for deciding
- * whether a message belongs in the same conversation as it's antecedent
- * messages.  What we're doing here is the same idea as the "base
- * subject" algorithm described in RFC 5256 but slightly adapted from
- * experience.  Differences are:
- *
- *  - We eliminate all whitespace; RFC 5256 normalises any sequence
- *    of whitespace characters to a single SP.  We do this because
- *    we have observed combinations of buggy client software both
- *    add and remove whitespace around folding points.
- *
- *  - We include the Unicode U+00A0 (non-breaking space) codepoint in our
- *    determination of whitespace (as the UTF-8 sequence \xC2\xA0) because
- *    we have seen it in the wild, but do not currently generalise this to
- *    other Unicode "whitespace" codepoints. (XXX)
- *
- *  - Because we eliminate whitespace entirely, and whitespace helps
- *    delimit some of our other replacements, we do that whitespace
- *    step last instead of first.
- *
- *  - We eliminate leading tokens like Re: and Fwd: using a simpler
- *    and more generic rule than RFC 5256's; this rule catches a number
- *    of semantically identical prefixes in other human languages, but
- *    unfortunately also catches lots of other things.  We think we can
- *    get away with this because the normalised subject is never directly
- *    seen by human eyes, so some information loss is acceptable as long
- *    as the subjects in different messages match correctly.
- *
- *  - We eliminate trailing tokens like [SEC=UNCLASSIFIED],
- *    [DLM=Sensitive], etc which are automatically added by Australian
- *    Government department email systems.  In theory there should be no
- *    more than one of these on an email subject but in practice multiple
- *    have been seen.
- *    http://www.finance.gov.au/files/2012/04/EPMS2012.3.pdf
- */
-static void oldstyle_normalise_subject(struct buf *s)
+static void normalise_subject_v0(struct buf *s)
 {
     static int initialised_res = 0;
     static regex_t whitespace_re;
@@ -3670,6 +3616,42 @@ static void oldstyle_normalise_subject(struct buf *s)
     buf_replace_all_re(s, &whitespace_re, NULL);
 }
 
+/*
+ * This is the legacy code version 1 to generate conversation subjects.
+ * We keep it here to allow matching messages to conversations that
+ * already got that oldstyle subject set.
+ */
+static void normalise_subject_v1(struct buf *s)
+{
+    static int initialised_res = 0;
+    static regex_t whitespace_re;
+    static regex_t bracket_re;
+    static regex_t relike_token_re;
+    int r;
+
+    if (!initialised_res) {
+        r = regcomp(&whitespace_re, "([ \t\r\n]+|\xC2\xA0)", REG_EXTENDED);
+        assert(r == 0);
+        r = regcomp(&bracket_re, "(\\[[^]\\[]*])|(^[^\\[]*])|(\\[[^]]*$)", REG_EXTENDED);
+        assert(r == 0);
+        r = regcomp(&relike_token_re, "^[ \t]*[^ \t\r\n\f]+:", REG_EXTENDED);
+        assert(r == 0);
+        initialised_res = 1;
+    }
+
+    /* step 1 is to remove anything within (maybe unmatched) square brackets */
+    while (buf_replace_one_re(s, &bracket_re, NULL))
+        ;
+
+    /* step 2 is to eliminate all "Re:"-like tokens */
+    while (buf_replace_one_re(s, &relike_token_re, NULL))
+        ;
+
+    /* step 3 is eliminating whitespace. */
+    buf_replace_all_re(s, &whitespace_re, NULL);
+}
+
+
 static void extract_convsubject(const struct index_record *record,
                                 struct buf *msubject,
                                 void (*normalise)(struct buf*))
@@ -3690,6 +3672,52 @@ EXPORTED char *message_extract_convsubject(const struct index_record *record)
     return NULL;
 }
 
+struct message_subject {
+    char *normalized;
+    char *normalized_v1;
+    char *normalized_v0;
+};
+
+static struct message_subject message_subject_init(const char *subject)
+{
+    struct message_subject subj = { 0 };
+    if (!subject) return subj;
+
+    struct buf buf = BUF_INITIALIZER;
+    buf_setcstr(&buf, subject);
+    conversation_normalise_subject(&buf);
+    subj.normalized = buf_release(&buf);
+
+    buf_setcstr(&buf, subject);
+    normalise_subject_v0(&buf);
+    subj.normalized_v0 = buf_release(&buf);
+
+    buf_setcstr(&buf, subject);
+    normalise_subject_v1(&buf);
+    subj.normalized_v1 = buf_release(&buf);
+
+    return subj;
+}
+
+static void message_subject_fini(struct message_subject *subj)
+{
+    free(subj->normalized);
+    free(subj->normalized_v1);
+    free(subj->normalized_v0);
+}
+
+static bool message_subject_matchconv(struct message_subject *subj,
+                                      conversation_t *conv)
+{
+    if (conv->version > 1) {
+        return !strcmpsafe(subj->normalized, conv->subject);
+    }
+    else {
+        return !strcmpsafe(subj->normalized_v1, conv->subject) ||
+               !strcmpsafe(subj->normalized_v0, conv->subject);
+    }
+}
+
 static int extract_convdata(struct conversations_state *state,
                             message_t *msg,
                             strarray_t *msgidlist,
@@ -3701,16 +3729,23 @@ static int extract_convdata(struct conversations_state *state,
     char *c_inreplyto = NULL, *c_msgid = NULL;
     arrayu64_t cids = ARRAYU64_INITIALIZER;
     conversation_t *conv = NULL;
-    char *msubj = NULL;
-    char *msubj_oldstyle = NULL;
     strarray_t want = STRARRAY_INITIALIZER;
     struct buf buf = BUF_INITIALIZER;
+    struct message_subject subj = { 0 };
     int i;
     size_t j;
     int r = 0;
+    int is_memo = 0;
 
     r = message_need(msg, M_RECORD|M_CACHE);
-    if (r) {
+    if (!r) {
+        const struct index_record *record = msg_record(msg);
+        struct mailbox *mbox = msg_mailbox(msg);
+        if (record && mbox) {
+            is_memo = mailbox_record_hasflag(mbox, record, "$memo");
+        }
+    }
+    else {
         r = message_need(msg, M_MAP|M_FULLBODY);
         if (r) {
             /* nope, now we're screwed */
@@ -3798,34 +3833,67 @@ static int extract_convdata(struct conversations_state *state,
     /* Note that a NULL subject, e.g. due to a missing Subject: header
      * field in the original message, is normalised to "" not NULL */
     if (msg->have & M_CACHE) {
-        struct buf msubject = BUF_INITIALIZER;
-        extract_convsubject(&msg->record, &msubject, conversation_normalise_subject);
-        msubj = xstrdup(buf_cstring(&msubject));
-        buf_reset(&msubject);
-        extract_convsubject(&msg->record, &msubject, oldstyle_normalise_subject);
-        msubj_oldstyle = buf_release(&msubject);
+        if (cacheitem_base(&msg->record, CACHE_HEADERS)) {
+            buf_reset(&buf);
+            message1_get_subject(&msg->record, &buf);
+            subj = message_subject_init(buf_cstring(&buf));
+        }
     }
     else {
         message_get_field(msg, "subject", MESSAGE_SNIPPET, &buf);
         buf_trim(&buf);
         if (buf_len(&buf)) {
-            struct buf tmp = BUF_INITIALIZER;
-            buf_copy(&tmp, &buf);
-            conversation_normalise_subject(&tmp);
-            msubj = buf_release(&tmp);
-
-            buf_copy(&tmp, &buf);
-            oldstyle_normalise_subject(&tmp);
-            msubj_oldstyle = buf_release(&tmp);
+            subj = message_subject_init(buf_cstring(&buf));
         }
     }
-    *msubjp = msubj;
+    *msubjp = xstrdupnull(subj.normalized);
 
     /* work around stupid message_guid API */
     message_guid_isnull(&msg->record.guid);
 
     if (!is_valid_rfc2822_inreplyto(hdrs[1]))
         hdrs[1] = NULL;
+
+    // Special-handle memos.
+    if (hdrs[1] && is_memo) {
+        // Parse In-Reply-To header.
+        char *repid = message_iter_msgid(
+            hdrs[1], MESSAGE_ITER_MSGID_FLAG_REQUIRE_BRACKET, NULL);
+        if (repid) {
+            lcase(repid);
+            if (conversations_check_msgid(repid, strlen(repid))) {
+                xzfree(repid);
+            }
+        }
+
+        // Parse Message-ID header.
+        char *msgid = message_iter_msgid(hdrs[2], 0, NULL);
+        if (msgid) {
+            lcase(msgid);
+            if (conversations_check_msgid(msgid, strlen(msgid))) {
+                xzfree(msgid);
+            }
+        }
+
+        bool did_match = false;
+
+        // Lookup conversation for In-Reply-To header value.
+        if (repid && !conversations_get_msgid(state, repid, &cids)
+            && arrayu64_size(&cids))
+        {
+            // Only report the message-ids of the memo and its parent.
+            if (msgid) strarray_append(msgidlist, msgid);
+            strarray_append(msgidlist, repid);
+            // Only use first thread id of parent.
+            arrayu64_add(matchlist, arrayu64_nth(&cids, 0));
+            did_match = true;
+        }
+
+        free(repid);
+        free(msgid);
+
+        if (did_match) goto out;
+    }
 
     for (i = 0 ; i < 4 ; i++) {
         // Require message-ids in In-Reply-To header be enclosed in
@@ -3881,9 +3949,11 @@ static int extract_convdata(struct conversations_state *state,
                 if (r) goto out;
                 /* [IRIS-1576] if X-ME-Message-ID says the messages are
                 * linked, ignore any difference in Subject: header fields. */
-                if (!conv || i == 3 || !conv->subject ||
-                        !strcmpsafe(conv->subject, msubj) ||
-                        !strcmpsafe(conv->subject, msubj_oldstyle)) {
+                /* Do not require subjects to match if message has the
+                 * $memo keyword set. */
+
+                if (!conv || i == 3 || !conv->subject || is_memo
+                    || message_subject_matchconv(&subj, conv)) {
                     arrayu64_add(matchlist, cid);
                 }
             }
@@ -3897,12 +3967,12 @@ out:
     strarray_fini(&want);
     buf_free(&buf);
     arrayu64_fini(&cids);
+    message_subject_fini(&subj);
     free(c_refs);
     free(c_env);
     free(c_inreplyto);
     free(c_msgid);
     free(c_me_msgid);
-    free(msubj_oldstyle);
 
     return r;
 }
@@ -3946,11 +4016,16 @@ EXPORTED int message_update_conversations(struct conversations_state *state,
             record->cid = generate_conversation_id(record);
             if (record->cid) mustkeep = 1;
         }
+        if (!mustkeep) {
+            /* Do not split conversations for messages with '$memo' flag */
+            mustkeep = mailbox_record_hasflag(mailbox, record, "$memo");
+        }
         if (!mustkeep && !record->basecid) {
             /* try finding a CID in the match list, or if we came in with it */
             struct buf annotkey = BUF_INITIALIZER;
             struct buf annotval = BUF_INITIALIZER;
-            buf_printf(&annotkey, "%snewcid/%016llx", IMAP_ANNOT_NS, record->cid);
+            buf_printf(&annotkey, "%snewcid/" CONV_FMT,
+                       IMAP_ANNOT_NS, record->cid);
             r = annotatemore_lookup(state->annotmboxname, buf_cstring(&annotkey), "", &annotval);
             if (annotval.len == 16) {
                 const char *p = buf_cstring(&annotval);
@@ -3982,7 +4057,8 @@ EXPORTED int message_update_conversations(struct conversations_state *state,
         conversation_id_t was = record->cid;
         record->cid = generate_conversation_id(record);
 
-        syslog(LOG_NOTICE, "splitting conversation for %s %u base:%016llx was:%016llx now:%016llx",
+        syslog(LOG_NOTICE, "splitting conversation for %s %u "
+               "base:" CONV_FMT " was:" CONV_FMT " now:" CONV_FMT,
                mailbox_name(mailbox), record->uid, record->basecid, was, record->cid);
 
         if (!record->basecid) record->basecid = was;
@@ -4005,8 +4081,9 @@ EXPORTED int message_update_conversations(struct conversations_state *state,
 
         struct buf annotkey = BUF_INITIALIZER;
         struct buf annotval = BUF_INITIALIZER;
-        buf_printf(&annotkey, "%snewcid/%016llx", IMAP_ANNOT_NS, record->basecid);
-        buf_printf(&annotval, "%016llx", record->cid);
+        buf_printf(&annotkey, "%snewcid/" CONV_FMT,
+                   IMAP_ANNOT_NS, record->basecid);
+        buf_printf(&annotval, CONV_FMT, record->cid);
         r = annotate_state_write(astate, buf_cstring(&annotkey), "", &annotval);
         buf_free(&annotkey);
         buf_free(&annotval);
@@ -4031,6 +4108,10 @@ EXPORTED int message_update_conversations(struct conversations_state *state,
     /* mark that it's split so basecid gets saved */
     if (record->basecid != record->cid)
         record->internal_flags |= FLAG_INTERNAL_SPLITCONVERSATION;
+    else {
+        /* otherwise, we DO NOT want/expect basecid to be set */
+        record->basecid = NULLCONVERSATION;
+    }
 
 out:
     message_unref(&msg);
@@ -5061,13 +5142,8 @@ EXPORTED int message_get_bcc(message_t *m, struct buf *buf)
 
 EXPORTED int message_get_deliveredto(message_t *m, struct buf *buf)
 {
-    int r = message_get_field(m, "X-Original-Delivered-To",
-                              MESSAGE_RAW|MESSAGE_FIRST, buf);
-    if (!r && buf_len(buf) == 0) {
-        r = message_get_field(m, "X-Delivered-To",
-                              MESSAGE_RAW|MESSAGE_FIRST, buf);
-    }
-    return r;
+    return message_get_field(m, "X-Delivered-To",
+                             MESSAGE_RAW|MESSAGE_FIRST, buf);
 }
 
 EXPORTED int message_get_inreplyto(message_t *m, struct buf *buf)
@@ -5207,6 +5283,20 @@ EXPORTED modseq_t msg_modseq(const message_t *m)
     return m->record.modseq;
 }
 
+EXPORTED int message_get_createdmodseq(message_t *m, modseq_t *modseqp)
+{
+    int r = message_need(m, M_RECORD);
+    if (r) return r;
+    *modseqp = m->record.createdmodseq;
+    return 0;
+}
+
+EXPORTED modseq_t msg_createdmodseq(const message_t *m)
+{
+    assert(!message_need(m, M_RECORD));
+    return m->record.createdmodseq;
+}
+
 EXPORTED int message_get_msgno(message_t *m, uint32_t *msgnop)
 {
     int r = message_need(m, M_INDEX);
@@ -5281,8 +5371,8 @@ EXPORTED int message_get_savedate(message_t *m, time_t *datep)
 {
     int r = message_need(m, M_RECORD);
     if (r) return r;
-    *datep = m->record.savedate;
-    if (!*datep) *datep = m->record.internaldate;
+    *datep = m->record.savedate.tv_sec;
+    if (!*datep) *datep = m->record.internaldate.tv_sec;
     return 0;
 }
 
@@ -5298,7 +5388,7 @@ EXPORTED int message_get_sentdate(message_t *m, time_t *datep)
 {
     int r = message_need(m, M_RECORD);
     if (r) return r;
-    *datep = m->record.sentdate;
+    *datep = m->record.sentdate.tv_sec;
     return 0;
 }
 
@@ -5306,7 +5396,7 @@ EXPORTED int message_get_gmtime(message_t *m, time_t *tp)
 {
     int r = message_need(m, M_RECORD);
     if (r) return r;
-    *tp = m->record.gmtime;
+    *tp = m->record.gmtime.tv_sec;
     return 0;
 }
 
@@ -5314,7 +5404,7 @@ EXPORTED int message_get_internaldate(message_t *m, time_t *datep)
 {
     int r = message_need(m, M_RECORD);
     if (r) return r;
-    *datep = m->record.internaldate;
+    *datep = m->record.internaldate.tv_sec;
     return 0;
 }
 
@@ -5626,8 +5716,13 @@ EXPORTED int message_foreach_header(const char *headers, size_t len,
                 break;
         }
         if (!q) q = top;
-        /* Chomp of trailing CRLF */
-        buf_setmap(&val, p, q - p >= 2 ? q - p - 2 : 0);
+        /* Chomp of trailing CRLF - leniently handle bare LF */
+        const char *qq = q;
+        if (qq > p && p[qq - p - 1] == '\n')
+            qq--;
+        if (qq > p && p[qq - p - 1] == '\r')
+            qq--;
+        buf_setmap(&val, p, qq - p);
         /* Call callback for header */
         r = cb(buf_cstring(&key), buf_cstring(&val), rock);
         if (r) break;
@@ -5711,7 +5806,8 @@ EXPORTED int message_extract_cids(message_t *msg,
         conversation_id_t newcid = 0;
         buf_reset(&annotkey);
         buf_reset(&annotval);
-        buf_printf(&annotkey, "%snewcid/%016llx", IMAP_ANNOT_NS, (conversation_id_t) arrayu64_nth(cids, i));
+        buf_printf(&annotkey, "%snewcid/" CONV_FMT,
+                   IMAP_ANNOT_NS, (conversation_id_t) arrayu64_nth(cids, i));
         annotatemore_lookup(cstate->annotmboxname, buf_cstring(&annotkey), "", &annotval);
         if (buf_len(&annotval) == 16) {
             const char *p = buf_cstring(&annotval);

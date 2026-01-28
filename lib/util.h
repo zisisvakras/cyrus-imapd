@@ -1,54 +1,15 @@
-/* util.h -- general utility functions
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- * Author: Chris Newman
- * Start Date: 4/6/93
- */
+/* util.h -- general utility functions */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_UTIL_H
 #define INCLUDED_UTIL_H
 
 #include <config.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/types.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -60,11 +21,12 @@
 
 #ifndef STDIN_FILENO
 /* Standard file descriptors.  */
-#define	STDIN_FILENO	0	/* Standard input.  */
-#define	STDOUT_FILENO	1	/* Standard output.  */
-#define	STDERR_FILENO	2	/* Standard error output.  */
+#define STDIN_FILENO    0       /* Standard input.  */
+#define STDOUT_FILENO   1       /* Standard output.  */
+#define STDERR_FILENO   2       /* Standard error output.  */
 #endif
 
+#include "buf.h"
 #include "xmalloc.h"
 
 /* version string printable in gdb tracking */
@@ -94,20 +56,18 @@ extern const char CYRUS_VERSION[];
 #endif
 
 #define BIT32_MAX 4294967295U
+#define BIT64_MAX 18446744073709551615UL
 
-#if UINT_MAX == BIT32_MAX
-typedef unsigned int bit32;
-#elif ULONG_MAX == BIT32_MAX
-typedef unsigned long bit32;
-#elif USHRT_MAX == BIT32_MAX
-typedef unsigned short bit32;
-#else
-#error dont know what to use for bit32
-#endif
+#define BIT64_FMT          "%016" PRIx64
+#define UINT64_FMT         "%" PRIu64
+#define UINT64_LALIGN_FMT  "%-*" PRIu64
+#define UINT64_NANOSEC_FMT ".%.9" PRIu64
 
-typedef unsigned long long int bit64;
-typedef unsigned long long int modseq_t;
-#define MODSEQ_FMT "%llu"
+typedef uint32_t bit32;
+typedef uint64_t bit64;
+typedef uint64_t modseq_t;
+
+#define MODSEQ_FMT UINT64_FMT
 #define atomodseq_t(s) strtoull(s, NULL, 10)
 char *modseqtoa(modseq_t modseq);
 
@@ -147,11 +107,56 @@ extern const unsigned char convert_to_uppercase[256];
 #define VECTOR_SIZE(vector) (sizeof(vector)/sizeof(vector[0]))
 
 #ifndef TIMESPEC_TO_TIMEVAL
-#define TIMESPEC_TO_TIMEVAL(tv, ts) { \
-        (tv)->tv_sec = (ts)->tv_sec; \
+#define TIMESPEC_TO_TIMEVAL(tv, ts) {         \
+        (tv)->tv_sec  = (ts)->tv_sec;         \
         (tv)->tv_usec = (ts)->tv_nsec / 1000; \
 }
 #endif
+
+/* We have an issue that we can't store UTIME_OMIT into the nanosecond
+ * space, so we reserve '0' to mean OMIT, meaning that we can only store
+ * postitive nanosecond values.  We also store 0 as 0, so callers are
+ * required to make sure they have a SAFE_NSEC value when writing */
+#define UTIME_SAFE_NSEC(n) (n > 0 && n < 1000000000)
+#define _NSVAL(n)                                                           \
+        (UTIME_SAFE_NSEC(n) ? n : 0)
+#define TIMESPEC_TO_NANOSEC(ts)                                             \
+        ((uint64_t) (ts)->tv_sec * 1000000000 + _NSVAL((ts)->tv_nsec))
+
+/* On the way back, we convert 0 to UTIME_OMIT and all other values stay the
+ * same, meaning that round-tripping a time with zero nanoseconds through this
+ * function pair will add one nanosecond */
+#define TIMESPEC_FROM_NANOSEC(ts, nanosec) {    \
+        (ts)->tv_sec  = (nanosec) / 1000000000; \
+        (ts)->tv_nsec = (nanosec) % 1000000000; \
+}
+
+#define NANOSEC_TO_JMAPID(buf, nanosec) {                                   \
+        assert(nanosec);                                                    \
+        uint64_t u64 = htonll(UINT64_MAX - (nanosec));                      \
+        charset_encode(buf, (const char *) &u64, 8, ENCODING_BASE64JMAPID); \
+}
+
+#define MODSEQ_TO_JMAPID(buf, modseq) {                                 \
+        uint64_t u64 = htonll(modseq);                                  \
+        const char *p = (const char *) &u64;                            \
+        size_t len = sizeof(u64);                                       \
+        for (; *p == 0 && len > 1; p++, len--);                         \
+        charset_encode(buf, p, len, ENCODING_BASE64JMAPID);             \
+}
+
+#define MODSEQ_FROM_JMAPID(jmapid, modseqp) {                                   \
+        /* use a fixed modseq-sized decode buffer */                            \
+        size_t size = sizeof(modseq_t);                                         \
+        char decstr[size];                                                      \
+        struct buf decbuf = { decstr, 0, size, 0 };                             \
+        charset_decode(&decbuf, jmapid, strlen(jmapid), ENCODING_BASE64JMAPID); \
+        /* right-align the network-order decoded data */                        \
+        modseq_t u64 = 0;                                                       \
+        int len = buf_len(&decbuf);                                             \
+        memcpy((void *) &u64 + (size - len), buf_base(&decbuf), len);           \
+        *modseqp = ntohll(u64);                                                 \
+}
 
 typedef struct keyvalue {
     char *key, *value;
@@ -191,19 +196,6 @@ int strcmpnull(const char *a, const char *b);
 extern keyvalue *kv_bsearch (const char *key, keyvalue *kv, int nelem,
                                int (*cmpf)(const char *s1, const char *s2));
 
-/* Examine the name of a file, and return a single character
- *  (as an int) that can be used as the name of a hash
- *  directory.  Caller is responsible for skipping any prefix
- *  of the name.
- */
-extern int dir_hash_c(const char *name, int full);
-/*
- * Like dir_hash_c() but builds the result as a single-byte
- * C string in the provided buffer, and returns the buffer,
- * which is sometimes more convenient.
- */
-extern char *dir_hash_b(const char *name, int full, char buf[2]);
-
 /*
  * create an [unlinked] temporary file and return the file descriptor.
  */
@@ -220,6 +212,14 @@ extern char *create_tempdir(const char *path, const char *subname);
  * value of remove on error. */
 extern int removedir(const char *path);
 
+/* Call rename but fsync the directory before returning success */
+extern int xopendir(const char *dest, int create);
+extern int xrenameat(int dirfd, const char *src, const char *dest);
+extern int cyrus_settime_fdptr(const char *path, struct timespec *when, int *dirfdp);
+extern int cyrus_unlink_fdptr(const char *fname, int *dirfdp);
+extern void xclosedir(int dirfd);
+extern int cyrus_rename(const char *src, const char *dest);
+
 /* Close a network filedescriptor the "safe" way */
 extern int cyrus_close_sock(int fd);
 
@@ -234,11 +234,12 @@ extern int cyrus_mkdir(const char *path, mode_t mode);
 enum {
     COPYFILE_NOLINK = (1<<0),
     COPYFILE_MKDIR  = (1<<1),
-    COPYFILE_RENAME = (1<<2),
-    COPYFILE_KEEPTIME = (1<<3)
+    COPYFILE_KEEPTIME = (1<<2),
+    COPYFILE_NODIRSYNC = (1<<3)
 };
 
-extern int cyrus_copyfile(const char *from, const char *to, int flags);
+extern int cyrus_copyfile_fdptr(const char *from, const char *to, int flags, int *dirfdp);
+#define cyrus_copyfile(from, to, flags) cyrus_copyfile_fdptr(from, to, flags, NULL)
 
 enum {
     BEFORE_SETUID,
@@ -248,8 +249,7 @@ enum {
     AFTER_FORK
 };
 
-extern int set_caps(int stage, int is_master);
-extern int become_cyrus(int is_master);
+extern int become_cyrus(void);
 extern const char *cyrus_user(void);
 extern const char *cyrus_group(void);
 
@@ -279,80 +279,16 @@ extern int64_t now_ms(void);
 
 extern clock_t sclock(void);
 
-#define BUF_MMAP    (1<<1)
-
-struct buf {
-    char *s;
-    size_t len;
-    size_t alloc;
-    unsigned flags;
-};
-#define BUF_INITIALIZER { NULL, 0, 0, 0 }
-
-#define buf_new() ((struct buf *) xzmalloc(sizeof(struct buf)))
-#define buf_destroy(b) do { buf_free((b)); free((b)); } while (0)
-#define buf_ensure(b, n) do { if ((b)->alloc < (b)->len + (n)) _buf_ensure((b), (n)); } while (0)
-#define buf_putc(b, c) do { buf_ensure((b), 1); (b)->s[(b)->len++] = (c); } while (0)
-
-void _buf_ensure(struct buf *buf, size_t len);
-const char *buf_cstring(const struct buf *buf);
-const char *buf_cstringnull(const struct buf *buf);
-const char *buf_cstringnull_ifempty(const struct buf *buf);
-const char *buf_cstring_or_empty(const struct buf *buf);
-char *buf_newcstring(struct buf *buf);
-char *buf_release(struct buf *buf);
-char *buf_releasenull(struct buf *buf);
-void buf_getmap(struct buf *buf, const char **base, size_t *len);
-int buf_getline(struct buf *buf, FILE *fp);
-size_t buf_len(const struct buf *buf);
-const char *buf_base(const struct buf *buf);
-void buf_reset(struct buf *buf);
-void buf_truncate(struct buf *buf, ssize_t len);
-void buf_setcstr(struct buf *buf, const char *str);
-void buf_setmap(struct buf *buf, const char *base, size_t len);
-void buf_copy(struct buf *dst, const struct buf *src);
-void buf_append(struct buf *dst, const struct buf *src);
-void buf_appendcstr(struct buf *buf, const char *str);
-void buf_appendoverlap(struct buf *buf, const char *str);
-void buf_appendbit32(struct buf *buf, bit32 num);
-void buf_appendbit64(struct buf *buf, bit64 num);
-void buf_appendmap(struct buf *buf, const char *base, size_t len);
-void buf_cowappendmap(struct buf *buf, const char *base, unsigned int len);
-void buf_cowappendfree(struct buf *buf, char *base, unsigned int len);
-void buf_insert(struct buf *dst, unsigned int off, const struct buf *src);
-void buf_insertcstr(struct buf *buf, unsigned int off, const char *str);
-void buf_insertmap(struct buf *buf, unsigned int off, const char *base, int len);
-void buf_vprintf(struct buf *buf, const char *fmt, va_list args)
-                __attribute__((format(printf, 2, 0)));
-void buf_printf(struct buf *buf, const char *fmt, ...)
-                __attribute__((format(printf, 2, 3)));
-void buf_replace_buf(struct buf *buf, size_t offset, size_t length,
-                     const struct buf *replace);
-int buf_replace_all(struct buf *buf, const char *match,
-                    const char *replace);
-int buf_replace_char(struct buf *buf, char match, char replace);
 #ifdef ENABLE_REGEX
+/* XXX These two ought to be declared in buf.h with their friends, but their
+ * XXX declarations depend on regex_t, which is only available with config.h,
+ * XXX and therefore not available within headers that are to be installed.
+ */
 int buf_replace_all_re(struct buf *buf, const regex_t *,
                        const char *replace);
 int buf_replace_one_re(struct buf *buf, const regex_t *,
                        const char *replace);
 #endif
-void buf_remove(struct buf *buf, unsigned int off, unsigned int len);
-int buf_cmp(const struct buf *, const struct buf *);
-int buf_findchar(const struct buf *, unsigned int off, int c);
-int buf_findline(const struct buf *buf, const char *line);
-void buf_init_ro(struct buf *buf, const char *base, size_t len);
-void buf_initm(struct buf *buf, char *base, int len);
-void buf_initmcstr(struct buf *buf, char *str);
-void buf_init_ro_cstr(struct buf *buf, const char *str);
-void buf_refresh_mmap(struct buf *buf, int onceonly, int fd,
-                   const char *fname, size_t size, const char *mboxname);
-void buf_free(struct buf *buf);
-void buf_move(struct buf *dst, struct buf *src);
-const char *buf_lcase(struct buf *buf);
-const char *buf_ucase(struct buf *buf);
-const char *buf_tocrlf(struct buf *buf);
-void buf_trim(struct buf *buf);
 
 /*
  * Given a list of strings, terminated by (char *)NULL,
@@ -371,11 +307,9 @@ char *strconcat(const char *s1, ...);
 #define BH_SEPARATOR(c)     (_BH_SEP|((c)&0x7f))
 #define _BH_GETSEP(flags)   (flags & _BH_SEP ? (char)(flags & 0x7f) : '\0')
 int bin_to_hex(const void *bin, size_t binlen, char *hex, int flags);
-int bin_to_lchex(const void *bin, size_t binlen, char *hex);
 int hex_to_bin(const char *hex, size_t hexlen, void *bin);
 
 int buf_bin_to_hex(struct buf *hex, const void *bin, size_t binlen, int flags);
-int buf_bin_to_lchex(struct buf *hex, const void *bin, size_t binlen);
 int buf_hex_to_bin(struct buf *bin, const char *hex, size_t hexlen);
 
 /* use getpassphrase on machines which support it */
@@ -429,11 +363,12 @@ const char *makeuuid();
 void tcp_enable_keepalive(int fd);
 void tcp_disable_nagle(int fd);
 
+__attribute__((format(printf, 6, 7)))
 void xsyslog_fn(int priority, const char *description,
-                const char *func, const char *extra_fmt, ...)
-               __attribute__((format(printf, 4, 5)));
+                const char *file, int line, const char *func,
+                const char *extra_fmt, ...);
 #define xsyslog(pri, desc, ...)  \
-    xsyslog_fn(pri, desc, __func__, __VA_ARGS__)
+    xsyslog_fn(pri, desc, __FILE__, __LINE__, __func__, __VA_ARGS__)
 
 /*
  * GCC_VERSION macro usage:
@@ -445,7 +380,7 @@ void xsyslog_fn(int priority, const char *description,
                      + __GNUC_MINOR__ * 100     \
                      + __GNUC_PATCHLEVEL__)
 
-typedef struct logfmt_arg {
+typedef struct xsyslog_ev_arg {
     const char *name;
     int type;
     union {
@@ -461,29 +396,32 @@ typedef struct logfmt_arg {
         double f;
         const char *s;
     };
-} logfmt_arg;
+} xsyslog_ev_arg;
 
-typedef struct logfmt_arg_list {
+typedef struct xsyslog_ev_arg_list {
     size_t nmemb;
-    logfmt_arg *data;
-} logfmt_arg_list;
+    xsyslog_ev_arg *data;
+} xsyslog_ev_arg_list;
 
-#define logfmt_arg_LIST(...) (logfmt_arg_list *)                   \
-    &(logfmt_arg_list) {                                           \
-        sizeof((logfmt_arg []){__VA_ARGS__}) / sizeof(logfmt_arg), \
-        (logfmt_arg []){__VA_ARGS__}                               \
+#define XSYSLOG_EV_ARG_LIST(...) (xsyslog_ev_arg_list *)                    \
+    &(xsyslog_ev_arg_list) {                                                \
+        sizeof((xsyslog_ev_arg []){__VA_ARGS__}) / sizeof(xsyslog_ev_arg),  \
+        (xsyslog_ev_arg []){__VA_ARGS__}                                    \
     }
 
 void _xsyslog_ev(int saved_errno, int priority, const char *event,
-                 logfmt_arg_list *arg);
+                 const char *file, int line, const char *func,
+                 xsyslog_ev_arg_list *arg);
 
-#define xsyslog_ev(priority, event, ...)                                \
-    do {                                                                \
-        int se = errno;                                                 \
-        _xsyslog_ev(se, priority, event, logfmt_arg_LIST(__VA_ARGS__)); \
+#define xsyslog_ev(priority, event, ...)                                    \
+    do {                                                                    \
+        int se = errno;                                                     \
+        _xsyslog_ev(se, priority, event,                                    \
+                    __FILE__, __LINE__, __func__,                           \
+                    XSYSLOG_EV_ARG_LIST(__VA_ARGS__));                      \
     } while (0)
 
-enum logfmt_type {
+enum xsyslog_ev_arg_type {
     LF_C,
     LF_D,
     LF_LD,
@@ -495,29 +433,43 @@ enum logfmt_type {
     LF_ZU,
     LF_LLX,
     LF_F,
-    LF_M,
     LF_S,
+    LF_UTF8,
     LF_RAW
 };
 
-#define lf_c(key, value)   (logfmt_arg){ key, LF_C,   { .c   = value } }
-#define lf_d(key, value)   (logfmt_arg){ key, LF_D,   { .d   = value } }
-#define lf_ld(key, value)  (logfmt_arg){ key, LF_LD,  { .ld  = value } }
-#define lf_lld(key, value) (logfmt_arg){ key, LF_LLD, { .lld = value } }
-#define lf_u(key, value)   (logfmt_arg){ key, LF_U,   { .u   = value } }
-#define lf_lu(key, value)  (logfmt_arg){ key, LF_LU,  { .lu  = value } }
-#define lf_llu(key, value) (logfmt_arg){ key, LF_LLU, { .llu = value } }
-#define lf_zd(key, value)  (logfmt_arg){ key, LF_ZD,  { .zd  = value } }
-#define lf_zu(key, value)  (logfmt_arg){ key, LF_ZU,  { .zu  = value } }
-#define lf_llx(key, value) (logfmt_arg){ key, LF_LLX, { .llu = value } }
-#define lf_f(key, value)   (logfmt_arg){ key, LF_F,   { .f   = value } }
-#define lf_m(key)          (logfmt_arg){ key, LF_M,   {              } }
-#define lf_s(key, value)   (logfmt_arg){ key, LF_S,   { .s   = value } }
+#define lf_c(key, value)    (xsyslog_ev_arg){ key, LF_C,    { .c   = value } }
+#define lf_d(key, value)    (xsyslog_ev_arg){ key, LF_D,    { .d   = value } }
+#define lf_ld(key, value)   (xsyslog_ev_arg){ key, LF_LD,   { .ld  = value } }
+#define lf_lld(key, value)  (xsyslog_ev_arg){ key, LF_LLD,  { .lld = value } }
+#define lf_u(key, value)    (xsyslog_ev_arg){ key, LF_U,    { .u   = value } }
+#define lf_lu(key, value)   (xsyslog_ev_arg){ key, LF_LU,   { .lu  = value } }
+#define lf_llu(key, value)  (xsyslog_ev_arg){ key, LF_LLU,  { .llu = value } }
+#define lf_zd(key, value)   (xsyslog_ev_arg){ key, LF_ZD,   { .zd  = value } }
+#define lf_zu(key, value)   (xsyslog_ev_arg){ key, LF_ZU,   { .zu  = value } }
+#define lf_llx(key, value)  (xsyslog_ev_arg){ key, LF_LLX,  { .llu = value } }
+#define lf_f(key, value)    (xsyslog_ev_arg){ key, LF_F,    { .f   = value } }
+#define lf_s(key, value)    (xsyslog_ev_arg){ key, LF_S,    { .s   = value } }
+#define lf_utf8(key, value) (xsyslog_ev_arg){ key, LF_UTF8, { .s   = value } }
 
-#define lf_raw(key, fmt, ...) ({                               \
-    struct buf value = BUF_INITIALIZER;                        \
-    buf_printf(&value, fmt, __VA_ARGS__);                      \
-    (logfmt_arg){ key, LF_RAW, { .s = buf_release(&value) } }; \
+#define lf_raw(key, fmt, ...) ({                                            \
+    struct buf value = BUF_INITIALIZER;                                     \
+    buf_printf(&value, fmt, __VA_ARGS__);                                   \
+    (xsyslog_ev_arg){ key, LF_RAW, { .s = buf_release(&value) } };          \
 })
+
+/* Set up cyrus_gettime as a weak alias for a wrapper around clock_gettime.
+ * We then use cyrus_gettime everywhere instead of clock_gettime, and unit
+ * tests can mock cyrus_gettime if they need to fake the passing of time.
+ *
+ * We need this shim because, unlike gettimeofday, clock_gettime itself is
+ * not a weak alias, so it can't be overridden directly.
+ */
+static int wrap_clock_gettime(clockid_t id, struct timespec *ts)
+{
+    return clock_gettime(id, ts);
+}
+__attribute__((weak, alias("wrap_clock_gettime"), visibility("default")))
+extern int cyrus_gettime(clockid_t, struct timespec *);
 
 #endif /* INCLUDED_UTIL_H */

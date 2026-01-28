@@ -44,13 +44,11 @@ use DateTime;
 use JSON::XS;
 use Net::CalDAVTalk 0.09;
 use Net::CardDAVTalk 0.03;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use Storable 'dclone';
 use File::Basename;
 use XML::Spice;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -85,16 +83,19 @@ sub set_up
 {
     my ($self) = @_;
     $self->SUPER::set_up();
-    $self->{jmap}->DefaultUsing([
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:mail',
-        'urn:ietf:params:jmap:calendars',
-        'urn:ietf:params:jmap:principals',
-        'https://cyrusimap.org/ns/jmap/backup',
-        'https://cyrusimap.org/ns/jmap/contacts',
-        'https://cyrusimap.org/ns/jmap/calendars',
-        'https://cyrusimap.org/ns/jmap/notes',
-    ]);
+    if ($self->{_want}->{start_instances}) {
+        $self->{jmap}->DefaultUsing([
+            'urn:ietf:params:jmap:core',
+            'urn:ietf:params:jmap:mail',
+            'urn:ietf:params:jmap:calendars',
+            'urn:ietf:params:jmap:contacts',
+            'urn:ietf:params:jmap:principals',
+            'https://cyrusimap.org/ns/jmap/backup',
+            'https://cyrusimap.org/ns/jmap/contacts',
+            'https://cyrusimap.org/ns/jmap/calendars',
+            'https://cyrusimap.org/ns/jmap/notes',
+        ]);
+    }
 }
 
 use Cassandane::Tiny::Loader 'tiny-tests/JMAPBackup';

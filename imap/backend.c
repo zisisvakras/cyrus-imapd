@@ -1,44 +1,6 @@
-/* backend.c -- IMAP server proxy for Cyrus Murder
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* backend.c -- IMAP server proxy for Cyrus Murder */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -65,6 +27,7 @@
 #include <sasl/sasl.h>
 #include <sasl/saslutil.h>
 
+#include "auditlog.h"
 #include "backend.h"
 #include "global.h"
 #include "iptostring.h"
@@ -76,15 +39,15 @@
 #include "xstrlcat.h"
 
 #ifndef AI_V4MAPPED
-#define AI_V4MAPPED	0
+#define AI_V4MAPPED     0
 #endif
 
 #ifndef AI_ADDRCONFIG
-#define AI_ADDRCONFIG	0
+#define AI_ADDRCONFIG   0
 #endif
 
 #ifndef AI_MASK
-#define AI_MASK	(AI_V4MAPPED | AI_ADDRCONFIG)
+#define AI_MASK (AI_V4MAPPED | AI_ADDRCONFIG)
 #endif
 
 enum {
@@ -505,11 +468,10 @@ static int do_compress(struct backend *s __attribute__((unused)),
 }
 #endif /* HAVE_ZLIB */
 
-#ifdef HAVE_SSL
-EXPORTED int backend_starttls(  struct backend *s,
-                                struct tls_cmd_t *tls_cmd,
-                                const char *c_cert_file,
-                                const char *c_key_file)
+EXPORTED int backend_starttls(struct backend *s,
+                              struct tls_cmd_t *tls_cmd,
+                              const char *c_cert_file,
+                              const char *c_key_file)
 {
     char *auth_id = NULL;
     int *layerp = NULL;
@@ -555,15 +517,6 @@ EXPORTED int backend_starttls(  struct backend *s,
 
     return 0;
 }
-#else
-EXPORTED int backend_starttls(  struct backend *s __attribute__((unused)),
-                                struct tls_cmd_t *tls_cmd __attribute__((unused)),
-                                const char *c_cert_file __attribute__((unused)),
-                                const char *c_key_file __attribute__((unused)))
-{
-    return -1;
-}
-#endif /* HAVE_SSL */
 
 EXPORTED char *intersect_mechlists( char *config, char *server )
 {
@@ -696,7 +649,6 @@ static int backend_authenticate(struct backend *s, const char *userid,
     if (!mech_conf)
         mech_conf = config_getstring(IMAPOPT_FORCE_SASL_CLIENT_MECH);
 
-#ifdef HAVE_SSL
     strlcpy(optstr, s->hostname, sizeof(optstr));
     p = strchr(optstr, '.');
     if (p) *p = '\0';
@@ -718,10 +670,6 @@ static int backend_authenticate(struct backend *s, const char *userid,
     if (!c_key_file) {
         c_key_file = config_getstring(IMAPOPT_TLS_CLIENT_KEY);
     }
-#else
-    const char *c_cert_file = NULL;
-    const char *c_key_file = NULL;
-#endif
 
     mechlist = backend_get_cap_params(s, CAPA_AUTH);
 
@@ -866,11 +814,10 @@ static int backend_login(struct backend *ret, const char *userid,
                 post_parse_capability(ret);
             }
 
-            if (!(strcmp(prot->service, "imap") &&
-                 (strcmp(prot->service, "pop3")))) {
-                char rsessionid[MAX_SESSIONID_SIZE];
-                parse_sessionid(my_status, rsessionid);
-                syslog(LOG_NOTICE, "auditlog: proxy %s sessionid=<%s> remote=<%s>", userid, session_id(), rsessionid);
+            if (!(strcmp(prot->service, "imap")
+                && (strcmp(prot->service, "pop3"))))
+            {
+                auditlog_proxy(userid, my_status);
             }
         }
 
@@ -1256,7 +1203,6 @@ EXPORTED void backend_disconnect(struct backend *s)
         prot_fill(s->in);
     }
 
-#ifdef HAVE_SSL
     /* Free tlsconn and tlssess */
     if (s->tlsconn) {
         tls_reset_servertls(&s->tlsconn);
@@ -1266,7 +1212,6 @@ EXPORTED void backend_disconnect(struct backend *s)
         SSL_SESSION_free(s->tlssess);
         s->tlssess = NULL;
     }
-#endif /* HAVE_SSL */
 
     /* close/free socket & prot layer */
     if (s->sock != -1) cyrus_close_sock(s->sock);
@@ -1339,8 +1284,12 @@ EXPORTED int backend_version(struct backend *be)
             return MAILBOX_MINOR_VERSION;
         }
         else if (major == 3) {
-            if (minor >= 10) {
-                /* all versions since 3.10 have been 19 so far */
+            if (minor >= 13) {
+                /* all versions since 3.13 have been 20 so far */
+                return 20;
+            }
+            else if (minor >= 10) {
+                /* version 3.10 - 3.12 were 19 */
                 return 19;
             }
             else if (minor >= 3) {

@@ -4,9 +4,8 @@ use Cassandane::Tiny;
 sub test_issue_LP52545479
     :min_version_3_1
     :JMAPExtensions
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
 
     my $res = $jmap->CallMethods([
@@ -68,8 +67,8 @@ sub test_issue_LP52545479
         $res_annot_storage = 'X-ANNOTATION-STORAGE';
     }
 
-    $self->_set_quotaroot('user.cassandane');
-    $self->_set_quotalimits(storage => 1,
+    $self->set_quotaroot('user.cassandane');
+    $self->set_quotalimits(storage => 1,
                             $res_annot_storage => 1); # that's 1024 bytes
 
     $res = $jmap->CallMethods([

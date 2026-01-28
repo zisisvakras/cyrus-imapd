@@ -1,44 +1,6 @@
-/* cyr_buildinfo.c - tool to inspect Cyrus build configuration
- *
- * Copyright (c) 1994-2016 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* cyr_buildinfo.c - tool to inspect Cyrus build configuration */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -91,7 +53,7 @@ static json_t *buildinfo()
 {
     json_t *component = json_object();
     json_t *dependency = json_object();
-    json_t *database = json_object();
+    json_t *cyrusdb = json_object();
     json_t *search = json_object();
     json_t *hardware = json_object();
     json_t *buildconf = json_object();
@@ -100,7 +62,7 @@ static json_t *buildinfo()
 
     json_object_set_new(buildconf, "component", component);
     json_object_set_new(buildconf, "dependency", dependency);
-    json_object_set_new(buildconf, "database", database);
+    json_object_set_new(buildconf, "cyrusdb", cyrusdb);
     json_object_set_new(buildconf, "search", search);
     json_object_set_new(buildconf, "ical", ical);
     json_object_set_new(buildconf, "hardware", hardware);
@@ -172,21 +134,12 @@ static json_t *buildinfo()
 #endif
 
     /* Build dependencies */
+    json_object_set_new(dependency, "openssl", json_true());
+    json_object_set_new(dependency, "openssl_alpn", json_true());
 #ifdef HAVE_LDAP
     json_object_set_new(dependency, "ldap", json_true());
 #else
     json_object_set_new(dependency, "ldap", json_false());
-#endif
-#ifdef HAVE_SSL
-    json_object_set_new(dependency, "openssl", json_true());
-# ifdef HAVE_TLS_ALPN
-    json_object_set_new(dependency, "openssl_alpn", json_true());
-# else
-    json_object_set_new(dependency, "openssl_alpn", json_false());
-# endif
-#else
-    json_object_set_new(dependency, "openssl", json_false());
-    json_object_set_new(dependency, "openssl_alpn", json_false());
 #endif
 #ifdef HAVE_ZLIB
     json_object_set_new(dependency, "zlib", json_true());
@@ -243,11 +196,6 @@ static json_t *buildinfo()
 #else
     json_object_set_new(dependency, "ical", json_false());
 #endif
-#ifdef HAVE_LIBICALVCARD
-    json_object_set_new(dependency, "icalvcard", json_true());
-#else
-    json_object_set_new(dependency, "icalvcard", json_false());
-#endif
 #ifdef HAVE_ICU
     json_object_set_new(dependency, "icu4c", json_true());
 #else
@@ -274,21 +222,28 @@ static json_t *buildinfo()
     json_object_set_new(dependency, "guesstz", json_false());
 #endif
 
-    /* Enabled databases */
-#ifdef HAVE_MYSQL
-    json_object_set_new(database, "mysql", json_true());
+    /* cyrusdb backends */
+    json_object_set_new(cyrusdb, "flat", json_true());
+    json_object_set_new(cyrusdb, "quotalegacy", json_true());
+    json_object_set_new(cyrusdb, "skiplist", json_true());
+    json_object_set_new(cyrusdb, "twom", json_true());
+    json_object_set_new(cyrusdb, "twoskip", json_true());
+#ifdef USE_CYRUSDB_SQL
+    {
+        json_t *sql_engines = json_array();
+        json_object_set_new(cyrusdb, "sql", sql_engines);
+# ifdef HAVE_MYSQL
+        json_array_append_new(sql_engines, json_string("mysql"));
+# endif
+# ifdef HAVE_PGSQL
+        json_array_append_new(sql_engines, json_string("pgsql"));
+# endif
+# ifdef HAVE_SQLITE
+        json_array_append_new(sql_engines, json_string("sqlite"));
+# endif
+    }
 #else
-    json_object_set_new(database, "mysql", json_false());
-#endif
-#ifdef HAVE_PGSQL
-    json_object_set_new(database, "pgsql", json_true());
-#else
-    json_object_set_new(database, "pgsql", json_false());
-#endif
-#ifdef HAVE_SQLITE
-    json_object_set_new(database, "sqlite", json_true());
-#else
-    json_object_set_new(database, "sqlite", json_false());
+    json_object_set_new(cyrusdb, "sql", json_false());
 #endif
 
     /* Enabled search engines */
@@ -303,13 +258,6 @@ static json_t *buildinfo()
     json_object_set_new(search, "xapian", json_false());
 #endif
     json_object_set_new(search, "xapian_cjk_tokens", json_string(XAPIAN_CJK_TOKENS));
-
-    /* iCalendar features */
-#ifdef HAVE_ICALPARSER_CTRL
-    json_object_set_new(ical, "ctrl", json_true());
-#else
-    json_object_set_new(ical, "ctrl", json_false());
-#endif
 
     /* Internal version numbers */
 #ifdef USE_SIEVE

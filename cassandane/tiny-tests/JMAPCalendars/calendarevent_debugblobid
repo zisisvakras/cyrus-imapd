@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_calendarevent_debugblobid
     :min_version_3_1
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
 
     xlog $self, "create other user";
@@ -15,15 +14,8 @@ sub test_calendarevent_debugblobid
     $admintalk->setacl("user.other", admin => 'lrswipkxtecdan') or die;
     $admintalk->setacl("user.other", other => 'lrswipkxtecdn') or die;
 
-    my $service = $self->{instance}->get_service("http");
-    my $otherJmap = Mail::JMAPTalk->new(
-        user => 'other',
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
+    my $other_user = $self->{instance}->create_user_without_setup('other');
+    my $otherJmap = $other_user->jmap;
     $otherJmap->DefaultUsing([
         'urn:ietf:params:jmap:core',
         'urn:ietf:params:jmap:calendars',
@@ -111,26 +103,13 @@ sub test_calendarevent_debugblobid
 
     xlog $self, "attempt to download debugBlob as non-admin (should fail)";
 
-    my $downloadUri = $jmap->downloaduri('other', $debugBlobId);
-    my %Headers = (
-        'Authorization' => $jmap->auth_header(),
-    );
-    my $RawResponse = $jmap->ua->get($downloadUri, { headers => \%Headers });
-    if ($ENV{DEBUGJMAP}) {
-        warn "JMAP " . Dumper($RawResponse);
-    }
-    $self->assert_str_equals('404', $RawResponse->{status});
+    my $download = $self->{jmap}->Download('other', $debugBlobId);
+    $self->assert_str_equals('404', $download->{status});
 
     xlog $self, "get debugBlobId as admin user";
 
-    my $adminJmap = Mail::JMAPTalk->new(
-        user => 'admin',
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
+    my $admin_user = $self->{instance}->create_user_without_setup('admin');
+    my $adminJmap = $admin_user->jmap;
     $res = $adminJmap->CallMethods([
         ['CalendarEvent/get', {
             accountId => 'other',

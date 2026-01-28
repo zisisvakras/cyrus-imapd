@@ -1,45 +1,6 @@
-/* jmap_mail_query.h -- Helper routines for JMAP Email queries.
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_mail_query.h -- Helper routines for JMAP Email queries. */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef JMAP_MAIL_QUERY_H
 #define JMAP_MAIL_QUERY_H
@@ -66,20 +27,16 @@ struct email_contactfilter {
     const char *accountid;
     const struct auth_state *authstate;
     const struct namespace *namespace;
-    struct carddav_db *carddavdb;
-    char *addrbook;
     hash_table contactgroups; /* maps groupid to emails (strarray) */
 };
 
 extern void jmap_email_contactfilter_init(const char *accountid,
                                           const struct auth_state *authstate,
                                           const struct namespace *namespace,
-                                          const char *addressbookid,
                                           struct email_contactfilter *cfilter);
 extern void jmap_email_contactfilter_fini(struct email_contactfilter *cfilter);
 
-extern int jmap_email_contactfilter_from_filtercondition(struct jmap_parser *parser,
-                                                         json_t *filter,
+extern int jmap_email_contactfilter_from_filtercondition(json_t *filter,
                                                          struct email_contactfilter *cfilter);
 
 struct emailbodies {
@@ -160,6 +117,34 @@ extern struct jmap_headermatch *jmap_headermatch_dup(struct jmap_headermatch *hm
 
 extern int jmap_headermatch_match(struct jmap_headermatch *hm, message_t *msg);
 
+extern void jmap_headermatch_serialize(struct jmap_headermatch*, struct buf*);
+
+
+/* Set of addressbooks owned by userid and accessible by accountId */
+struct abook_set {
+    char *userid;
+    struct carddav_db *carddavdb;  // DAV DB for userid
+    ptrarray_t mbentrys;           // NULL = ALL abooks owned by userid
+};
+
+/* Given an 'accountid', along with its 'authstate', 'namespace', 'carddavdb',
+   return an array of 'abook_sets' corresponding to ALL addressbooks
+   to which accountid has access.
+*/
+extern ptrarray_t *jmap_get_accessible_addressbooks(const char *accountid,
+                                                    const struct auth_state *authstate,
+                                                    const struct namespace *namespace,
+                                                    struct carddav_db *carddavdb);
+
+/* Free an array of 'abook_sets' */
+extern void jmap_free_abook_sets(ptrarray_t *abook_sets);
+
+/* Lookup 'card_uids' of 'card_kind' in the array of 'abook_sets'
+   and return an array of 'emails' contained in those cards, and optionally
+   return an array of 'member_uids' contained in any group cards. */
+extern void jmap_get_card_emails(strarray_t *card_uids, unsigned card_kind,
+                                 ptrarray_t *abook_sets,
+                                 strarray_t *emails, strarray_t **member_uids);
 
 #endif /* WITH_DAV */
 

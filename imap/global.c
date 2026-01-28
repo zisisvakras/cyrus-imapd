@@ -1,44 +1,6 @@
-/* global.c -- Configuration routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* global.c -- Configuration routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -53,9 +15,7 @@
 #include <netinet/in.h>
 #include <sys/stat.h>
 
-#ifdef HAVE_SSL
 #include <openssl/rand.h>
-#endif
 
 #if HAVE_UNISTD_H
 # include <unistd.h>
@@ -99,7 +59,7 @@ EXPORTED volatile sig_atomic_t in_shutdown = 0;
 
 EXPORTED int config_fulldirhash;                                /* 0 */
 EXPORTED int config_implicitrights;                     /* "lkxa" */
-EXPORTED unsigned long config_metapartition_files;      /* 0 */
+EXPORTED uint64_t config_metapartition_files;      /* 0 */
 EXPORTED const char *config_mboxlist_db;
 EXPORTED const char *config_quota_db;
 EXPORTED const char *config_subscription_db;
@@ -121,10 +81,6 @@ EXPORTED int config_take_globallock;
 EXPORTED char *config_skip_userlock;
 EXPORTED int haproxy_protocol = 0;
 EXPORTED int imaply_strict = 1;
-
-static char session_id_buf[MAX_SESSIONID_SIZE];
-static int session_id_time = 0;
-static int session_id_count = 0;
 
 static strarray_t *suppressed_capabilities = NULL;
 
@@ -187,19 +143,19 @@ static void cyrus_modules_done()
     }
 }
 
+static void debug_update_log_suppression() {
+  if (config_debug)
+    setlogmask(LOG_UPTO(LOG_DEBUG));
+  else
+    setlogmask(LOG_UPTO(LOG_INFO));
+}
+
 static void debug_toggled(void)
 {
-    int logmask = setlogmask(0); /* gets the current log mask */
-
-    if (config_debug)
-        logmask |= LOG_MASK(LOG_DEBUG);
-    else
-        logmask &= ~LOG_MASK(LOG_DEBUG);
+    debug_update_log_suppression();
 
     syslog(LOG_INFO, "debug logging turned %s",
                      config_debug ? "on" : "off");
-
-    setlogmask(logmask);
 }
 
 /* Called before a cyrus application starts (but after command line parameters
@@ -259,14 +215,16 @@ EXPORTED int cyrus_init(const char *alt_config, const char *ident, unsigned flag
         openlog(config_ident, syslog_opts, SYSLOG_FACILITY);
     }
 
-    /* allow toggleable debug logging */
-    config_toggle_debug_cb = &debug_toggled;
-
     /* Load configuration file.  This will set config_dir when it finds it */
     config_read(alt_config, config_need_data);
 
+    debug_update_log_suppression();
+
+    /* allow toggleable debug logging */
+    config_toggle_debug_cb = &debug_toggled;
+
     /* changed user if needed */
-    if ((geteuid()) == 0 && (become_cyrus(/*is_master*/0) != 0)) {
+    if ((geteuid()) == 0 && (become_cyrus() != 0)) {
         fatal("must run as the Cyrus user", EX_USAGE);
     }
 
@@ -287,6 +245,7 @@ EXPORTED int cyrus_init(const char *alt_config, const char *ident, unsigned flag
 
         closelog();
         openlog(ident_buf, syslog_opts, facnum);
+        debug_update_log_suppression();
     }
     /* Do not free ident_buf, syslog needs it for the life of this process! */
 
@@ -888,61 +847,6 @@ EXPORTED int shutdown_file(char *buf, int size)
     return 1;
 }
 
-/* Set up the Session ID Buffer */
-EXPORTED void session_new_id(void)
-{
-    const char *base;
-    int now = time(NULL);
-    if (now != session_id_time) {
-        session_id_time = now;
-        session_id_count = 0;
-    }
-    ++session_id_count;
-    base = config_getstring(IMAPOPT_SYSLOG_PREFIX);
-    if (!base) base = config_servername;
-
-#ifdef HAVE_SSL
-    unsigned long long random;
-    RAND_bytes((unsigned char *) &random, sizeof(random));
-    snprintf(session_id_buf, MAX_SESSIONID_SIZE, "%.128s-%d-%d-%d-%llu",
-             base, session_id_time, getpid(), session_id_count, random);
-#else
-    snprintf(session_id_buf, MAX_SESSIONID_SIZE, "%.128s-%d-%d-%d",
-             base, session_id_time, getpid(), session_id_count);
-#endif
-}
-
-/* Return the session id */
-EXPORTED const char *session_id(void)
-{
-    if (!session_id_count)
-        session_new_id();
-    return (const char *)session_id_buf;
-}
-
-/* parse sessionid out of protocol answers */
-EXPORTED void parse_sessionid(const char *str, char *sessionid)
-{
-    char *sp, *ep;
-    int len;
-
-    if ((str) && (sp = strstr(str, "SESSIONID=<")) && (ep = strchr(sp, '>')))
-    {
-        sp += 11;
-        len = ep - sp;
-        if (len < MAX_SESSIONID_SIZE)
-        {
-            strncpy(sessionid, sp, len);
-            ep = sessionid + len;
-            *ep = '\0';
-        }
-        else
-            strcpy(sessionid, "invalid");
-    }
-    else
-        strcpy(sessionid, "unknown");
-}
-
 EXPORTED int capa_is_disabled(const char *str)
 {
     return strarray_contains_case(suppressed_capabilities, str);
@@ -1029,8 +933,6 @@ EXPORTED const char *get_clienthost(int s, const char **localip, const char **re
 
 EXPORTED int cmd_cancelled(int insearch)
 {
-    if (signals_cancelled())
-        return IMAP_CANCELLED;
     if (insearch && cmdtime_checksearch())
         return IMAP_SEARCH_SLOW;
     return 0;

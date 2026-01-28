@@ -1,44 +1,6 @@
-/* user.c -- User manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* user.c -- User manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -272,7 +234,7 @@ EXPORTED int user_deletedata(const mbentry_t *mbentry, int wipe_user)
     const char *sieve_path = NULL, **suffixes;
     int i;
 
-    assert(user_isnamespacelocked(userid));
+    assert(user_nslock_islocked(userid));
 
     if (!(mbentry->mbtype & MBTYPE_LEGACY_DIRS) && mbentry->uniqueid) {
         for (suffixes = user_file_suffixes; *suffixes; suffixes++) {
@@ -430,7 +392,7 @@ static int user_renamesieve(const char *olduser, const char *newuser)
      *
      * XXX this doesn't rename sieve scripts
      */
-    if (!r) r = rename(oldpath, newpath);
+    if (!r) r = cyrus_rename(oldpath, newpath);
     if (r < 0) {
         if (errno == ENOENT) {
             syslog(LOG_WARNING, "error renaming %s to %s: %m",
@@ -697,9 +659,9 @@ static const char *_namelock_name_from_userid(const char *userid)
 
     buf_setcstr(&buf, "*U*");
     if (userid) {
-	char *inbox = mboxname_user_mbox(userid, NULL);
-	buf_appendcstr(&buf, inbox);
-	free(inbox);
+        char *inbox = mboxname_user_mbox(userid, NULL);
+        buf_appendcstr(&buf, inbox);
+        free(inbox);
     }
 
     if (config_skip_userlock && !strcmp(config_skip_userlock, userid)) {
@@ -711,27 +673,117 @@ static const char *_namelock_name_from_userid(const char *userid)
     return buf_cstring(&buf);
 }
 
-EXPORTED struct mboxlock *user_namespacelock_full(const char *userid, int locktype)
-{
-    struct mboxlock *namelock;
-    const char *name = _namelock_name_from_userid(userid);
-    int r = mboxname_lock(name, &namelock, locktype);
-    if (r) return NULL;
-    return namelock;
-}
-
 EXPORTED int user_run_with_lock(const char *userid, int (*cb)(void *), void *rock)
 {
-    struct mboxlock *userlock = user_namespacelock(userid);
+    user_nslock_t *user_nslock = user_nslock_lock(userid, LOCK_EXCLUSIVE);
     int r = cb(rock);
-    mboxname_release(&userlock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
-EXPORTED int user_isnamespacelocked(const char *userid)
+// we don't need two separate APIs for this because a NULL mboxname means a single mailbox, so you
+// can pass NULL to the second argument and mean "just lock one mailbox please".
+EXPORTED user_nslock_t *user_nslock_bymboxname(const char *mboxname1, const char *mboxname2, int locktype)
+{
+    char *userid1 = mboxname_to_userid(mboxname1);
+    if (!mboxname2) {
+        user_nslock_t *locks = user_nslock_lock(userid1, locktype);
+        free(userid1);
+        return locks;
+    }
+    char *userid2 = mboxname_to_userid(mboxname2);
+    user_nslock_t *locks = user_nslock_lockdouble(userid1, userid2, locktype);
+    free(userid2);
+    free(userid1);
+    return locks;
+}
+
+EXPORTED user_nslock_t *user_nslock_lock(const char *userid, int locktype)
+{
+    if (!user_nslock_islocked(userid)) {
+        assert(!open_mailboxes_namelocked(userid));
+        assert(!annotate_anydb_islocked());
+    }
+    user_nslock_t *locks = xzmalloc(sizeof(struct usernamespacelocks));
+    const char *lockname = _namelock_name_from_userid(userid);
+    if (mboxname_lock(lockname, &locks->l1, locktype)) {
+        assert(locktype == LOCK_NONBLOCKING);
+        user_nslock_release(&locks);
+        return NULL;
+    }
+    return locks;
+}
+
+// we need separate double and single locks because a NULL userid might mean a shared namespace,
+// so there's no other way to distinguish between an operation involving a shared mailbox and
+// an single mailbox operation
+EXPORTED user_nslock_t *user_nslock_lockdouble(const char *userid1, const char *userid2, int locktype)
+{
+    int cmp = strcmpsafe(userid1, userid2);
+    // if it's the same user (including both NULL, aka: both shared) then
+    // we can use full1 to lock it.
+    if (!cmp) return user_nslock_lock(userid1, locktype);
+
+    // otherwise we have ordering to follow.  The alphabetically first user is always
+    // locked first to avoid deadlocks.
+    const char *l1user = userid1, *l2user = userid2;
+    if (cmp > 0) {
+        l1user = userid2;
+        l2user = userid1;
+    }
+
+    // ensure locking invariants - we are allowed to have the first lock already, but
+    // we MUST NOT have the second lock if we don't have the first lock, and we can't
+    // have any mailboxes open for a user which is not yet locked.
+    if (!user_nslock_islocked(l1user)) {
+        assert(!user_nslock_islocked(l2user));
+        assert(!open_mailboxes_namelocked(l1user));
+        assert(!open_mailboxes_namelocked(l2user));
+        assert(!annotate_anydb_islocked());
+    }
+    else if (!user_nslock_islocked(l2user)) {
+        assert(!open_mailboxes_namelocked(l2user));
+    }
+
+    user_nslock_t *locks = xzmalloc(sizeof(struct usernamespacelocks));
+    // take the two locks in order (even if already locked, we refcount add it again)
+    const char *name = _namelock_name_from_userid(l1user);
+    if (mboxname_lock(name, &locks->l1, locktype)) {
+        assert(locktype == LOCK_NONBLOCKING);
+        user_nslock_release(&locks);
+        return NULL;
+    }
+    name = _namelock_name_from_userid(l2user);
+    if (mboxname_lock(name, &locks->l2, locktype)) {
+        assert(locktype == LOCK_NONBLOCKING);
+        user_nslock_release(&locks);
+        return NULL;
+    }
+    return locks;
+}
+
+EXPORTED void user_nslock_release(user_nslock_t **ptr)
+{
+    user_nslock_t *locks = *ptr;
+    if (!locks) return;
+    mboxname_release(&locks->l2);
+    mboxname_release(&locks->l1);
+    free(locks);
+    *ptr = NULL;
+}
+
+EXPORTED int user_nslock_islocked(const char *userid)
 {
     const char *name = _namelock_name_from_userid(userid);
     return mboxname_islocked(name);
+}
+
+EXPORTED int user_nslock_islockedmb(const char *mboxname)
+{
+    char *userid = mboxname_to_userid(mboxname);
+    int r = user_nslock_islocked(userid);
+    free(userid);
+    return r;
 }
 
 EXPORTED int user_isreplicaonly(const char *userid)

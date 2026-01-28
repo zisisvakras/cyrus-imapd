@@ -1,45 +1,6 @@
-/* httpd.c -- HTTP/RSS/xDAV/JMAP/TZdist/iSchedule server protocol parsing
- *
- * Copyright (c) 1994-2017 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* httpd.c -- HTTP/RSS/xDAV/JMAP/TZdist/iSchedule server protocol parsing */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -82,7 +43,9 @@
 #include "tls.h"
 #include "map.h"
 
+#include "auditlog.h"
 #include "imapd.h"
+#include "loginlog.h"
 #include "proc.h"
 #include "version.h"
 #include "stristr.h"
@@ -430,9 +393,9 @@ static struct http_connection http_conn;
 static sasl_ssf_t extprops_ssf = 0;
 int https = 0;
 static int httpd_tls_required = 0;
-static int httpd_tls_enabled = 0;
+static int httpd_starttls_enabled = 0;
 static unsigned avail_auth_schemes = 0; /* bitmask of available auth schemes */
-unsigned long config_httpmodules;
+uint64_t config_httpmodules;
 
 static time_t compile_time;
 struct buf serverinfo = BUF_INITIALIZER;
@@ -726,12 +689,7 @@ static void httpd_reset(struct http_connection *conn)
         prot_free(httpd_out);
     }
 
-    if (config_auditlog) {
-        syslog(LOG_NOTICE,
-               "auditlog: traffic sessionid=<%s>"
-               " bytes_in=<%" PRIu64 "> bytes_out=<%" PRIu64 ">",
-               session_id(), bytes_in, bytes_out);
-    }
+    auditlog_traffic(bytes_in, bytes_out);
 
     httpd_in = httpd_out = NULL;
 
@@ -749,7 +707,6 @@ static void httpd_reset(struct http_connection *conn)
     conn->close = 0;
     conn->close_str = NULL;
     conn->clienthost = "[local]";
-    conn->ws_ctx = NULL;
     buf_reset(&conn->logbuf);
     if (conn->logfd != -1) {
         close(conn->logfd);
@@ -865,7 +822,7 @@ int service_init(int argc __attribute__((unused)),
 
     /* Construct serverinfo string */
     buf_printf(&serverinfo,
-               "Cyrus-HTTP/%s Cyrus-SASL/%u.%u.%u Lib/XML%s Jansson/%s",
+               "Cyrus-HTTP/%s Cyrus-SASL/%u.%u.%u LibXML/%s Jansson/%s",
                CYRUS_VERSION,
                SASL_VERSION_MAJOR, SASL_VERSION_MINOR, SASL_VERSION_STEP,
                LIBXML_DOTTED_VERSION, JANSSON_VERSION);
@@ -1138,6 +1095,8 @@ void shut_down(int code)
 
     strarray_free(httpd_log_headers);
 
+    if (http_conn.h1_txn) transaction_free(http_conn.h1_txn);
+
     /* Cleanup auxiliary connection contexts */
     conn_shutdown_t shutdown;
     while ((shutdown = ptrarray_pop(&http_conn.shutdown_callbacks))) {
@@ -1195,11 +1154,7 @@ void shut_down(int code)
     prometheus_increment(code ? CYRUS_HTTP_SHUTDOWN_TOTAL_STATUS_ERROR
                               : CYRUS_HTTP_SHUTDOWN_TOTAL_STATUS_OK);
 
-    if (config_auditlog)
-        syslog(LOG_NOTICE,
-               "auditlog: traffic sessionid=<%s>"
-               " bytes_in=<%" PRIu64 "> bytes_out=<%" PRIu64 ">",
-               session_id(), bytes_in, bytes_out);
+    auditlog_traffic(bytes_in, bytes_out);
 
     saslprops_free(&saslprops);
 
@@ -1230,7 +1185,8 @@ EXPORTED void fatal(const char* s, int code)
     }
     recurse_code = code;
 
-    if (http_conn.sess_ctx || http_conn.ws_ctx) {
+    if (http_conn.sess_ctx ||
+        (http_conn.h1_txn && http_conn.h1_txn->ws_ctx)) {
         /* Pass fatal string to shut_down() */
         http_conn.close_str = s;
     }
@@ -1255,8 +1211,6 @@ EXPORTED void fatal(const char* s, int code)
     shut_down(code);
 }
 
-
-#ifdef HAVE_SSL
 
 static unsigned h2_is_available(void *rock __attribute__((unused)))
 {
@@ -1286,18 +1240,7 @@ static void _shutdown_tls(struct http_connection *conn __attribute__((unused)))
 
 static int tls_init(int client_auth, struct buf *serverinfo)
 {
-    unsigned long version = OPENSSL_VERSION_NUMBER;
-    unsigned int status   = version & 0x0f; version >>= 4;
-    unsigned int patch    = version & 0xff; version >>= 8;
-    unsigned int fix      = version & 0xff; version >>= 8;
-    unsigned int minor    = version & 0xff; version >>= 8;
-    unsigned int major    = version & 0xff;
-    
-    buf_printf(serverinfo, " OpenSSL/%u.%u.%u", major, minor, fix);
-
-    if (status == 0) buf_appendcstr(serverinfo, "-dev");
-    else if (status < 15) buf_printf(serverinfo, "-beta%u", status);
-    else if (patch) buf_putc(serverinfo, patch + 'a' - 1);
+    buf_printf(serverinfo, " OpenSSL/%s", OPENSSL_FULL_VERSION_STR);
 
     if (!tls_enabled()) return HTTP_UNAVAILABLE;
 
@@ -1307,7 +1250,7 @@ static int tls_init(int client_auth, struct buf *serverinfo)
         return HTTP_SERVER_ERROR;
     }
 
-    httpd_tls_enabled = 1;
+    httpd_starttls_enabled = config_getswitch(IMAPOPT_ALLOWSTARTTLS);
 
     return 0;
 }
@@ -1343,19 +1286,6 @@ static void starttls(struct http_connection *conn, int timeout)
 
     avail_auth_schemes |= AUTH_BASIC;
 }
-#else
-static int tls_init(int client_auth __attribute__((unused)),
-                    struct buf *serverinfo __attribute__((unused)))
-{
-    return HTTP_NOT_IMPLEMENTED;
-}
-
-static void starttls(struct http_connection *conn __attribute__((unused)),
-                     int timeout __attribute__((unused)))
-{
-    fatal("starttls() called, but no OpenSSL", EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */
 
 
 /* Reset the given sasl_conn_t to a sane state */
@@ -1642,7 +1572,7 @@ static int preauth_check_hdrs(struct transaction_t *txn)
     else if (txn->flags.ver == VER_1_1 &&
              !(txn->conn->tls_ctx || (txn->flags.conn & CONN_CLOSE))) {
         /* Advertise available upgrade protocols */
-        if (httpd_tls_enabled &&
+        if (httpd_starttls_enabled &&
             config_mupdate_server && config_getstring(IMAPOPT_PROXYSERVERS)) {
             txn->flags.upgrade |= UPGRADE_TLS;
         }
@@ -2186,10 +2116,13 @@ static int http1_input(struct transaction_t *txn)
  */
 static void cmdloop(struct http_connection *conn)
 {
-    struct transaction_t txn;
+    struct transaction_t txn = { 0 };
+
+    /* Link the transaction context into the connection so we can
+       properly close/free resources during an abnormal shut_down() */
+    conn->h1_txn = &txn;
 
     /* Start with an empty (clean) transaction */
-    memset(&txn, 0, sizeof(struct transaction_t));
     transaction_reset(&txn);
     txn.conn = conn;
 
@@ -2288,6 +2221,9 @@ static void cmdloop(struct http_connection *conn)
 
     /* Memory cleanup */
     transaction_free(&txn);
+
+    /* Clear reference to transaction */
+    conn->h1_txn = NULL;
 }
 
 /****************************  Parsing Routines  ******************************/
@@ -2415,7 +2351,8 @@ static void parse_upgrade(struct transaction_t *txn)
         char *token;
 
         while ((token = tok_next(&tok))) {
-            if (!txn->conn->tls_ctx && httpd_tls_enabled &&
+            if (!txn->conn->tls_ctx && httpd_starttls_enabled &&
+                config_mupdate_server && config_getstring(IMAPOPT_PROXYSERVERS) &&
                 !strcasecmp(token, TLS_VERSION)) {
                 /* Upgrade to TLS */
                 txn->flags.conn |= CONN_UPGRADE;
@@ -2674,13 +2611,23 @@ static void comma_list_body(struct buf *buf,
     for (i = 0; vals[i]; i++) {
         if (flags & (1 << i)) {
             buf_appendcstr(buf, sep);
-            if (has_args) buf_vprintf(buf, vals[i], args);
-            else buf_appendcstr(buf, vals[i]);
+            if (has_args) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+                buf_vprintf(buf, vals[i], args);
+#pragma GCC diagnostic pop
+            }
+            else {
+                buf_appendcstr(buf, vals[i]);
+            }
             sep = ", ";
         }
         else if (has_args) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
             /* discard any unused args */
             vsnprintf(NULL, 0, vals[i], args);
+#pragma GCC diagnostic pop
         }
     }
 }
@@ -4019,9 +3966,9 @@ static int proxy_authz(const char **authzid, struct transaction_t *txn)
 
     if (!(config_mupdate_server && config_getstring(IMAPOPT_PROXYSERVERS))) {
         /* Not a backend in a Murder - proxy authz is not allowed */
-        syslog(LOG_NOTICE, "badlogin: %s %s %s %s",
-               txn->conn->clienthost, txn->auth_chal.scheme->name, httpd_authid,
-               "proxy authz attempted on non-Murder backend");
+        loginlog_bad(txn->conn->clienthost, httpd_authid, NULL,
+                     txn->auth_chal.scheme->name,
+                     "proxy authz attempted on non-Murder backend");
         return SASL_NOAUTHZ;
     }
 
@@ -4031,9 +3978,9 @@ static int proxy_authz(const char **authzid, struct transaction_t *txn)
                                SASL_CU_AUTHZID, NULL,
                                authzbuf, sizeof(authzbuf), &authzlen);
     if (status) {
-        syslog(LOG_NOTICE, "badlogin: %s %s %s invalid user",
-               txn->conn->clienthost, txn->auth_chal.scheme->name,
-               beautify_string(*authzid));
+        loginlog_bad(txn->conn->clienthost, *authzid, NULL,
+                     txn->auth_chal.scheme->name,
+                     "invalid user");
         return status;
     }
 
@@ -4044,9 +3991,9 @@ static int proxy_authz(const char **authzid, struct transaction_t *txn)
                                  NULL, 0, NULL);
 
     if (status) {
-        syslog(LOG_NOTICE, "badlogin: %s %s %s %s",
-               txn->conn->clienthost, txn->auth_chal.scheme->name, httpd_authid,
-               sasl_errdetail(httpd_saslconn));
+        loginlog_bad(txn->conn->clienthost, httpd_authid, NULL,
+                     txn->auth_chal.scheme->name,
+                     sasl_errdetail(httpd_saslconn));
         return status;
     }
 
@@ -4089,11 +4036,10 @@ static int auth_success(struct transaction_t *txn, const char *userid)
     txn->userid = httpd_userid = xstrdup(userid);
     httpd_userisanonymous = is_userid_anonymous(httpd_userid);
 
-    syslog(LOG_NOTICE, "login: %s %s %s%s %s SESSIONID=<%s>",
-           txn->conn->clienthost, httpd_userid, scheme->name,
-           txn->conn->tls_ctx ? "+TLS" : "", "User logged in",
-           session_id());
-
+    loginlog_good_http(txn->conn->clienthost,
+                       httpd_userid,
+                       scheme->name,
+                       !!txn->conn->tls_ctx);
 
     /* Recreate telemetry log entry for request (w/ credentials redacted) */
     assert(!buf_len(&txn->buf));
@@ -4333,9 +4279,8 @@ static int http_auth(const char *creds, struct transaction_t *txn)
         if (status) {
             if (*user == '\0')  // TB can send "Authorization: Basic Og=="
                 txn->error.desc = "All-whitespace username.";
-            syslog(LOG_NOTICE, "badlogin: %s Basic %s %s",
-                   txn->conn->clienthost, realuser,
-                   sasl_errdetail(httpd_saslconn));
+            loginlog_bad(txn->conn->clienthost, realuser, NULL, "Basic",
+                         sasl_errdetail(httpd_saslconn));
             free(realuser);
 
             /* Don't allow user probing */

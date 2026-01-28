@@ -1,45 +1,6 @@
-/* http_tzdist.c -- Routines for handling tzdist service requests in httpd
- *
- * Copyright (c) 1994-2014 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_tzdist.c -- Routines for handling tzdist service requests in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 /*
  * TODO:
@@ -85,7 +46,6 @@ static time_t compile_time;
 static unsigned synctoken_prefix;
 static ptrarray_t *leap_seconds = NULL;
 static int geo_enabled = 0;
-static const char *zoneinfo_dir = NULL;
 static void tzdist_init(struct buf *serverinfo);
 static void tzdist_shutdown(void);
 static int meth_get(struct transaction_t *txn, void *params);
@@ -103,6 +63,7 @@ static struct buf *icaltimezone_as_tzif_leap(icalcomponent* comp);
 static struct buf *_icaltimezone_as_tzif(icalcomponent* ical, bit32 leapcnt,
                                          icaltimetype *startp, icaltimetype *endp);
 
+// clang-format off
 static struct mime_type_t tz_mime_types[] = {
     /* First item MUST be the default type and storage format */
     { "text/calendar; charset=utf-8", "2.0", "ics",
@@ -127,9 +88,11 @@ static struct mime_type_t tz_mime_types[] = {
     },
     { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 };
+// clang-format on
 
 
 /* Namespace for tzdist service */
+// clang-format off
 struct namespace_t namespace_tzdist = {
     URL_NS_TZDIST, 0, "tzdist", "/tzdist", TZDIST_WELLKNOWN_URI,
     http_allow_noauth, /*authschemes*/0,
@@ -161,6 +124,7 @@ struct namespace_t namespace_tzdist = {
         { NULL,                 NULL }                  /* UNLOCK       */
     }
 };
+// clang-format on
 
 
 #ifdef HAVE_SHAPELIB
@@ -185,7 +149,7 @@ static void open_shape_file(struct buf *serverinfo)
     buf_printf(serverinfo, " ShapeLib/%s", SHAPELIB_VERSION);
 
     /* Open the tz_world shape files */
-    snprintf(buf, sizeof(buf), "%s%s", zoneinfo_dir, FNAME_WORLD_SHAPEFILE);
+    snprintf(buf, sizeof(buf), "%s%s", config_zoneinfo_dir, FNAME_WORLD_SHAPEFILE);
     if (!(tz_world.shp = SHPOpen(buf, "rb"))) {
         syslog(LOG_ERR, "Failed to open file %s", buf);
         return;
@@ -215,7 +179,7 @@ static void open_shape_file(struct buf *serverinfo)
     geo_enabled = tz_world.valid = 1;
 
     /* Open the tz_antarctica shape files (optional) */
-    snprintf(buf, sizeof(buf), "%s%s", zoneinfo_dir, FNAME_AQ_SHAPEFILE);
+    snprintf(buf, sizeof(buf), "%s%s", config_zoneinfo_dir, FNAME_AQ_SHAPEFILE);
     if (!(tz_aq.shp = SHPOpen(buf, "rb"))) {
         syslog(LOG_NOTICE, "Failed to open file %s", buf);
         return;
@@ -591,7 +555,7 @@ static void read_leap_seconds()
     char buf[1024];
     struct leapsec *leap;
 
-    snprintf(buf, sizeof(buf), "%s%s", zoneinfo_dir, FNAME_LEAPSECFILE);
+    snprintf(buf, sizeof(buf), "%s%s", config_zoneinfo_dir, FNAME_LEAPSECFILE);
     if (!(fp = fopen(buf, "r"))) {
         syslog(LOG_ERR, "Failed to open file %s", buf);
         return;
@@ -641,8 +605,7 @@ static void tzdist_init(struct buf *serverinfo __attribute__((unused)))
     }
 
     /* Find configured zoneinfo_zir */
-    zoneinfo_dir = config_getstring(IMAPOPT_ZONEINFO_DIR);
-    if (!zoneinfo_dir) {
+    if (!config_zoneinfo_dir) {
         syslog(LOG_ERR, "zoneinfo_dir must be set for tzdist service");
         namespace_tzdist.enabled = 0;
         return;
@@ -1314,7 +1277,7 @@ static int action_get(struct transaction_t *txn)
 
         /* Open, mmap, and parse the file */
         buf_reset(&pathbuf);
-        buf_printf(&pathbuf, "%s/%s.ics", zoneinfo_dir, tzid);
+        buf_printf(&pathbuf, "%s/%s.ics", config_zoneinfo_dir, tzid);
         path = buf_cstring(&pathbuf);
         if ((fd = open(path, O_RDONLY)) == -1) return HTTP_SERVER_ERROR;
 
@@ -1522,7 +1485,7 @@ static int action_expand(struct transaction_t *txn)
 
         /* Open, mmap, and parse the file */
         buf_reset(&pathbuf);
-        buf_printf(&pathbuf, "%s/%s.ics", zoneinfo_dir, tzid);
+        buf_printf(&pathbuf, "%s/%s.ics", config_zoneinfo_dir, tzid);
         path = buf_cstring(&pathbuf);
         if ((fd = open(path, O_RDONLY)) == -1) return HTTP_SERVER_ERROR;
 
@@ -1558,10 +1521,10 @@ static int action_expand(struct transaction_t *txn)
 
                 /* UT and local time 1 second before onset */
                 off.seconds = -1;
-                ut = icaltime_add(obs->onset, off);
+                ut = icalduration_extend(obs->onset, off);
 
                 off.seconds = obs->offset_from;
-                local = icaltime_add(ut, off);
+                local = icalduration_extend(ut, off);
 
                 buf_printf(body,
                            "%s  " CTIME_FMT " UT = " CTIME_FMT " %s"
@@ -1573,7 +1536,7 @@ static int action_expand(struct transaction_t *txn)
                 icaltime_adjust(&ut, 0, 0, 0, 1);
 
                 off.seconds = obs->offset_to;
-                local = icaltime_add(ut, off);
+                local = icalduration_extend(ut, off);
 
                 buf_printf(body,
                            "%s  " CTIME_FMT " UT = " CTIME_FMT " %s"
@@ -1724,7 +1687,11 @@ static int json_error_response(struct transaction_t *txn, long tz_code,
     else fmt = "End date-time <= start date-time";
 
     assert(!buf_len(&txn->buf));
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    /* format string chosen above */
     buf_printf(&txn->buf, fmt, param_name);
+#pragma GCC diagnostic pop
 
     root = json_pack("{s:s s:s s:i}", "title", buf_cstring(&txn->buf),
                      "type", error_message(tz_code),
@@ -1817,13 +1784,11 @@ static unsigned buf_append_rrule_as_posix_string(struct buf *buf,
     if (prop) rrule = icalproperty_get_recurrence(prop);
     if (!rrule) return 0;
 
-#ifdef HAVE_RSCALE
     if (rrule->rscale && strcasecmp(rrule->rscale, "GREGORIAN")) {
         /* POSIX rules are based on Gregorian calendar only */
         icalrecurrencetype_unref(rrule);
         return 0;
     }
-#endif
 
     prop = icalcomponent_get_first_property(comp, ICAL_DTSTART_PROPERTY);
     at = icalproperty_get_dtstart(prop);

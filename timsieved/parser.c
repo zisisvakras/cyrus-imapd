@@ -1,46 +1,6 @@
-/* parser.c -- parser used by timsieved
- * Tim Martin
- * 9/21/99
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* parser.c -- parser used by timsieved */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -59,11 +19,13 @@
 
 #include "assert.h"
 #include "libconfig.h"
+#include "util.h"
 #include "xmalloc.h"
 #include "xstrlcpy.h"
 
 #include "imap/backend.h"
 #include "imap/global.h"
+#include "imap/loginlog.h"
 #include "imap/mboxlist.h"
 #include "imap/mboxname.h"
 #include "imap/telemetry.h"
@@ -77,7 +39,7 @@ extern const char *sieved_clienthost;
 extern int sieved_domainfromip;
 extern int sieved_userisadmin;
 
-/* xxx these are both leaked, but we only handle one connection at a
+/* XXX these are both leaked, but we only handle one connection at a
  * time... */
 extern sasl_conn_t *sieved_saslconn; /* the sasl connection context */
 static const char *referral_host = NULL;
@@ -86,10 +48,7 @@ static int authenticated = 0;
 static int verify_only = 0;
 static int starttls_done = 0;
 static sasl_ssf_t sasl_ssf = 0;
-#ifdef HAVE_SSL
-/* our tls connection, if any */
 static SSL *tls_conn = NULL;
-#endif /* HAVE_SSL */
 extern int sieved_timeout;
 
 /* from elsewhere */
@@ -691,8 +650,7 @@ static int cmd_authenticate(struct protstream *sieved_out,
       if (sasl_result!=SASL_OK)
       {
         *errmsg="error base64 decoding string";
-        syslog(LOG_NOTICE, "badlogin: %s %s %s",
-               sieved_clienthost, mech, "error base64 decoding string");
+        loginlog_bad(sieved_clienthost, NULL, mech, NULL, *errmsg);
         goto reset;
       }
   }
@@ -739,8 +697,7 @@ static int cmd_authenticate(struct protstream *sieved_out,
       if (sasl_result!=SASL_OK)
       {
         *errmsg="error base64 decoding string";
-        syslog(LOG_NOTICE, "badlogin: %s %s %s",
-               sieved_clienthost, mech, "error base64 decoding string");
+        loginlog_bad(sieved_clienthost, NULL, mech, NULL, *errmsg);
         goto reset;
       }
 
@@ -760,8 +717,7 @@ static int cmd_authenticate(struct protstream *sieved_out,
                                      &serverout, &serveroutlen);
     } else {
       *errmsg = "expected a STRING followed by an EOL";
-      syslog(LOG_NOTICE, "badlogin: %s %s %s",
-             sieved_clienthost, mech, "expected string");
+      loginlog_bad(sieved_clienthost, NULL, mech, NULL, *errmsg);
       goto reset;
     }
 
@@ -773,8 +729,7 @@ static int cmd_authenticate(struct protstream *sieved_out,
       if(sasl_result == SASL_NOUSER)
           sasl_result = SASL_BADAUTH;
       *errmsg = (const char *) sasl_errstring(sasl_result,NULL,NULL);
-      syslog(LOG_NOTICE, "badlogin: %s %s %s",
-             sieved_clienthost, mech, *errmsg);
+      loginlog_bad(sieved_clienthost, NULL, mech, NULL, *errmsg);
       goto reset;
   }
 
@@ -885,8 +840,7 @@ static int cmd_authenticate(struct protstream *sieved_out,
       prot_printf(sieved_out, "OK\r\n");
   }
 
-  syslog(LOG_NOTICE, "login: %s %s %s%s %s", sieved_clienthost, username,
-         mech, starttls_done ? "+TLS" : "", "User logged in");
+  loginlog_good(sieved_clienthost, username, mech, starttls_done);
 
   authenticated = 1;
 
@@ -921,7 +875,6 @@ reset:
   goto cleanup;
 }
 
-#ifdef HAVE_SSL
 static int cmd_starttls(struct protstream *sieved_out,
                         struct protstream *sieved_in,
                         struct saslprops_t *saslprops)
@@ -984,11 +937,3 @@ static int cmd_starttls(struct protstream *sieved_out,
     return capabilities(sieved_out, sieved_saslconn, starttls_done,
                         authenticated, sasl_ssf);
 }
-#else
-static int cmd_starttls(struct protstream *sieved_out __attribute__((unused)),
-                        struct protstream *sieved_in __attribute__((unused)),
-                        struct saslprops_t *saslprops __attribute__((unused)))
-{
-    fatal("cmd_starttls() called, but no OpenSSL", EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */

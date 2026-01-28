@@ -1,0 +1,30 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_too_many_createdids ($self)
+{
+    my $jmap = $self->{jmap};
+
+    xlog "Test too many createdIds";
+
+    my $res = $jmap->request({
+        using => ["urn:ietf:params:jmap:sieve"],
+        methodCalls => [[
+            'SieveScript/set', { create => { 1 => { blobId => "#A" } } }, 'R1'
+        ]],
+        createdIds =>  {
+            map {; $_ => lc $_ } ('A' .. 'Z')
+        }
+    });
+
+    my $http_res = $res->http_response;
+
+    $self->assert_str_equals("400", $http_res->code);
+
+    my $payload = eval { decode_json($http_res->decoded_content) };
+    $self->assert_str_equals("400", $payload->{status});
+    $self->assert_str_equals("JMAP request exceeds a server limit",
+                             $payload->{title});
+    $self->assert_str_equals("urn:ietf:params:jmap:error:limit", $payload->{type});
+    $self->assert_str_equals("maxCreatedIdsInRequest", $payload->{limit});
+}

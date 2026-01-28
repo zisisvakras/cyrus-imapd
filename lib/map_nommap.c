@@ -1,44 +1,6 @@
-/* map_nommap.c -- dummy memory-mapping routines.
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* map_nommap.c -- dummy memory-mapping routines. */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <stdio.h>
@@ -52,7 +14,7 @@
 #include "xmalloc.h"
 #include "map.h"
 
-#define SLOP (8*1024)
+#define SLOP (4*1024)
 
 EXPORTED const char map_method_desc[] = "nommap";
 
@@ -80,19 +42,10 @@ EXPORTED map_refresh(int fd, int onceonly, const char **base,
     }
 
     /* Need a larger buffer */
-    if (*len <= newlen) {
+    if (*len < newlen) {
         if (*len) free((char *)*base);
-        /* always map one extra byte so there's a trailing NULL to protect
-         * us from overruns.  This does NOT mean that we should treat this
-         * memory as a cstring */
-        if (onceonly) {
-            *len = newlen;
-            *base = xmalloc(*len+1);
-        }
-        else {
-            *len = (newlen + 2*SLOP) & ~(SLOP-1);
-            *base = xmalloc(*len);
-        }
+        *len = newlen + (onceonly ? 0 : SLOP);
+        *base = xmalloc(*len);
     }
 
     lseek(fd, 0L, 0);
@@ -121,9 +74,6 @@ EXPORTED map_refresh(int fd, int onceonly, const char **base,
 
         slowio_maybe_delay_read(n);
     }
-
-    /* ensure the string is always terminated */
-    *p = '\0';
 }
 
 /*

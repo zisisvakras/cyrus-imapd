@@ -40,11 +40,14 @@
 package Cassandane::Instance;
 use strict;
 use warnings;
+
+use experimental 'signatures';
+
 use Config;
 use Data::Dumper;
 use Errno qw(ENOENT);
 use File::Copy;
-use File::Path qw(mkpath rmtree);
+use File::Path qw(mkpath rmtree remove_tree);
 use File::Find qw(find);
 use File::Basename;
 use File::stat;
@@ -62,8 +65,8 @@ use HTTP::Daemon;
 use DBI;
 use Time::HiRes qw(usleep);
 use List::Util qw(uniqstr);
+use MIME::Base64 qw(decode_base64 encode_base64);
 
-use lib '.';
 use Cassandane::Util::DateTime qw(to_iso8601);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
@@ -94,7 +97,7 @@ sub new
 
     my $cassini = Cassandane::Cassini->instance();
 
-    my $self = {
+    my $self = bless({
         name => undef,
         buildinfo => undef,
         basedir => undef,
@@ -120,7 +123,8 @@ sub new
         install_certificates => 0,
         _pid => $$,
         smtpdaemon => 0,
-    };
+        lsan_suppressions => "",
+    }, $class);
 
     $self->{name} = $params{name}
         if defined $params{name};
@@ -154,10 +158,98 @@ sub new
         if defined $params{install_certificates};
     $self->{smtpdaemon} = $params{smtpdaemon}
         if defined $params{smtpdaemon};
+    $self->{lsan_suppressions} = $params{lsan_suppressions}
+        if defined $params{lsan_suppressions};
+    $self->{old_jmap_ids} = $params{old_jmap_ids}
+        if defined $params{old_jmap_ids};
+
+    $self->{buildinfo} = Cassandane::BuildInfo->new($self->{installation});
+
+    if (defined $params{mailbox_version}) {
+        $self->assert_supports_mailbox_version($params{mailbox_version});
+        $self->{mailbox_version} = $params{mailbox_version};
+    }
+
+    if ($self->{buildinfo}->get('cyrusdb', undef)) {
+        # find best default backend based on what installed cyrus supports
+        my @backends = grep { defined }
+                            ($ENV{CASSANDANE_DEFAULT_DB}, 'twom', 'twoskip');
+        my $default_backend;
+
+        foreach my $b (@backends) {
+            if ($self->{buildinfo}->get('cyrusdb', $b)) {
+                $default_backend = $b;
+                last;
+            }
+        }
+
+        # every Cyrus version supports twoskip so this won't happen..
+        die "couldn't find a supported cyrusdb backend"
+            if not $default_backend;
+
+        # set default backends, but only where the test didn't specify already
+        $self->{config}->set_if_undef(
+            annotation_db => $default_backend,
+            conversations_db => $default_backend,
+            duplicate_db => $default_backend,
+            mboxkey_db => $default_backend,
+            mboxlist_db => $default_backend,
+            ptscache_db => $default_backend,
+            quota_db => 'quotalegacy',
+            search_indexed_db => $default_backend,
+            seenstate_db => $default_backend,
+            subscription_db => 'flat',
+            statuscache_db => $default_backend,
+            sync_cache_db => $default_backend,
+            tlscache_db => 'twoskip', # deprecated, does not allow twom
+            tls_sessions_db => $default_backend,
+            userdeny_db => 'flat',
+            zoneinfo_db => $default_backend,
+        );
+    }
 
     # XXX - get testcase name from caller, to apply even finer
     # configuration from cassini ?
-    return bless $self, $class;
+    return $self;
+}
+
+# return an id for use by xlog
+sub id
+{
+    my ($self) = @_;
+    return $self->{name}; # XXX something cleverer?
+}
+
+sub default_mailbox_version
+{
+    my ($self) = @_;
+
+    return $self->{buildinfo}->get('version', 'MAILBOX_MINOR_VERSION');
+}
+
+sub supports_mailbox_version
+{
+    my ($self, $version) = @_;
+
+    unless ($version =~ /\A[0-9]+\z/) {
+        require Carp;
+        Carp::confess("Invalid mailbox_version '$version'");
+    }
+
+    my $max_version = $self->default_mailbox_version();
+
+    return $version <= $max_version;
+}
+
+sub assert_supports_mailbox_version
+{
+    my ($self, $version) = @_;
+
+    unless ($self->supports_mailbox_version($version)) {
+        my $id = $self->id();
+        require Carp;
+        Card::confess("$id does not support mailbox version '$version'");
+    }
 }
 
 # Class method! Need to be able to interrogate the Cyrus version
@@ -641,6 +733,11 @@ sub _pid_file
 
     $name ||= 'master';
 
+    if ($name eq 'master') {
+        my $pidfile = $self->{config}->get('master_pid_file');
+        return $self->{config}->substitute($pidfile) if $pidfile;
+    }
+
     return $self->{basedir} . "/run/$name.pid";
 }
 
@@ -672,6 +769,7 @@ sub _list_pid_files
 sub _build_skeleton
 {
     my ($self) = @_;
+    my $basedir = $self->{basedir};
 
     my @subdirs =
     (
@@ -701,9 +799,20 @@ sub _build_skeleton
     );
     foreach my $sd (@subdirs)
     {
-        my $d = $self->{basedir} . '/' . $sd;
+        my $d = "$basedir/$sd";
         mkpath $d
             or die "Cannot make path $d: $!";
+    }
+
+    if ($self->{description}) {
+        open my $desc_fh, '>', "$basedir/description"
+            or die "Can't write to $basedir/description: $!";
+
+        $desc_fh->say($self->{description})
+            or die "Error writing to $basedir/description: $!";
+
+        close $desc_fh
+            or die "Error closing $basedir/description: $!";
     }
 }
 
@@ -927,8 +1036,6 @@ sub _read_pid_file
     my $file = $self->_pid_file($name);
     my $pid;
 
-    return undef if ( ! -f $file );
-
     open PID,'<',$file
         or return undef;
     while(<PID>)
@@ -969,7 +1076,6 @@ sub _start_master
         # The following is added automatically by _fork_command:
         # '-C', $self->_imapd_conf(),
         '-l', '255',
-        '-p', $self->_pid_file(),
         '-d',
         '-M', $self->_master_conf(),
     );
@@ -978,7 +1084,6 @@ sub _start_master
         xlog "_start_master: logging to $logfile";
         push(@cmd, '-L', $logfile);
     }
-    unlink $self->_pid_file();
     # Start master daemon
     $self->run_command({ cyrus => 1 }, @cmd);
 
@@ -1083,9 +1188,20 @@ sub create_user
         }
     }
 
+    my @mb_version;
+    my $default_mailbox_version = $self->default_mailbox_version();
+    my $mailbox_version = $params{mailbox_version}
+                          // $self->{mailbox_version}
+                          // $default_mailbox_version;
+
+    if ($mailbox_version != $default_mailbox_version) {
+        $self->assert_supports_mailbox_version($mailbox_version);
+        push @mb_version, [ 'VERSION', $mailbox_version ];
+    }
+
     foreach my $mb (@mboxes)
     {
-        $adminclient->create($mb)
+        $adminclient->create($mb, @mb_version)
             or die "Cannot create $mb: $@";
         $adminclient->setacl($mb, admin => 'lrswipkxtecdan')
             or die "Cannot setacl for $mb: $@";
@@ -1094,6 +1210,58 @@ sub create_user
         $adminclient->setacl($mb, anyone => 'p')
             or die "Cannot setacl for $mb: $@";
     }
+
+    # do we need to enable or disable compactids?
+    my $want_compact_ids;
+    if ($mailbox_version <= 19) {
+        if ($default_mailbox_version >= 20) {
+            # cyrus supports compactids, but not for this mailbox version
+            $want_compact_ids = 'off';
+        }
+        else {
+            # cyrus does not support compact ids
+            $want_compact_ids = undef;
+        }
+    }
+    elsif ($params{old_jmap_ids} || $self->{old_jmap_ids}) {
+        # requested by test
+        $want_compact_ids = 'off';
+    }
+    else {
+        # XXX: conditionalise further when "on" is the default...
+        $want_compact_ids = 'on';
+    }
+
+    if (defined $want_compact_ids) {
+        die "uh oh" if $want_compact_ids !~ m/^(on|off)$/;
+
+        xlog $self, "Turn compactids $want_compact_ids";
+
+        $self->run_command(
+            { cyrus => 1 },
+            'ctl_conversationsdb', '-I', $want_compact_ids, $user
+        );
+    }
+
+    my $user_obj = Cassandane::TestUser->new({
+        username => $user,
+        password => 'pass',
+        instance => $self,
+    });
+
+    return $user_obj;
+}
+
+sub create_user_without_setup {
+    my ($self, $username) = @_;
+
+    my $user_obj = Cassandane::TestUser->new({
+        username => $username,
+        password => 'pass',
+        instance => $self,
+    });
+
+    return $user_obj;
 }
 
 sub set_smtpd {
@@ -1206,12 +1374,22 @@ sub start_httpd {
 
 sub start
 {
-    my ($self) = @_;
+    my ($self, %params) = @_;
 
     my $created = 0;
 
     $self->_init_basedir_and_name();
     xlog "start $self->{description}: basedir $self->{basedir}";
+
+    my $lsan_suppressions = $params{lsan_suppressions} || $self->{lsan_suppressions};
+
+    if ($lsan_suppressions) {
+        my $current = $ENV{LSAN_OPTIONS} // "";
+
+        $ENV{LSAN_OPTIONS} = "$current:suppressions=$lsan_suppressions";
+
+        xlog "running with LSAN_OPTIONS=$ENV{LSAN_OPTIONS}";
+    }
 
     # arrange for fakesmtpd to be started by Cassandane if we need it
     # XXX should make it a Cyrus waitdaemon instead like fakesaslauthd
@@ -1259,9 +1437,6 @@ sub start
             );
         }
     }
-
-    $self->{buildinfo} = Cassandane::BuildInfo->new($self->{cyrus_destdir},
-                                                    $self->{cyrus_prefix});
 
     if (!$self->{re_use_dir} || ! -d $self->{basedir})
     {
@@ -1419,11 +1594,11 @@ sub _check_valgrind_logs
     return;
 }
 
-sub _sanitizer_log_dir()
+sub _sanitizer_log_dir
 {
     my ($self, $sanitizer) = @_;
 
-    my $san_logdir = $self->{basedir} . "${sanitizer}logs/";
+    my $san_logdir = $self->{basedir} . "/${sanitizer}logs/";
     mkpath $san_logdir
         unless ( -d $san_logdir );
 
@@ -1446,10 +1621,84 @@ sub _check_sanitizer_logs
         next if m/\.core\./;
         my $log = "$san_logdir/$_";
         next if -z $log;
-        push(@nzlogs, $_);
 
         if (open my $fh, '<', $log) {
             xlog "$sanitizer errors from file $log";
+
+            # First pass, see if it's only suppressions output. If so, ignore.
+            # be strict so as to avoid false negatives. We can adjust in the
+            # future if this becomes an annoyance. We expect suppressions
+            # look like the following (for lsan at least...)
+            #
+            # -----------------------------------------------------
+            # Suppressions used:
+            #   count      bytes template
+            #      10       2120 libcrypto.so
+            #       2       1856 libssl.so
+            # -----------------------------------------------------
+
+            my $has_errors;
+
+            my (
+                $have_open_delim,
+                $have_header,
+                $have_columns,
+                $have_closing_delim
+            );
+
+            while (<$fh>) {
+                # Ignore whitespace
+                next if /^\s*$/;
+
+                if (! $have_open_delim) {
+                    if (! /^---+$/) {
+                        $has_errors = 1;
+                        last;
+                    }
+
+                    $have_open_delim = 1;
+                    next;
+                }
+
+                if (! $have_header) {
+                    if (! /^Suppressions used:/) {
+                        $has_errors = 1;
+                        last;
+                    }
+
+                    $have_header = 1;
+                    next;
+                }
+
+                if (! $have_columns) {
+                    if (! /^\s+count\s+bytes\s+template/) {
+                        $has_errors = 1;
+                        last;
+                    }
+
+                    $have_columns = 1;
+                    next;
+                }
+
+                if (/^---+$/ && ! $have_closing_delim) {
+                    $have_closing_delim = 1;
+                    next;
+                }
+
+                if (! $have_closing_delim) {
+                    next if /^\s+\d+\s+\d+\w+/;
+                }
+
+                # Didn't get our closing delim and doesn't look like a
+                # suppression? Uh-oh, probably a real error
+                $has_errors = 1;
+                last;
+            }
+
+            seek $fh, 0, 0;
+
+            push(@nzlogs, $_) if $has_errors;
+
             while (<$fh>) {
                 chomp;
                 xlog "$_";
@@ -1458,6 +1707,9 @@ sub _check_sanitizer_logs
         }
         else {
             xlog "Cannot open $sanitizer log $log for reading: $!";
+
+            # Adding this in forces errors
+            push(@nzlogs, $_);
         }
 
     }
@@ -1824,6 +2076,11 @@ sub deliver
         push(@cmd, '-m', $folder);
     }
 
+    if (defined $params{trace_id})
+    {
+        push(@cmd, '--trace-id', $params{trace_id});
+    }
+
     my @users;
     if (defined $params{users})
     {
@@ -1890,6 +2147,45 @@ sub run_command
         $options = shift(@args);
     }
 
+    my $basedir = $self->{basedir};
+
+    my ($stdout, $stderr);
+
+    my $redirs = $options->{redirects} // {};
+
+    if ($redirs->{stdout} && (ref($redirs->{stdout}) // '') eq 'SCALAR') {
+        $stdout = $redirs->{stdout};
+
+        my $i = 0;
+
+        while (1) {
+            $redirs->{stdout} = "$basedir/$args[0].$i.stdout";
+            last if ! -e $redirs->{stdout};
+
+            $i++;
+        }
+    }
+
+    if ($redirs->{stderr} && (ref($redirs->{stderr}) // '') eq 'SCALAR') {
+        $stderr = $redirs->{stderr};
+
+        my $i = 0;
+
+        while (1) {
+            $redirs->{stderr} = "$basedir/$args[0].$i.stderr";
+            last if ! -e $redirs->{stderr};
+
+            $i++;
+        }
+    }
+
+    if ($options->{background} && ($stdout || $stderr)) {
+        require Carp;
+        Carp::confess("background doesn't work with SCALAR stdout/stderr!");
+    }
+
+
+
     # Always set these. If they weren't compiled in they won't be used.
     local $ENV{ASAN_OPTIONS} = ($ENV{ASAN_OPTIONS} // "")
         . ":log_path=" . $self->_sanitizer_log_dir("asan") . "asan";
@@ -1902,14 +2198,97 @@ sub run_command
     return $pid
         if ($options->{background});
 
+    my $ret;
+
     if (defined $got_exit) {
         # Child already reaped, pass it on
         $? = $got_exit;
 
-        return $self->_handle_wait_status($pid);
+        $ret = $self->_handle_wait_status($pid);
+    } else {
+        $ret = $self->reap_command($pid);
     }
 
-    return $self->reap_command($pid);
+    # Copy stdout/stderr into SCALAR refs if requested
+    if ($stdout) {
+        $$stdout = slurp_file($redirs->{stdout});
+
+        if (get_verbose()) {
+            xlog $self, "stdout: $$stdout";
+        }
+    }
+
+    if ($stderr) {
+        $$stderr = slurp_file($redirs->{stderr});
+
+        if (get_verbose()) {
+            xlog $self, "stderr: $$stderr";
+        }
+    }
+
+    return $ret;
+}
+
+# Like above, but automatically redirects stdout/stderr to scalar refs, then
+# returns an object that includes 'status', 'stdout', and 'stderr' to easily
+# inspect the results
+sub run_command_capture
+{
+    my ($self, @args) = @_;
+
+    my $options = {};
+    if (ref($args[0]) eq 'HASH') {
+        $options = shift(@args);
+    }
+
+    if ($options->{redirects}
+        && ($options->{redirects}{stdout} || $options->{redirects}{stderr})
+    ) {
+        require Carp;
+        Carp::confess("run_command_capture() can't be used with custom stdout/stderr redirects!");
+    }
+
+    if ($options->{background}) {
+        require Carp;
+        Carp::confess("run_command_capture() can't be used with background mode!");
+    }
+
+    my ($stdout, $stderr);
+
+    $options->{redirects}{stdout} = \$stdout;
+    $options->{redirects}{stderr} = \$stderr;
+
+    my $res = $self->run_command($options, @args);
+
+    return Cassandane::Instance::RunCommandOut->new({
+        status => $res,
+        stdout => $stdout,
+        stderr => $stderr,
+    });
+}
+
+{
+    package Cassandane::Instance::RunCommandOut;
+
+    sub new {
+        my ($class, $ref) = @_;
+
+        bless $ref, $class;
+    }
+
+    sub status { shift->{status} }
+
+    sub stdout {
+        my $stdout = shift->{stdout};
+
+        return $stdout // "";
+    }
+
+    sub stderr {
+        my $stderr = shift->{stderr};
+
+        return $stderr // "";
+    }
 }
 
 sub reap_command
@@ -2458,6 +2837,10 @@ sub setup_syslog_replacement
 # But if you need to make sure an error WAS logged, first make sure that
 # $instance->{have_syslog_replacement} is true, otherwise you will always
 # fail on systems where the syslog replacement doesn't work.
+#
+# In most cases you probably want assert_syslog_matches from TestCase
+# (or assert_syslog_does_not_match).  If you need something trickier,
+# check those anyway to see how to do so safely.
 sub getsyslog
 {
     my ($self, $pattern) = @_;
@@ -2596,6 +2979,14 @@ sub install_sieve_script
     die "Symlink does not exist: $sieved/defaultbc" if not -l "$sieved/defaultbc";
 
     xlog "Sieve script installed successfully";
+
+    if ($params{upgrade}) {
+        my $srv = $self->get_service('imap');
+        my $adminstore = $srv->create_store(username => 'admin');
+        my $adminclient = $adminstore->get_client();
+        $adminclient->_imap_cmd('UPGRADESIEVE', 0, '', $user);
+        xlog "Sieve upgraded to mailbox version";
+    }
 }
 
 sub install_old_mailbox
@@ -2719,30 +3110,27 @@ sub run_mbpath
     return decode_json(slurp_file($filename));
 }
 
-sub _mkastring
-{
-    my $string = shift;
-    return '{' . length($string) . '+}' . "\r\n" . $string;
-}
-
 sub run_dbcommand_cb
 {
     my ($self, $linecb, $dbname, $engine, @items) = @_;
 
-    if (@items > 1) {
-        unshift @items, ['BEGIN'];
-        push @items, ['COMMIT'];
-    }
+    my $ro = 1;
 
     my $input = '';
     foreach my $item (@items) {
+        $ro = 0 if $item->[0] eq 'SET';
+        $ro = 0 if $item->[0] eq 'DELETE';
         $input .= $item->[0];
         for (1..2) {
-            $input .= ' ' . _mkastring($item->[$_]) if defined $item->[$_];
+            $input .= ' ' . encode_base64($item->[$_], '') if defined $item->[$_];
         }
         $input .= "\r\n";
     }
 
+    xlog "run_dbcommand: $input" if get_verbose;
+
+    my @args = ('-b', '-T');
+    push @args, '-R' if $ro;
     my $basedir = $self->{basedir};
     my $res = $self->run_command({
        redirects => {
@@ -2754,116 +3142,18 @@ sub run_dbcommand_cb
            exited_normally => sub { return 'ok'; },
            exited_abnormally => sub { return 'failure'; },
        },
-    }, 'cyr_dbtool', $dbname, $engine, 'batch');
+    }, 'cyr_dbtool', @args, $dbname, $engine, 'batch');
     return $res unless $res eq 'ok';
 
     my $needbytes = 0;
     my $buf = '';
 
-    # The output of `cyr_dbtool` is in theory one logical line at a time.
-    #  However each logical line can have IMAP literals in them. In that
-    #  case, you get a real line that ends with "{nbytes+}\r\n" and you then
-    #  have to read that many bytes of data (including possibly \r's and
-    #  \n's as well). This function potentially reads multiple real lines
-    #  in $line to gather up a single logical line in $buf, and then parses
-    #  that.
-    # It could be made simpler and more efficient by tokenising the line as
-    #  it goes, but it was extracted from an original codebase which processed
-    #  the entire response buffer from `cyr_dbtool` as a single giant string.
     open(FH, "<$basedir/run_dbcommand.out");
-    LINE: while (defined(my $line = <FH>)) {
-        $buf .= $line;
-
-        # inside a literal, that's all we need
-        if ($needbytes) {
-            my $len = length($line);
-            if ($len <= $needbytes) {
-                $needbytes -= $len;
-                next LINE;
-            }
-            substr($line, 0, $needbytes, '');
-            $needbytes = 0;
-        }
-
-        # does this line include a literal, process it now
-        if ($line =~ m/\{(\d+)\+?\}\r?\n$/s) {
-            $needbytes = $1;
-            next LINE;
-        }
-
-        # we have a line!
-
-        my @array;
-        my $pos = 0;
-        my $length = length($buf);
-        while ($pos < $length) {
-            my $chr = substr($buf, $pos, 1);
-
-            if ($chr eq ' ') {
-                $pos++;
-                next;
-            }
-
-            if ($chr eq "\n") {
-                $pos++;
-                next;
-            }
-
-            if ($chr eq '{') {
-                my $end = index($buf, '}', $pos);
-                die "Missing }" if $end < 0;
-                my $len = substr($buf, $pos + 1, $end - $pos - 1);
-                $len =~ s/\+//;
-                $pos = $end+1;
-                my $chr = substr($buf, $pos++, 1);
-                $chr = substr($buf, $pos++, 1) if $chr eq "\r";
-                die "BOGUS LITERAL" unless $chr eq "\n";
-                push @array, substr($buf, $pos, $len);
-                $pos += $len;
-                next;
-            }
-
-            if ($chr eq '"') {
-                my $end = index($buf, '"', $pos+1);
-                die "Missing quote" if $end < 0;
-                push @array, substr($buf, $pos + 1, $end - $pos - 1);
-                $pos = $end + 1;
-                next;
-            }
-
-            my $space = index($buf, ' ', $pos);
-            my $endline = index($buf, "\n", $pos);
-
-            if ($space < 0) {
-                push @array, substr($buf, $pos, $endline - $pos);
-                $pos = $endline;
-                next;
-            }
-
-            if ($endline < 0) {
-                push @array, substr($buf, $pos, $space - $pos);
-                $pos = $space;
-                next;
-            }
-
-            if ($endline < $space) {
-                push @array, substr($buf, $pos, $endline - $pos);
-                $pos = $endline;
-                next;
-            }
-
-            if ($space < $endline) {
-                push @array, substr($buf, $pos, $space - $pos);
-                $pos = $space;
-                next;
-            }
-
-            die "shouldn't get here";
-        }
-
+    while (defined(my $line = <FH>)) {
+        chomp $line;
+        my @array = map { decode_base64($_) } split ' ', $line;
+        xlog "run_dbcommand output: $line => ($array[0], $array[1])" if get_verbose;
         $linecb->(@array);
-
-        $buf = '';
     }
     close(FH);
 
@@ -2925,6 +3215,194 @@ sub run_cyr_info
     }
 
     return @res;
+}
+
+sub make_folder_intermediate
+{
+    my ($self, $uniqueid) = @_;
+    my $value;
+
+    # stop service while tinkering
+    $self->stop();
+    $self->{re_use_dir} = 1;
+
+    my $basedir = $self->get_basedir();
+    my $mailboxes_db = "$basedir/conf/mailboxes.db";
+    my $format = $self->{config}->get('mboxlist_db');
+
+    my $I_key = "I$uniqueid";
+    (undef, $value) = $self->run_dbcommand($mailboxes_db, $format,
+                                           [ 'SHOW', $I_key ]);
+    my $I = Cyrus::DList->parse_string($value)->as_perl;
+
+    my $N_key = 'N' . $I->{N};
+    (undef, $value) = $self->run_dbcommand($mailboxes_db, $format,
+                                           [ 'SHOW', $N_key ]);
+    my $N = Cyrus::DList->parse_string($value)->as_perl;
+
+    # make sure it's something we can convert
+    die "must be MBTYPE_EMAIL" if $I->{T} ne 'e';
+    die "must be MBTYPE_EMAIL" if $N->{T} ne 'e';
+
+    # fiddle mailboxes.db records to say its intermediate
+    $I->{T} = q{i};
+    my $new_I = Cyrus::DList->new_perl('', $I);
+    $self->run_dbcommand($mailboxes_db, $format,
+                         [ 'SET', $I_key, $new_I->as_string() ]);
+    $N->{T} = q{i};
+    my $new_N = Cyrus::DList->new_perl('', $N);
+    $self->run_dbcommand($mailboxes_db, $format,
+                         [ 'SET', $N_key, $new_N->as_string() ]);
+
+    # fiddle filesystem stuff
+    my ($a, $b) = (substr($uniqueid, 0, 1), substr($uniqueid, 1, 1));
+    my $data = "$basedir/data/uuid/$a/$b/$uniqueid";
+    my $lock = "$basedir/conf/lock/$uniqueid.lock";
+    remove_tree($data, $lock, { safe => 1 });
+
+    # bring service back up
+    $self->getsyslog();
+    $self->start();
+}
+
+sub _common_http_service_args ($self) {
+  $self->{_common_http_service_args} //= do {
+      my $service = $self->get_service("https")
+                 || $self->get_service("http");
+
+      $service
+          || Carp::confess("can't build _common_http_service_args without an http service configured");
+
+      my $ca_file = Cwd::abs_path("data/certs/cacert.pem");
+
+      {
+          host => $service->host(),
+          port => $service->port(),
+          scheme => ($service->is_ssl() ? 'https' : 'http'),
+          SSL_options => {
+              SSL_ca_file => $ca_file,
+              SSL_verifycn_scheme => 'none',
+          },
+      };
+  };
+
+  return $self->{_common_http_service_args}->%*;
+}
+
+my @DEFAULT_USING = qw(
+    urn:ietf:params:jmap:core
+    urn:ietf:params:jmap:mail
+    urn:ietf:params:jmap:submission
+    urn:ietf:params:jmap:vacationresponse
+    urn:ietf:params:jmap:calendars
+    urn:ietf:params:jmap:contacts
+
+    https://cyrusimap.org/ns/jmap/mail
+    https://cyrusimap.org/ns/jmap/calendars
+    https://cyrusimap.org/ns/jmap/contacts
+
+    https://cyrusimap.org/ns/jmap/performance
+    https://cyrusimap.org/ns/jmap/backup
+    https://cyrusimap.org/ns/jmap/blob
+);
+
+sub new_jmaptester_ws_for_user ($self, $user, $new_arg = undef) {
+  return $self->_new_jmaptester_for_user(
+      'Cassandane::JMAPTesterWS',
+      { cache_connection => 1, ws_api_uri => '' },
+      $user,
+      $new_arg
+  );
+}
+
+sub new_jmaptester_for_user ($self, $user, $new_arg = undef) {
+  return $self->_new_jmaptester_for_user('Cassandane::JMAPTester', {}, $user, $new_arg);
+}
+
+sub _new_jmaptester_for_user($self, $tester_class, $tester_arg, $user, $new_arg = undef) {
+    my %overrides;
+    if ($new_arg) {
+        %overrides  = ref $new_arg eq 'HASH'  ? %$new_arg
+                    : ref $new_arg eq 'ARRAY' ? (using => $new_arg)
+                    : Carp::confess("expected hash or array reference to ->new_jmaptester, got neither");
+    }
+
+    unless ($self->{config}->get_bit('httpmodules', 'jmap')) {
+        Carp::croak("User JMAP::Tester requested, but jmap httpmodule not enabled");
+    }
+
+    my %arg = $self->_common_http_service_args;
+
+    my $host = $arg{host};
+    my $port = $arg{port};
+    my $scheme = $arg{scheme};
+
+    eval "require $tester_class; 1" || Carp::croak("can't load $tester_class: $@");
+
+    # This causes all requests and responses to be printed to STDERR.
+    local $ENV{JMAP_TESTER_LOGGER} = 'HTTP:-2'
+        unless exists $ENV{JMAP_TESTER_LOGGER};
+
+    my $jtest = $tester_class->new({
+        fallback_account_id => $user->username,
+        default_using => [ @DEFAULT_USING ],
+        %$tester_arg,
+        %overrides,
+    });
+
+    $jtest->set_scheme_and_host_and_port($scheme, $host, $port);
+
+    $jtest->set_username_and_password($user->username, $user->password);
+
+    $jtest->ua->lwp->ssl_opts(
+        # Setting SSL_verify_mode without setting verify_hostname to 0 will
+        # fail, annoyingly.  That's why both are set.
+        SSL_verify_mode => 0,
+        verify_hostname => 0,
+    );
+
+    return $jtest;
+}
+
+sub new_carddavtalk_for_user ($self, $user) {
+    local $ENV{PERL_HTTP_TINY_SSL_INSECURE_BY_DEFAULT} =
+        Cassandane::Cyrus::TestCase::_need_http_tiny_env();
+
+    unless ($self->{config}->get_bit('httpmodules', 'carddav')) {
+        Carp::croak("User CardDAV client requested, but carddav httpmodule not enabled");
+    }
+
+    require Net::CardDAVTalk;
+    return Net::CardDAVTalk->new(
+        $self->_common_http_service_args,
+        user => $user->username,
+        password => $user->password,
+        url => '/',
+        expandurl => 1,
+    );
+}
+
+sub new_caldavtalk_for_user ($self, $user) {
+    local $ENV{PERL_HTTP_TINY_SSL_INSECURE_BY_DEFAULT} =
+        Cassandane::Cyrus::TestCase::_need_http_tiny_env();
+
+    unless ($self->{config}->get_bit('httpmodules', 'caldav')) {
+        Carp::croak("User CalDAV client requested, but caldav httpmodule not enabled");
+    }
+
+    require Net::CalDAVTalk;
+    my $caldav = Net::CalDAVTalk->new(
+        $self->_common_http_service_args,
+        user => $user->username,
+        password => $user->password,
+        url => '/',
+        expandurl => 1,
+    );
+
+    # XXX get users all with domain, etc.
+    $caldav->UpdateAddressSet("Test User", $user->username . '@example.com');
+
+    return $caldav;
 }
 
 1;

@@ -43,7 +43,6 @@ use warnings;
 use DateTime;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Generator;
@@ -66,37 +65,6 @@ sub tear_down
 {
     my ($self) = @_;
     $self->SUPER::tear_down();
-}
-
-sub test_replace_same_mailbox
-    :min_version_3_9
-{
-    my ($self) = @_;
-
-    my $talk = $self->{store}->get_client();
-
-    my %exp;
-    $exp{A} = $self->make_message("Message A", store => $self->{store});
-    $self->check_messages(\%exp);
-
-    $talk->select('INBOX');
-
-    %exp = ();
-    $exp{B} = $self->{gen}->generate(subject => "Message B");
-
-    # REPLACE
-    $talk->_imap_cmd('REPLACE', 0, '', "1", "INBOX",
-                     { Literal => $exp{B}->as_string() });
-    $self->check_messages(\%exp);
-
-    %exp = ();
-    $exp{C} = $self->{gen}->generate(subject => "Message C");
-
-    # UID REPLACE
-    $talk->_imap_cmd('UID', 0, '', 'REPLACE', "2", "INBOX",
-                     "(\\flagged)", " 7-Feb-1994 22:43:04 -0800",
-                     { Literal => $exp{C}->as_string() });
-    $self->check_messages(\%exp);
 }
 
 sub test_replace_different_mailbox

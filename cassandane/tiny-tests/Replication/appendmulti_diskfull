@@ -6,9 +6,8 @@ use Cassandane::Tiny;
 #
 sub test_appendmulti_diskfull
     :CSyncReplication :NoStartInstances :min_version_3_5
+    ($self)
 {
-    my ($self) = @_;
-
     my $canary = << 'EOF';
 From: Fred J. Bloggs <fbloggs@fastmail.fm>
 To: Sarah Jane Smith <sjsmith@tard.is>
@@ -72,7 +71,9 @@ EOF
         # sync server should have logged the write error
         my @lines = $self->{replica}->getsyslog();
         $self->assert_matches(qr{IOERROR:\sfailed\sto\supload\sfile
-                                 (?:\s\(simulated\))?:\sguid=<$canaryguid>
+                                 (?:\s\(simulated\))?:
+                                 (?:\s[^=]+=<[^>]*>)*
+                                 \sguid=<$canaryguid>
                               }x,
                               "@lines");
 

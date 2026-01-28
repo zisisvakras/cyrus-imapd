@@ -1,44 +1,6 @@
-/* statuscache_db.c -- Status caching routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* statuscache_db.c -- Status caching routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -57,10 +19,12 @@
 #include "assert.h"
 #include "cyrusdb.h"
 #include "imapd.h"
+#include "jmap_util.h"
 #include "global.h"
 #include "mboxlist.h"
 #include "mailbox.h"
 #include "seen.h"
+#include "user.h"
 #include "util.h"
 #include "xmalloc.h"
 #include "xstrlcpy.h"
@@ -138,6 +102,7 @@ static void statuscache_buildkey(const char *mboxname, const char *userid,
 static void statuscache_read_index(const char *mboxname, struct statusdata *sdata)
 {
     struct buf keybuf = BUF_INITIALIZER;
+    static char static_mailboxid[101];
     const char *data = NULL;
     size_t datalen = 0;
 
@@ -180,6 +145,13 @@ static void statuscache_read_index(const char *mboxname, struct statusdata *sdat
     if (p < dend) sdata->deleted_storage = strtoull(p, &p, 10);
 
     if (*p++ != ')') return;
+    if (*p++ == ' ') {
+        int len = dend - p;
+        if (len > 100) return;
+        memcpy(static_mailboxid, p, len);
+        static_mailboxid[len] = '\0';
+        sdata->mailboxid = static_mailboxid;
+    }
 
     /* Sanity check the data */
     if (!sdata->highestmodseq)
@@ -272,6 +244,33 @@ static int statuscache_lookup(const char *mboxname, const char *userid,
     return 0;
 }
 
+static int wipe_cb(void *rock,
+                   const char *key,
+                   size_t keylen,
+                   const char *val __attribute__((unused)),
+                   size_t vallen __attribute__((unused)))
+{
+    struct txn **tidptr = (struct txn **)rock;
+    int r = cyrusdb_delete(statuscachedb, key, keylen, tidptr, /*force*/1);
+    return r;
+}
+
+EXPORTED int statuscache_wipe_prefix(const char *prefix)
+{
+    if (!config_getswitch(IMAPOPT_STATUSCACHE))
+        return 0;
+    init_internal();
+    if (!statuscachedb)
+        return 0;
+    struct txn *tid = NULL;
+    int r = cyrusdb_foreach(statuscachedb, prefix, strlen(prefix), NULL, wipe_cb, &tid, &tid);
+    if (r) {
+        int r2 = cyrusdb_abort(statuscachedb, tid);
+        return (r2 ? r2 : r);
+    }
+    return cyrusdb_commit(statuscachedb, tid);
+}
+
 static int statuscache_store(const char *mboxname,
                              struct statusdata *sdata,
                              struct txn **tidptr)
@@ -294,12 +293,12 @@ static int statuscache_store(const char *mboxname,
 
 
     buf_printf(&databuf,
-                       "I %u (%u %u %u %u " QUOTA_T_FMT " " MODSEQ_FMT " " MODSEQ_FMT " %u " QUOTA_T_FMT")",
+                       "I %u (%u %u %u %u " QUOTA_T_FMT " " MODSEQ_FMT " " MODSEQ_FMT " %u " QUOTA_T_FMT") %s",
                        STATUSCACHE_VERSION,
                        sdata->messages, sdata->uidnext,
                        sdata->uidvalidity, sdata->mboptions, sdata->size,
                        sdata->createdmodseq, sdata->highestmodseq,
-                       sdata->deleted, sdata->deleted_storage);
+                       sdata->deleted, sdata->deleted_storage, sdata->mailboxid);
 
     r = cyrusdb_store(statuscachedb, keybuf.s, keybuf.len, databuf.s, databuf.len, tidptr);
 
@@ -388,7 +387,7 @@ HIDDEN void status_fill_mbentry(const mbentry_t *mbentry, struct statusdata *sda
     assert(sdata);
 
     sdata->uidvalidity = mbentry->uidvalidity;
-    sdata->mailboxid = mbentry->uniqueid;
+    sdata->uniqueid = mbentry->uniqueid;
 
     sdata->statusitems |= STATUS_MBENTRYITEMS;
 }
@@ -397,6 +396,8 @@ HIDDEN void status_fill_mailbox(struct mailbox *mailbox, struct statusdata *sdat
 {
     assert(mailbox);
     assert(sdata);
+    static char static_uniqueid[UUID_STR_LEN];
+    static char static_mailboxid[JMAP_MAX_MAILBOXID_SIZE];
 
     sdata->messages = mailbox->i.exists;
     sdata->uidnext = mailbox->i.last_uid+1;
@@ -409,7 +410,16 @@ HIDDEN void status_fill_mailbox(struct mailbox *mailbox, struct statusdata *sdat
 
     // mbentry items are also available from an open mailbox
     sdata->uidvalidity = mailbox->i.uidvalidity;
-    sdata->mailboxid = mailbox_uniqueid(mailbox);
+    const char *uniqueid = mailbox_uniqueid(mailbox);
+    if (uniqueid) {
+        strncpy(static_uniqueid, uniqueid, UUID_STR_LEN-1);
+        sdata->uniqueid = static_uniqueid;
+    }
+
+    // need the cstate to get the right mailboxid
+    struct conversations_state *cstate = mailbox_get_cstate(mailbox);
+    jmap_set_mailboxid(cstate, mailbox_mbentry(mailbox), static_mailboxid);
+    sdata->mailboxid = static_mailboxid;
 
     sdata->statusitems |= STATUS_INDEXITEMS | STATUS_MBENTRYITEMS;
 }
@@ -419,9 +429,6 @@ HIDDEN void status_fill_seen(const char *userid, struct statusdata *sdata,
 {
     assert(userid);
     assert(sdata);
-
-    // we need a matching parent record to exist for these values to be valid
-    assert(sdata->statusitems & STATUS_HIGHESTMODSEQ);
 
     sdata->userid = userid;
     sdata->recent = numrecent;
@@ -539,16 +546,6 @@ EXPORTED int status_lookup_mbentry(const mbentry_t *mbentry, const char *userid,
 EXPORTED int status_lookup_mboxname(const char *mboxname, const char *userid,
                                     unsigned statusitems, struct statusdata *sdata)
 {
-    // we want an mbentry first, just in case we can get everything from there
-    if (statusitems & STATUS_MAILBOXID) {
-        mbentry_t *mbentry = NULL;
-        int r = mboxlist_lookup_allow_all(mboxname, &mbentry, NULL);
-        if (r) return r;
-        r = status_lookup_mbentry(mbentry, userid, statusitems, sdata);
-        mboxlist_entry_free(&mbentry);
-        return r;
-    }
-
     return status_lookup_internal(mboxname, userid, statusitems, sdata);
 }
 

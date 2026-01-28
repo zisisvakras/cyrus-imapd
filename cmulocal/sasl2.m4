@@ -90,8 +90,8 @@ if test "$gssapi" != no; then
      GSSAPIBASE_LIBS="-L$gssapi_dir"
      GSSAPIBASE_STATIC_LIBS="-L$gssapi_dir"
   else
-     # FIXME: This is only used for building cyrus, and then only as
-     # a real hack.  it needs to be fixed.
+     # XXX: This is only used for building cyrus, and then only as a real hack.
+     # it needs to be fixed.
      gssapi_dir="/usr/local/lib"
   fi
 
@@ -103,7 +103,7 @@ if test "$gssapi" != no; then
   if test "$gss_impl" = "auto" -o "$gss_impl" = "heimdal"; then
     gss_failed=0
     AC_CHECK_LIB(gssapi,gss_unwrap,gss_impl="heimdal",gss_failed=1,
-                 ${GSSAPIBASE_LIBS} -lgssapi -lkrb5 -lasn1 -lroken ${LIB_CRYPT} ${LIB_DES} -lcom_err ${LIB_SOCKET})
+                 ${GSSAPIBASE_LIBS} -lgssapi -lkrb5 -lasn1 -lroken ${LIB_CRYPT} -lcom_err ${LIB_SOCKET})
     if test "$gss_impl" != "auto" -a "$gss_failed" = "1"; then
       gss_impl="failed"
     fi
@@ -126,7 +126,7 @@ if test "$gssapi" != no; then
 
     cmu_saved_CPPFLAGS=$CPPFLAGS
     cmu_saved_GSSAPIBASE_LIBS=$GSSAPIBASE_LIBS
-# FIXME - Note that the libraries are in .../lib64 for 64bit kernels
+# XXX - Note that the libraries are in .../lib64 for 64bit kernels
     if test -d "${gssapi}/appsec-rt/lib"; then
       GSSAPIBASE_LIBS="$GSSAPIBASE_LIBS -L${gssapi}/appsec-rt/lib"
     fi
@@ -171,7 +171,7 @@ if test "$gssapi" != no; then
     GSSAPIBASE_STATIC_LIBS="$GSSAPIBASE_LIBS $gssapi_dir/libgssapi_krb5.a $gssapi_dir/libkrb5.a $gssapi_dir/libk5crypto.a $gssapi_dir/libcom_err.a ${K5SUPSTATIC}"
   elif test "$gss_impl" = "heimdal"; then
     CPPFLAGS="$CPPFLAGS -DKRB5_HEIMDAL"
-    GSSAPIBASE_LIBS="$GSSAPIBASE_LIBS -lgssapi -lkrb5 -lasn1 -lroken ${LIB_CRYPT} ${LIB_DES} -lcom_err"
+    GSSAPIBASE_LIBS="$GSSAPIBASE_LIBS -lgssapi -lkrb5 -lasn1 -lroken ${LIB_CRYPT} -lcom_err"
     GSSAPIBASE_STATIC_LIBS="$GSSAPIBASE_STATIC_LIBS $gssapi_dir/libgssapi.a $gssapi_dir/libkrb5.a $gssapi_dir/libasn1.a $gssapi_dir/libroken.a $gssapi_dir/libcom_err.a ${LIB_CRYPT}"
   elif test "$gss_impl" = "cybersafe03"; then
 # Version of CyberSafe with two libraries

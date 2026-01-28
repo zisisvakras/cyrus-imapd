@@ -1,45 +1,6 @@
-/* http_h2.c - HTTP/2 support functions
- *
- * Copyright (c) 1994-2021 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_h2.c - HTTP/2 support functions */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <sysexits.h>
@@ -60,6 +21,14 @@
 
 /* generated headers are not necessarily in current directory */
 #include "imap/http_err.h"
+
+#ifndef HAVE_NGHTTP2_SSIZE
+#define nghttp2_ssize             ssize_t
+#define nghttp2_data_provider2    nghttp2_data_provider
+#define nghttp2_session_mem_recv2 nghttp2_session_mem_recv
+#define nghttp2_session_mem_send2 nghttp2_session_mem_send
+#define nghttp2_submit_data2      nghttp2_submit_data
+#endif
 
 #define HTTP2_MAX_HEADERS  100
 
@@ -451,9 +420,9 @@ static void http2_output(struct http_connection *conn)
     if (nghttp2_session_want_write(ctx->session)) {
         /* Send queued frame(s) */
         const uint8_t *data;
-        ssize_t nwrite;
+        nghttp2_ssize nwrite;
 
-        while ((nwrite = nghttp2_session_mem_send(ctx->session, &data)) > 0) {
+        while ((nwrite = nghttp2_session_mem_send2(ctx->session, &data)) > 0) {
             int r = prot_write(conn->pout, (const char *) data, nwrite);
 
             if (r) {
@@ -468,7 +437,7 @@ static void http2_output(struct http_connection *conn)
 
         if (nwrite < 0) {
             syslog(LOG_ERR,
-                   "nghttp2_session_mem_send: %s", nghttp2_strerror(nwrite));
+                   "nghttp2_session_mem_send2: %s", nghttp2_strerror(nwrite));
             conn->close = 1;
         }
     }
@@ -692,15 +661,15 @@ static int end_resp_headers(struct transaction_t *txn, long code)
     return r;
 }
 
-static ssize_t data_source_read_cb(nghttp2_session *sess __attribute__((unused)),
-                                   int32_t stream_id,
-                                   uint8_t *buf, size_t length,
-                                   uint32_t *data_flags,
-                                   nghttp2_data_source *source,
-                                   void *user_data __attribute__((unused)))
+static nghttp2_ssize data_source_read_cb(nghttp2_session *sess __attribute__((unused)),
+                                         int32_t stream_id,
+                                         uint8_t *buf, size_t length,
+                                         uint32_t *data_flags,
+                                         nghttp2_data_source *source,
+                                         void *user_data __attribute__((unused)))
 {
     struct protstream *s = source->ptr;
-    size_t n = prot_read(s, (char *) buf, length);
+    nghttp2_ssize n = prot_read(s, (char *) buf, length);
 
     syslog(LOG_DEBUG,
            "http2_data_source_read_cb(id=%d, len=%zu): n=%zu, eof=%d",
@@ -747,7 +716,7 @@ static int resp_body_chunk(struct transaction_t *txn,
     /* NOTE: The protstream that we use as the data source MUST remain
        available until the data source read callback has retrieved all data.
     */
-    nghttp2_data_provider prd = {
+    nghttp2_data_provider2 prd = {
         .source.ptr    = prot_readmap(data, datalen),
         .read_callback = data_source_read_cb
     };
@@ -766,12 +735,12 @@ static int resp_body_chunk(struct transaction_t *txn,
         }
     }
 
-    syslog(LOG_DEBUG, "nghttp2_submit_data(id=%d, datalen=%d, flags=%#x)",
+    syslog(LOG_DEBUG, "nghttp2_submit_data2(id=%d, datalen=%d, flags=%#x)",
            strm->id, datalen, flags);
 
-    int r = nghttp2_submit_data(ctx->session, flags, strm->id, &prd);
+    int r = nghttp2_submit_data2(ctx->session, flags, strm->id, &prd);
     if (r) {
-        syslog(LOG_ERR, "nghttp2_submit_data: %s", nghttp2_strerror(r));
+        syslog(LOG_ERR, "nghttp2_submit_data2: %s", nghttp2_strerror(r));
         prot_free(prd.source.ptr);
         return HTTP_SERVER_ERROR;
     }
@@ -944,18 +913,19 @@ HIDDEN void http2_input(struct http_connection *conn)
     if (want_read && !goaway) {
         /* Read frame(s) */
         char data[PROT_BUFSIZE];
-        ssize_t nread;
+        int nread;
 
         while ((nread = prot_read(pin, data, PROT_BUFSIZE)) > 0) {
-            syslog(LOG_DEBUG, "http2_input(): read %zd bytes", nread);
+            syslog(LOG_DEBUG, "http2_input(): read %d bytes", nread);
 
-            ssize_t r = nghttp2_session_mem_recv(ctx->session,
-                                                 (const uint8_t *) data, nread);
+            nghttp2_ssize r = nghttp2_session_mem_recv2(ctx->session,
+                                                        (const uint8_t *) data,
+                                                        nread);
 
             if (r < 0) {
                 /* Failure */
                 syslog(LOG_ERR,
-                       "nghttp2_session_mem_recv: %s", nghttp2_strerror(r));
+                       "nghttp2_session_mem_recv2: %s", nghttp2_strerror(r));
                 goaway = 1;
                 conn->close_str = nghttp2_strerror(r);
 
@@ -975,7 +945,7 @@ HIDDEN void http2_input(struct http_connection *conn)
             }
             else {
                 /* Successfully received frames */
-                syslog(LOG_DEBUG, "nghttp2_session_mem_recv: %zd", r);
+                syslog(LOG_DEBUG, "nghttp2_session_mem_recv2: %zd", r);
 
                 /* Don't block next time (so we can submit output) */
                 prot_NONBLOCK(pin);

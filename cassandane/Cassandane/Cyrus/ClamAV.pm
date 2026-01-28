@@ -43,7 +43,6 @@ use warnings;
 use Cwd qw(abs_path);
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
@@ -212,7 +211,7 @@ sub test_notify_deleted
         $self->assert_null($msg->get_header('x-cassandane-unique'));
 
         # if we find something that looks like a notification, check it
-		if ($msg->get_header('message-id') =~ m{^<cmu-cyrus-\d+-\d+-\d+\@}) {
+                if ($msg->get_header('message-id') =~ m{^<cmu-cyrus-\d+-\d+-\d+\@}) {
             $found_notifications ++;
 
             my $body = $msg->get_body();
@@ -282,7 +281,7 @@ sub test_custom_notify_deleted
         $self->assert_null($msg->get_header('x-cassandane-unique'));
 
         # if we find something that looks like a notification, check it
-		if ($msg->get_header('message-id') =~ m{^<cmu-cyrus-\d+-\d+-\d+\@}) {
+                if ($msg->get_header('message-id') =~ m{^<cmu-cyrus-\d+-\d+-\d+\@}) {
             $found_notifications ++;
 
             my $subject = $msg->get_header('subject');

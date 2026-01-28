@@ -1,47 +1,6 @@
-/* sync_server.c -- Cyrus synchronization server
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- * Original version written by David Carter <dpc22@cam.ac.uk>
- * Rewritten and integrated into Cyrus by Ken Murchison <ken@oceana.com>
- */
+/* sync_server.c -- Cyrus synchronization server */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -83,6 +42,7 @@
 #include "hash.h"
 #include "imparse.h"
 #include "imap_proxy.h"
+#include "loginlog.h"
 #include "mailbox.h"
 #include "map.h"
 #include "mboxlist.h"
@@ -120,9 +80,7 @@ const int config_need_data = CONFIG_NEED_PARTITION_DATA;
 
 static sasl_ssf_t extprops_ssf = 0;
 
-#ifdef HAVE_SSL
 static SSL *tls_conn;
-#endif /* HAVE_SSL */
 
 static sasl_conn_t *sync_saslconn = NULL; /* the sasl connection context */
 
@@ -198,12 +156,10 @@ static void sync_reset(void)
 
     sync_in = sync_out = NULL;
 
-#ifdef HAVE_SSL
     if (tls_conn) {
         tls_reset_servertls(&tls_conn);
         tls_conn = NULL;
     }
-#endif
 
     cyrus_reset_stdio();
 
@@ -291,7 +247,7 @@ static void dobanner(void)
             prot_printf(sync_out, "%s", mechlist);
         }
 
-        if (tls_enabled() && !sync_starttls_done) {
+        if (tls_starttls_enabled() && !sync_starttls_done) {
             prot_printf(sync_out, "* STARTTLS\r\n");
         }
 
@@ -432,9 +388,7 @@ void shut_down(int code)
         prot_free(sync_out);
     }
 
-#ifdef HAVE_SSL
     tls_shutdown_serverengine();
-#endif
 
     saslprops_free(&saslprops);
 
@@ -655,7 +609,7 @@ static void cmdloop(void)
             break;
 
         case 'S':
-            if (!strcmp(cmd.s, "Starttls") && tls_enabled()) {
+            if (!strcmp(cmd.s, "Starttls") && tls_starttls_enabled()) {
                 if (c == '\r') c = prot_getc(sync_in);
                 if (c != '\n') goto extraargs;
 
@@ -731,7 +685,7 @@ static void cmd_authenticate(char *mech, char *resp)
 
     if (r) {
         const char *errorstring = NULL;
-        const char *userid = "-notset-";
+        const char *userid = NULL;
 
         switch (r) {
         case IMAP_SASL_CANCEL:
@@ -752,8 +706,8 @@ static void cmd_authenticate(char *mech, char *resp)
             if (r != SASL_NOUSER)
                 sasl_getprop(sync_saslconn, SASL_USERNAME, (const void **) &userid);
 
-            syslog(LOG_NOTICE, "badlogin: %s %s (%s) [%s]",
-                   sync_clienthost, mech, userid, sasl_errdetail(sync_saslconn));
+            loginlog_bad(sync_clienthost, userid, mech, NULL,
+                         sasl_errdetail(sync_saslconn));
 
             failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
             if (failedloginpause != 0) {
@@ -782,6 +736,7 @@ static void cmd_authenticate(char *mech, char *resp)
                     sasl_result);
         syslog(LOG_ERR, "weird SASL error %d getting SASL_USERNAME",
                sasl_result);
+
         reset_saslconn(&sync_saslconn);
         return;
     }
@@ -792,8 +747,7 @@ static void cmd_authenticate(char *mech, char *resp)
     if (r) fatal("unable to register process", EX_IOERR);
     proc_settitle(config_ident, sync_clienthost, sync_userid, NULL, NULL);
 
-    syslog(LOG_NOTICE, "login: %s %s %s%s %s", sync_clienthost, sync_userid,
-           mech, sync_starttls_done ? "+TLS" : "", "User logged in");
+    loginlog_good(sync_clienthost, sync_userid, mech, sync_starttls_done);
 
     sasl_getprop(sync_saslconn, SASL_SSF, &val);
     ssf = *((sasl_ssf_t *) val);
@@ -823,7 +777,6 @@ static void cmd_authenticate(char *mech, char *resp)
     sync_logfd = telemetry_log(sync_userid, sync_in, sync_out, 0);
 }
 
-#ifdef HAVE_SSL
 static void cmd_starttls(void)
 {
     int result;
@@ -877,12 +830,6 @@ static void cmd_starttls(void)
 
     dobanner();
 }
-#else
-static void cmd_starttls(void)
-{
-    fatal("cmd_starttls() called, but no OpenSSL", EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */
 
 #ifdef HAVE_ZLIB
 static void cmd_compress(char *alg)

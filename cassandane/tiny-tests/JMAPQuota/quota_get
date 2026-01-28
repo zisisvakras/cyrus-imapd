@@ -3,16 +3,15 @@ use Cassandane::Tiny;
 
 sub test_quota_get
     :needs_component_jmap
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
 
     xlog $self, "Install a sieve script";
     my $script = <<EOF;
 keep;\r
 EOF
-    $self->{instance}->install_sieve_script($script);
+    $self->{instance}->install_sieve_script($script, upgrade => 1);
 
     xlog "Get all Sieve scripts (to create #sieve mailbox) ";
     my $res = $jmap->CallMethods([
@@ -33,15 +32,15 @@ EOF
     $self->assert_num_equals(1, scalar @{$res->[0][1]{list}});
 
     # Right - let's set ourselves some basic usage quota
-    $self->_set_quotaroot('user.cassandane');
-    $self->_set_limits(
+    $self->set_quotaroot('user.cassandane');
+    $self->set_quotalimits(
         storage => 100000,
         message => 50000,
         mailbox => 100,
     );
 
-    $self->_set_quotaroot('user.cassandane.#calendars');
-    $self->_set_limits(
+    $self->set_quotaroot('user.cassandane.#calendars');
+    $self->set_quotalimits(
         storage => 10000,
         message => 5000,
         mailbox => 10,

@@ -1,44 +1,6 @@
-/* pop3d.c -- POP3 server protocol parsing
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* pop3d.c -- POP3 server protocol parsing */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -74,7 +36,9 @@
 #include "slowio.h"
 #include "tls.h"
 
+#include "auditlog.h"
 #include "imapd.h"
+#include "loginlog.h"
 #include "mailbox.h"
 #include "mboxevent.h"
 #include "version.h"
@@ -89,6 +53,7 @@
 #include "sync_support.h"
 #include "seen.h"
 #include "userdeny.h"
+#include "prometheus.h"
 
 /* generated headers are not necessarily in current directory */
 #include "imap/imap_err.h"
@@ -107,11 +72,7 @@ extern int optind;
 extern char *optarg;
 extern int opterr;
 
-
-
-#ifdef HAVE_SSL
 static SSL *tls_conn;
-#endif /* HAVE_SSL */
 
 static sasl_conn_t *popd_saslconn; /* the sasl connection context */
 
@@ -358,19 +319,14 @@ static void popd_reset(void)
         prot_free(popd_out);
     }
 
-    if (config_auditlog)
-        syslog(LOG_NOTICE, "auditlog: traffic sessionid=<%s>"
-               " bytes_in=<%" PRIu64 "> bytes_out=<%" PRIu64 ">",
-               session_id(), bytes_in, bytes_out);
+    auditlog_traffic(bytes_in, bytes_out);
 
     popd_in = popd_out = NULL;
 
-#ifdef HAVE_SSL
     if (tls_conn) {
         tls_reset_servertls(&tls_conn);
         tls_conn = NULL;
     }
-#endif
 
     cyrus_reset_stdio();
 
@@ -459,6 +415,8 @@ int service_init(int argc, char **argv,
         }
     }
 
+    prometheus_increment(CYRUS_POP3_READY_LISTENERS);
+
     return 0;
 }
 
@@ -472,6 +430,10 @@ int service_main(int argc __attribute__((unused)),
     const char *localip, *remoteip;
     sasl_security_properties_t *secprops=NULL;
     struct mboxevent *mboxevent = NULL;
+
+    /* fatal/shut_down will adjust these, so we need to set them early */
+    prometheus_decrement(CYRUS_POP3_READY_LISTENERS);
+    prometheus_increment(CYRUS_POP3_ACTIVE_CONNECTIONS);
 
     if (config_iolog) {
         io_count_start = xmalloc (sizeof (struct io_count));
@@ -489,6 +451,9 @@ int service_main(int argc __attribute__((unused)),
     count_retr = 0;
     count_top = 0;
     count_dele = 0;
+
+    /* count the connection, now that it's established */
+    prometheus_increment(CYRUS_POP3_CONNECTIONS_TOTAL);
 
     /* Find out name of client host */
     popd_clienthost = get_clienthost(0, &localip, &remoteip);
@@ -548,6 +513,8 @@ int service_main(int argc __attribute__((unused)),
 
     /* QUIT executed */
 
+    prometheus_decrement(CYRUS_POP3_ACTIVE_CONNECTIONS);
+
     /* send a Logout event notification */
     if ((mboxevent = mboxevent_new(EVENT_LOGOUT))) {
         mboxevent_set_access(mboxevent,
@@ -572,6 +539,8 @@ int service_main(int argc __attribute__((unused)),
         free(io_count_stop);
     }
 
+    prometheus_increment(CYRUS_POP3_READY_LISTENERS);
+
     return 0;
 }
 
@@ -583,6 +552,8 @@ void service_abort(int error)
 
 static void usage(void)
 {
+    prometheus_increment(CYRUS_POP3_SHUTDOWN_TOTAL_STATUS_ERROR);
+
     prot_printf(popd_out, "-ERR usage: pop3d [-C <alt_config>] [-k] [-s]\r\n");
     prot_flush(popd_out);
     exit(EX_USAGE);
@@ -638,16 +609,20 @@ void shut_down(int code)
         prot_flush(popd_out);
         bytes_out = prot_bytes_out(popd_out);
         prot_free(popd_out);
+        /* one less active connection */
+        prometheus_decrement(CYRUS_POP3_ACTIVE_CONNECTIONS);
+    }
+    else {
+        /* one less ready listener */
+        prometheus_decrement(CYRUS_POP3_READY_LISTENERS);
     }
 
-    if (config_auditlog)
-        syslog(LOG_NOTICE, "auditlog: traffic sessionid=<%s>"
-               " bytes_in=<%" PRIu64 "> bytes_out=<%" PRIu64 ">",
-               session_id(), bytes_in, bytes_out);
+    auditlog_traffic(bytes_in, bytes_out);
 
-#ifdef HAVE_SSL
     tls_shutdown_serverengine();
-#endif
+
+    prometheus_increment(code ? CYRUS_POP3_SHUTDOWN_TOTAL_STATUS_ERROR
+                              : CYRUS_POP3_SHUTDOWN_TOTAL_STATUS_OK);
 
     saslprops_free(&saslprops);
 
@@ -672,6 +647,16 @@ EXPORTED void fatal(const char* s, int code)
 
     if (recurse_code) {
         /* We were called recursively. Just give up */
+        if (popd_out) {
+            /* one less active connection */
+            prometheus_decrement(CYRUS_POP3_ACTIVE_CONNECTIONS);
+        }
+        else {
+            /* one less ready listener */
+            prometheus_decrement(CYRUS_POP3_READY_LISTENERS);
+        }
+        prometheus_increment(CYRUS_POP3_SHUTDOWN_TOTAL_STATUS_ERROR);
+
         proc_cleanup(&proc_handle);
         exit(recurse_code);
     }
@@ -687,62 +672,23 @@ EXPORTED void fatal(const char* s, int code)
     shut_down(code);
 }
 
-static int expunge_deleted(void)
+static unsigned expunge_cb(struct mailbox *mailbox __attribute__((unused)),
+                           const struct index_record *record, void *rock)
 {
-    struct index_record record;
-    uint32_t msgno;
-    int r = 0;
-    int numexpunged = 0;
-    struct mboxevent *mboxevent;
+    unsigned *msgnop = (unsigned *)rock;
 
-    mboxevent = mboxevent_new(EVENT_MESSAGE_EXPUNGE);
-
-    /* loop over all known messages looking for deletes */
-    for (msgno = 1; msgno <= popd_exists; msgno++) {
-        /* not deleted? skip */
-        if (!popd_map[msgno-1].deleted)
-            continue;
-
-        /* error reading? abort */
-        memset(&record, 0, sizeof(struct index_record));
-        record.recno = popd_map[msgno-1].recno;
-        r = mailbox_reload_index_record(popd_mailbox, &record);
-        if (r) break;
-
-        /* already expunged? skip */
-        if (record.internal_flags & FLAG_INTERNAL_EXPUNGED)
-            continue;
-
-        /* mark expunged */
-        record.system_flags |= FLAG_DELETED;
-        record.internal_flags |= FLAG_INTERNAL_EXPUNGED;
-        numexpunged++;
-
-        /* store back to the mailbox */
-        r = mailbox_rewrite_index_record(popd_mailbox, &record);
-        if (r) break;
-
-        mboxevent_extract_record(mboxevent, popd_mailbox, &record);
+    while (*msgnop <= popd_exists) {
+        struct msg *m = &popd_map[*msgnop-1];
+        // record is in a gap, definitely not deleted
+        if (m->uid > record->uid) return 0;
+        (*msgnop)++;
+        // no record for this msgno, ignore
+        if (m->uid < record->uid) continue;
+        // UID matches, are we deleted?
+        return m->deleted;
     }
 
-    if (r) {
-        syslog(LOG_ERR, "IOERROR: %s failed to expunge record %u uid %u, aborting",
-               mailbox_name(popd_mailbox), msgno, popd_map[msgno-1].uid);
-    }
-
-    if (!r && (numexpunged > 0)) {
-        syslog(LOG_NOTICE, "Expunged %d messages from %s",
-               numexpunged, mailbox_name(popd_mailbox));
-    }
-
-    /* send the MessageExpunge event notification */
-    mboxevent_extract_mailbox(mboxevent, popd_mailbox);
-    mboxevent_set_numunseen(mboxevent, popd_mailbox, -1);
-    mboxevent_set_access(mboxevent, NULL, NULL, popd_userid, NULL, 0);
-    mboxevent_notify(&mboxevent);
-    mboxevent_free(&mboxevent);
-
-    return r;
+    return 0; // we've exhausted our map, these are new messages
 }
 
 /*
@@ -857,37 +803,39 @@ static void cmdloop(void)
 
         if (!strcmp(inputbuf, "quit")) {
             if (!arg) {
-                int pollpadding =config_getint(IMAPOPT_POPPOLLPADDING);
+                int pollpadding = config_getint(IMAPOPT_POPPOLLPADDING);
                 int minpollsec = config_getduration(IMAPOPT_POPMINPOLL, 'm');
 
                 /* check preconditions! */
                 if (!popd_mailbox)
                     goto done;
-                if (mailbox_lock_index(popd_mailbox, LOCK_EXCLUSIVE))
-                    goto done;
+                char *name = xstrdup(mailbox_name(popd_mailbox));
+                mailbox_close(&popd_mailbox);
+                int r = mailbox_open_iwl(name, &popd_mailbox);
+                free(name);
+                if (r) goto done; // failed to open, doh
 
                 /* mark dirty in case everything else misses it - we're updating
                  * at least the last login */
                 mailbox_index_dirty(popd_mailbox);
                 if ((minpollsec > 0) && (pollpadding > 1)) {
                     time_t mintime = popd_login_time - (minpollsec*(pollpadding));
-                    if (popd_mailbox->i.pop3_last_login < mintime) {
-                        popd_mailbox->i.pop3_last_login = mintime + minpollsec;
+                    if (popd_mailbox->i.pop3_last_login.tv_sec < mintime) {
+                        popd_mailbox->i.pop3_last_login.tv_sec = mintime + minpollsec;
                     } else {
-                        popd_mailbox->i.pop3_last_login += minpollsec;
+                        popd_mailbox->i.pop3_last_login.tv_sec += minpollsec;
                     }
                 } else {
-                    popd_mailbox->i.pop3_last_login = popd_login_time;
+                    popd_mailbox->i.pop3_last_login.tv_sec = popd_login_time;
                 }
 
                 /* look for deleted messages */
-                expunge_deleted();
+                unsigned msgno = 1;
+                mailbox_expunge(popd_mailbox, /*iter*/NULL, expunge_cb, &msgno,
+                                /*numexpunged*/NULL, EVENT_MESSAGE_EXPUNGE, /*limit*/0);
 
                 /* update seen data */
                 update_seen();
-
-                /* unlock will commit changes */
-                mailbox_unlock_index(popd_mailbox, NULL);
 
 done:
                 mailbox_close(&popd_mailbox);
@@ -927,7 +875,7 @@ done:
             else if (!strcmp(inputbuf, "auth")) {
                 cmd_auth(arg);
             }
-            else if (!strcmp(inputbuf, "stls") && tls_enabled()) {
+            else if (!strcmp(inputbuf, "stls") && tls_starttls_enabled()) {
                 if (arg) {
                     prot_printf(popd_out, "-ERR Unexpected extra argument\r\n");
                 } else {
@@ -1154,7 +1102,6 @@ void uidl_msg(uint32_t msgno)
     }
 }
 
-#ifdef HAVE_SSL
 static void cmd_stls(int pop3s)
 {
     int result;
@@ -1230,12 +1177,6 @@ static void cmd_stls(int pop3s)
     popd_starttls_done = 1;
     popd_tls_required = 0;
 }
-#else
-static void cmd_stls(int pop3s __attribute__((unused)))
-{
-    fatal("cmd_stls() called, but no OpenSSL", EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */
 
 static void cmd_apop(char *response)
 {
@@ -1266,9 +1207,11 @@ static void cmd_apop(char *response)
     /* failed authentication */
     if (sasl_result != SASL_OK)
     {
-        syslog(LOG_NOTICE, "badlogin: %s APOP (%s) %s",
-               popd_clienthost, popd_apop_chal,
-               sasl_errdetail(popd_saslconn));
+        /* XXX username is embedded in `response`, if we want to log it we
+         * XXX could parse it out, or it might be available from sasl_getprop
+         */
+        loginlog_bad(popd_clienthost, NULL, NULL, NULL,
+                     sasl_errdetail(popd_saslconn));
 
         failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
         if (failedloginpause != 0) {
@@ -1303,9 +1246,8 @@ static void cmd_apop(char *response)
     }
     popd_userid = xstrdup((const char *) canon_user);
 
-    syslog(LOG_NOTICE, "login: %s %s%s APOP%s %s SESSIONID=<%s>", popd_clienthost,
-           popd_userid, popd_subfolder ? popd_subfolder : "",
-           popd_starttls_done ? "+TLS" : "", "User logged in", session_id());
+    loginlog_good_pop(popd_clienthost, popd_userid, NULL, popd_starttls_done,
+                      popd_subfolder);
 
     popd_authstate = auth_newstate(popd_userid);
 
@@ -1333,16 +1275,18 @@ static void cmd_user(char *user)
 
     if (popd_canon_user(popd_saslconn, NULL, user, 0,
                         SASL_CU_AUTHID | SASL_CU_AUTHZID,
-                        NULL, userbuf, sizeof(userbuf), &userlen) ||
-             /* '.' isn't allowed if '.' is the hierarchy separator */
-             (popd_namespace.hier_sep == '.' && (dot = strchr(userbuf, '.')) &&
-              !(config_virtdomains &&  /* allow '.' in dom.ain */
-                (domain = strchr(userbuf, '@')) && (dot > domain))) ||
-             strlen(userbuf) + 6 >= MAX_MAILBOX_BUFFER) {
+                        NULL, userbuf, sizeof(userbuf), &userlen)
+        ||
+        /* '.' isn't allowed if '.' is the hierarchy separator */
+        (popd_namespace.hier_sep == '.'
+         && (dot = strchr(userbuf, '.'))
+         && !(config_virtdomains  /* allow '.' in dom.ain */
+              && (domain = strchr(userbuf, '@')) && (dot > domain)))
+        ||
+        strlen(userbuf) + 6 >= MAX_MAILBOX_BUFFER)
+    {
         prot_printf(popd_out, "-ERR [AUTH] Invalid user\r\n");
-        syslog(LOG_NOTICE,
-               "badlogin: %s plaintext (%s) invalid user",
-               popd_clienthost, beautify_string(user));
+        loginlog_bad(popd_clienthost, user, "plaintext", NULL, "invalid user");
     }
     else {
         popd_userid = xstrdup(userbuf);
@@ -1362,25 +1306,25 @@ static void cmd_pass(char *pass)
 
     if (!strcmp(popd_userid, "anonymous")) {
         if (config_getswitch(IMAPOPT_ALLOWANONYMOUSLOGIN)) {
-            pass = beautify_string(pass);
             if (strlen(pass) > 500) pass[500] = '\0';
-            syslog(LOG_NOTICE, "login: %s anonymous %s",
-                   popd_clienthost, pass);
+            loginlog_anon(popd_clienthost, NULL, popd_starttls_done, pass);
         }
         else {
-            syslog(LOG_NOTICE, "badlogin: %s anonymous login refused",
-                   popd_clienthost);
+            loginlog_bad(popd_clienthost, popd_userid, NULL, NULL,
+                         "anonymous login refused");
             prot_printf(popd_out, "-ERR [AUTH] Invalid login\r\n");
             return;
         }
     }
-    else if (sasl_checkpass(popd_saslconn,
-                            popd_userid,
-                            strlen(popd_userid),
-                            pass,
-                            strlen(pass))!=SASL_OK) {
-        syslog(LOG_NOTICE, "badlogin: %s plaintext (%s) [%s]",
-               popd_clienthost, popd_userid, sasl_errdetail(popd_saslconn));
+    else if (SASL_OK != sasl_checkpass(popd_saslconn,
+                                       popd_userid,
+                                       strlen(popd_userid),
+                                       pass,
+                                       strlen(pass)))
+    {
+        loginlog_bad(popd_clienthost, popd_userid, "plaintext", NULL,
+                     sasl_errdetail(popd_saslconn));
+
         failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
         if (failedloginpause != 0) {
             sleep(failedloginpause);
@@ -1416,9 +1360,8 @@ static void cmd_pass(char *pass)
         }
         popd_userid = xstrdup((const char *) val);
 
-        syslog(LOG_NOTICE, "login: %s %s%s plaintext%s %s SESSIONID=<%s>", popd_clienthost,
-               popd_userid, popd_subfolder ? popd_subfolder : "",
-               popd_starttls_done ? "+TLS" : "", "User logged in", session_id());
+        loginlog_good_pop(popd_clienthost, popd_userid, "plaintext",
+                          popd_starttls_done, popd_subfolder);
 
         if ((!popd_starttls_done) &&
             (plaintextloginpause = config_getduration(IMAPOPT_PLAINTEXTLOGINPAUSE, 's'))
@@ -1458,7 +1401,7 @@ static void cmd_capa(void)
         prot_write(popd_out, mechlist, strlen(mechlist));
     }
 
-    if (tls_enabled() && !popd_starttls_done && !popd_authstate) {
+    if (tls_starttls_enabled() && !popd_starttls_done && !popd_authstate) {
         prot_printf(popd_out, "STLS\r\n");
     }
     if (expire < 0) {
@@ -1555,7 +1498,7 @@ static void cmd_auth(char *arg)
 
     if (r) {
         const char *errorstring = NULL;
-        const char *userid = "-notset-";
+        const char *userid = NULL;
 
         switch (r) {
         case IMAP_SASL_CANCEL:
@@ -1571,18 +1514,13 @@ static void cmd_auth(char *arg)
             break;
         default:
             /* failed authentication */
-            if (authtype) {
-                if (sasl_result != SASL_NOUSER)
-                    sasl_getprop(popd_saslconn, SASL_USERNAME,
-                                 (const void **) &userid);
-
-                syslog(LOG_NOTICE, "badlogin: %s %s (%s) [%s]",
-                       popd_clienthost, authtype, userid,
-                       sasl_errstring(sasl_result, NULL, NULL));
-            } else {
-                syslog(LOG_NOTICE, "badlogin: %s %s",
-                       popd_clienthost, authtype);
+            if (sasl_result != SASL_NOUSER) {
+                sasl_getprop(popd_saslconn, SASL_USERNAME,
+                             (const void **) &userid);
             }
+
+            loginlog_bad(popd_clienthost, userid, authtype, NULL,
+                         sasl_errstring(sasl_result, NULL, NULL));
 
             failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
             if (failedloginpause != 0) {
@@ -1637,9 +1575,9 @@ static void cmd_auth(char *arg)
     } else {
         popd_userid = xstrdup(canon_user);
     }
-    syslog(LOG_NOTICE, "login: %s %s%s %s%s %s SESSIONID=<%s>", popd_clienthost,
-           popd_userid, popd_subfolder ? popd_subfolder : "",
-           authtype, popd_starttls_done ? "+TLS" : "", "User logged in", session_id());
+
+    loginlog_good_pop(popd_clienthost, popd_userid, authtype, popd_starttls_done,
+                      popd_subfolder);
 
     if (!openinbox()) {
         sasl_getprop(popd_saslconn, SASL_SSF, &val);
@@ -1760,7 +1698,7 @@ int openinbox(void)
 
         popd_login_time = time(0);
 
-        r = mailbox_open_iwl(mbname_intname(mbname), &popd_mailbox);
+        r = mailbox_open_irl(mbname_intname(mbname), &popd_mailbox);
         if (r) {
             sleep(3);
             syslog(log_level, "Unable to open maildrop %s: %s",
@@ -1788,7 +1726,7 @@ int openinbox(void)
         }
 
         if ((minpoll = config_getduration(IMAPOPT_POPMINPOLL, 'm')) &&
-            popd_mailbox->i.pop3_last_login + minpoll > popd_login_time) {
+            popd_mailbox->i.pop3_last_login.tv_sec + minpoll > popd_login_time) {
             syslog(LOG_ERR, "%s: Logins must be at least %d minute%s apart",
                         mbname_intname(mbname),
                         minpoll / 60, minpoll / 60 > 1 ? "s" : "");
@@ -1813,8 +1751,8 @@ int openinbox(void)
         const message_t *msg;
         while ((msg = mailbox_iter_step(iter))) {
             const struct index_record *record = msg_record(msg);
-            if (popd_mailbox->i.pop3_show_after &&
-                record->internaldate <= popd_mailbox->i.pop3_show_after) {
+            if (popd_mailbox->i.pop3_show_after.tv_sec &&
+                record->internaldate.tv_sec <= popd_mailbox->i.pop3_show_after.tv_sec) {
                 /* Ignore messages older than the "show after" date */
                 continue;
             }
@@ -2025,9 +1963,8 @@ static void bitpipe(void)
 /* Merge our read messages with the existing \Seen database */
 static int update_seen(void)
 {
-    unsigned msgno;
-    struct index_record record;
     int r = 0;
+    unsigned numseen = 0;
 
     if (!config_popuseimapflags)
         return 0;
@@ -2035,23 +1972,40 @@ static int update_seen(void)
     if (config_popuseacl && !(popd_myrights & ACL_SETSEEN))
         return 0;
 
-    /* we know this mailbox must be owned by the user, because
-     * all POP mailboxes are */
-    for (msgno = 1; msgno <= popd_exists; msgno++) {
-        if (!popd_map[msgno-1].seen)
-            continue; /* don't even need to check */
-        memset(&record, 0, sizeof(struct index_record));
-        record.recno = popd_map[msgno-1].recno;
-        if (mailbox_reload_index_record(popd_mailbox, &record))
-            continue;
-        if (record.internal_flags & FLAG_INTERNAL_EXPUNGED)
-            continue; /* already expunged */
-        if (record.system_flags & FLAG_SEEN)
-            continue; /* already seen */
-        record.system_flags |= FLAG_SEEN;
-        r = mailbox_rewrite_index_record(popd_mailbox, &record);
-        if (r) break;
+    struct mboxevent *mboxevent = mboxevent_new(EVENT_MESSAGE_READ);
+
+    unsigned msgno = 1;
+    const message_t *msg;
+    struct mailbox_iter *iter = mailbox_iter_init(popd_mailbox, 0, ITER_SKIP_EXPUNGED);
+    while ((msg = mailbox_iter_step(iter))) {
+        const struct index_record *record = msg_record(msg);
+        while (msgno <= popd_exists && popd_map[msgno-1].uid < record->uid)
+            msgno++;
+        if (msgno > popd_exists) break;
+        if (popd_map[msgno-1].uid > record->uid) continue;
+        // same UID
+        if (!popd_map[msgno-1].seen) continue; // nothing to change
+        if (record->system_flags & FLAG_SEEN) continue; // already Seen
+        numseen++;
+        struct index_record copyrecord = *record;
+        copyrecord.system_flags |= FLAG_SEEN;
+        r = mailbox_rewrite_index_record(popd_mailbox, &copyrecord);
+        if (r) {
+            mboxevent_free(&mboxevent);
+            mailbox_iter_done(&iter);
+            return IMAP_IOERROR;
+        }
     }
+    mailbox_iter_done(&iter);
+
+    if (numseen > 0) {
+        /* send the MessageRead event notification */
+        mboxevent_extract_mailbox(mboxevent, popd_mailbox);
+        mboxevent_set_access(mboxevent, NULL, NULL, "", mailbox_name(popd_mailbox), 0);
+        mboxevent_set_numunseen(mboxevent, popd_mailbox, -1);
+        mboxevent_notify(&mboxevent);
+    }
+    mboxevent_free(&mboxevent);
 
     return r;
 }

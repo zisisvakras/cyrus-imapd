@@ -1,46 +1,6 @@
-/* imtest.c -- IMAP/POP3/NNTP/LMTP/SMTP/MUPDATE/MANAGESIEVE test client
- * Ken Murchison (multi-protocol implementation)
- * Tim Martin (SASL implementation)
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* imtest.c -- IMAP/POP3/NNTP/LMTP/SMTP/MUPDATE/MANAGESIEVE test client */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include "config.h"
 
@@ -83,14 +43,11 @@
 #include "xstrlcpy.h"
 #include "xunlink.h"
 
-#ifdef HAVE_SSL
 #include <openssl/ssl.h>
 
 static SSL_CTX *tls_ctx = NULL;
 static SSL *tls_conn = NULL;
 static SSL_SESSION *tls_sess = NULL;
-
-#endif /* HAVE_SSL */
 
 #define IMTEST_OK    0
 #define IMTEST_FAIL -1
@@ -299,8 +256,6 @@ int mysasl_config(void *context __attribute__((unused)),
     return SASL_FAIL;
 }
 
-#ifdef HAVE_SSL
-
 static int verify_depth;
 static int verify_error = X509_V_OK;
 static int do_dump = 0;
@@ -400,20 +355,6 @@ static int verify_callback(int ok, X509_STORE_CTX * ctx)
 }
 
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-/* taken from OpenSSL apps/s_cb.c */
-static RSA *tmp_rsa_cb(SSL * s __attribute__((unused)),
-                       int export __attribute__((unused)), int keylength)
-{
-    static RSA *rsa_tmp = NULL;
-
-    if (rsa_tmp == NULL) {
-        rsa_tmp = RSA_generate_key(keylength, RSA_F4, NULL, NULL);
-    }
-    return (rsa_tmp);
-}
-#endif
-
 /* taken from OpenSSL apps/s_cb.c
  * tim - this seems to just be giving logging messages
  */
@@ -496,11 +437,7 @@ static int tls_init_clientengine(int verifydepth, const char *var_tls_cert_file,
         return IMTEST_FAIL;
     }
 
-#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
     tls_ctx = SSL_CTX_new(TLS_client_method());
-#else
-    tls_ctx = SSL_CTX_new(SSLv23_client_method());
-#endif
     if (tls_ctx == NULL) {
         return IMTEST_FAIL;
     };
@@ -541,9 +478,6 @@ static int tls_init_clientengine(int verifydepth, const char *var_tls_cert_file,
             printf("TLS engine: cannot load cert/key data, may be a cert/key mismatch?\n");
             return IMTEST_FAIL;
         }
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    SSL_CTX_set_tmp_rsa_callback(tls_ctx, tmp_rsa_cb);
-#endif
 
     verify_depth = verifydepth;
     SSL_CTX_set_verify(tls_ctx, verify_flags, verify_callback);
@@ -786,7 +720,6 @@ static void do_starttls(int ssl, const char *keyfile, unsigned *ssf)
     if (result!=SASL_OK)
         imtest_fatal("Error setting SASL property (external auth_id)");
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     static unsigned char finished[EVP_MAX_MD_SIZE];
     static struct sasl_channel_binding cbinding;
 
@@ -805,13 +738,10 @@ static void do_starttls(int ssl, const char *keyfile, unsigned *ssf)
     result = sasl_setprop(conn, SASL_CHANNEL_BINDING, &cbinding);
     if (result!=SASL_OK)
         imtest_fatal("Error setting SASL property (channel binding)");
-#endif /* (OPENSSL_VERSION_NUMBER >= 0x0090800fL) */
 
     prot_settls (pin,  tls_conn);
     prot_settls (pout, tls_conn);
 }
-#endif /* HAVE_SSL */
-
 
 static sasl_security_properties_t *make_secprops(int min,int max)
 {
@@ -1138,7 +1068,7 @@ static int auth_sasl(struct sasl_cmd_t *sasl_cmd, const char *mechlist)
         } else if (sendliteral) {
             /* If we had no response, we still need to send the
                empty literal in this case */
-            printf("{0+}\r\nC: ");
+            fputs("C: {0+}", stdout);
             prot_printf(pout, "{0+}\r\n");
         } else if (!initial_response) {
             printf("C: ");
@@ -1241,14 +1171,12 @@ static void sigint_handler(int sig __attribute__((unused)))
 static int haveinput(struct protstream *s)
 {
     /* Is something currently pending in our protstream's buffer? */
-#ifdef HAVE_SSL
     if (s->cnt == 0 && s->tls_conn != NULL) {
         /* Maybe there's data pending in the SSL buffer? */
         int n = SSL_pending(s->tls_conn);
         if (verbose) printf("SSL_pending=%d\n", n);
         return n;
     }
-#endif
     return s->cnt;
 }
 
@@ -1324,7 +1252,7 @@ static void interactive(struct protocol_t *protocol, char *filename)
             rock = NULL;
         }
 
-        tv.tv_sec = 600; /* 10 minute timeout - xxx protocol specific? */
+        tv.tv_sec = 600; /* 10 minute timeout - XXX protocol specific? */
         tv.tv_usec = 0;
 
         aset = accept_set;
@@ -1554,7 +1482,11 @@ static void print_command(const char *cmd, const char *arg)
     static struct buf buf = BUF_INITIALIZER;
 
     buf_reset(&buf);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+    /* Format string comes from struct protocol_t protocols[] */
     buf_printf(&buf, cmd, arg);
+#pragma GCC diagnostic pop
     buf_replace_all(&buf, "\r\n", "\r\nC: ");
 
     printf("C: %s", buf_cstring(&buf));
@@ -1584,7 +1516,11 @@ static struct buf *ask_capability(struct protocol_t *prot,
         print_command(prot->capa_cmd.cmd, servername);
         printf("\r\n");
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+        /* Format string comes from struct protocol_t protocols[] */
         prot_printf(pout, prot->capa_cmd.cmd, servername);
+#pragma GCC diagnostic pop
         prot_puts(pout, "\r\n");
         prot_flush(pout);
     }
@@ -2704,14 +2640,12 @@ static void usage(char *prog, const char *prot)
         printf("             (\"basic\", \"negotiate\", \"scram-sha-1\", \"scram-sha-256\")\n");
     printf("  -f file  : pipe file into connection after authentication\n");
     printf("  -r realm : realm\n");
-#ifdef HAVE_SSL
     if (!strcasecmp(prot, "imap") || !strcasecmp(prot, "pop3") ||
         !strcasecmp(prot, "nntp") || !strcasecmp(prot, "smtp") || !strcasecmp(prot, "http"))
         printf("  -s       : Enable %s over SSL (%ss)\n", prot, prot);
     if (strcasecmp(prot, "mupdate"))
         printf("  -t file  : Enable TLS. file has the TLS public and private keys\n"
                "             (specify \"\" to not use TLS for authentication)\n");
-#endif /* HAVE_SSL */
 #ifdef HAVE_ZLIB
     if (!strcasecmp(prot, "imap") || !strcasecmp(prot, "nntp") ||
         !strcasecmp(prot, "mupdate") || !strcasecmp(prot, "csync")) {
@@ -2846,11 +2780,6 @@ int main(int argc, char **argv)
     int result;
     int errflg = 0;
 
-#ifdef HAVE_SSL
-    #define WITH_SSL_ONLY /**/
-#else
-    #define WITH_SSL_ONLY __attribute__((unused))
-#endif
 #ifdef HAVE_ZLIB
     #define WITH_ZLIB_ONLY /**/
 #else
@@ -2858,10 +2787,10 @@ int main(int argc, char **argv)
 #endif
 
     char *prog;
-    const char *tls_keyfile WITH_SSL_ONLY = "";
+    const char *tls_keyfile = "";
     const char *port = "", *prot = "";
     int run_stress_test=0;
-    int dotls WITH_SSL_ONLY = 0, dossl = 0, docompress WITH_ZLIB_ONLY = 0;
+    int dotls = 0, dossl = 0, docompress WITH_ZLIB_ONLY = 0;
     unsigned long capabilities = 0;
     char str[1024];
     const char *pidfile = NULL;
@@ -2871,8 +2800,6 @@ int main(int argc, char **argv)
     char *val;
     char localip[60], remoteip[60];
     const char *haproxy_clientip = NULL;
-
-#undef WITH_SSL_ONLY
 
     if (!construct_hash_table(&confighash, CONFIGHASHSIZE, 1)) {
         imtest_fatal("could not construct config hash table");
@@ -2937,11 +2864,7 @@ int main(int argc, char **argv)
 #endif
             break;
         case 's':
-#ifdef HAVE_SSL
             dossl=1;
-#else
-            imtest_fatal("imtest was not compiled with SSL/TLS support\n");
-#endif
             break;
         case 'c':
             dochallenge=1;
@@ -2985,12 +2908,8 @@ int main(int argc, char **argv)
             realm=optarg;
             break;
         case 't':
-#ifdef HAVE_SSL
             dotls=1;
             tls_keyfile=optarg;
-#else
-            imtest_fatal("imtest was not compiled with SSL/TLS support\n");
-#endif
             break;
         case 'n':
             reauth = atoi(optarg);
@@ -3125,13 +3044,11 @@ int main(int argc, char **argv)
             prot_free(pin);
             prot_free(pout);
 
-#ifdef HAVE_SSL
             /* Properly shutdown TLS so that session can be reused */
             if (tls_conn) {
                 SSL_shutdown(tls_conn);
                 SSL_set_shutdown(tls_conn, SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
             }
-#endif
 
             close(sock);
 
@@ -3189,11 +3106,9 @@ int main(int argc, char **argv)
             prot_flush(pout);
         }
 
-#ifdef HAVE_SSL
         if (dossl==1) {
             do_starttls(1, "", &ext_ssf);
         }
-#endif /* HAVE_SSL */
 
         if (protocol->banner.is_capa) {
             /* try to get the capabilities from the banner */
@@ -3222,14 +3137,17 @@ int main(int argc, char **argv)
                                       &capabilities, AUTO_NO);
         }
 
-#ifdef HAVE_SSL
         if ((dossl==0) && (dotls==1) && (capabilities & CAPA_STARTTLS)) {
             char *resp;
 
             print_command(protocol->tls_cmd.cmd, servername);
             printf("\r\n");
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+            /* Format string comes from struct protocol_t protocols[] */
             prot_printf(pout, protocol->tls_cmd.cmd, servername);
+#pragma GCC diagnostic pop
             prot_puts(pout, "\r\n");
             prot_flush(pout);
 
@@ -3251,7 +3169,6 @@ int main(int argc, char **argv)
         } else if ((dotls==1) && !(capabilities & CAPA_STARTTLS)) {
             imtest_fatal("STARTTLS not supported by the server!\n");
         }
-#endif /* HAVE_SSL */
 
         if (noinitresp) {
             /* don't use an initial response, even if its supported */

@@ -329,57 +329,98 @@ class CyrusSearchStemmer : public Xapian::StemImplementation
     }
 };
 
-
-class FrenchContractionStemmer : public Xapian::StemImplementation
+class ElisionStemmer : public Xapian::StemImplementation
 {
-    Xapian::Stem stem {"fr"};
+    const std::vector<std::string> *elisions;
+    Xapian::Stem stem;
 
     public:
 
-    virtual std::string operator() (const std::string &word) override {
+    explicit ElisionStemmer(const std::vector<std::string> *elisions,
+                            Xapian::Stem stem)
+        : elisions(elisions), stem(stem) { }
 
-        size_t pos = 0;
-        switch (word[0]) {
-            case 'q':
-                if (word.length() <= 3 || word[1] != 'u') {
-                    break;
-                }
+    virtual std::string operator() (const std::string &word) override {
+        // Look for first apostrophe in word, if any. This is supposed
+        // to be the APOSTROPHE (U+0027) character because of NFKC
+        // normalization, but let's also deal with its multi-byte variants.
+        size_t pos = 0, len = 0;
+        while (pos < word.size()) {
+            pos = word.find_first_of("'\xe2\xef", pos);
+            if (pos == std::string::npos) break;
+            if (word[pos] == '\'') {
+                // Found APOSTROPHE (U+0027).
+                len = 1;
+                break;
+            }
+            else if (word[pos] == (char) 0xe2 && pos + 2 < word.size()
+                     && word[pos + 1] == (char) 0x80
+                     && word[pos + 2] == (char) 0x99)
+            {
+                // Found RIGHT SINGLE QUOTATION MARK (U+2019).
+                len = 3;
+                break;
+            }
+            else if (word[pos] == (char) 0xef && pos + 2 < word.size()
+                     && word[pos + 1] == (char) 0xbc
+                     && word[pos + 2] == (char) 0x87)
+            {
+                // Found FULLWIDTH APOSTROPHE (U+FF07).
+                len = 3;
+                break;
+            }
+            else {
+                // Keep on searching.
                 pos++;
-                // fall through
-            case 'c':
-            case 'd':
-            case 'j':
-            case 'l':
-            case 'm':
-            case 'n':
-            case 's':
-            case 't':
-                // APOSTROPHE (U+0027)
-                if (word.length() > pos + 2 && word[pos+1] == 0x27) {
-                    return stem(word.substr(pos + 2));
-                }
-                // RIGHT SINGLE QUOTATION MARK (U+2019)
-                // FULLWIDTH APOSTROPHE (U+FF07)
-                else if (!word.compare(pos + 1, 3, "\xe2\x80\x99") ||
-                         !word.compare(pos + 1, 3, "\xef\xbc\x87")) {
-                    return stem(word.substr(pos + 4));
-                }
-                // fall through
+            }
         }
-        // not a contraction
+
+        if (pos && pos != std::string::npos && len && pos + len < word.size()) {
+            // Check if subword before apostrophe is a known elision.
+            auto prefix = word.substr(0, pos);
+            if (std::find(elisions->begin(), elisions->end(), prefix)
+                != elisions->end()) {
+                // Only stem subword following the apostrophe.
+                return stem(word.substr(pos + len));
+            }
+        }
+
+        // Stem whole word.
         return stem(word);
     }
 
     virtual std::string get_description () const override {
-        return "fr-contraction";
+        return "elision-stemmer";
     }
 };
 
 static Xapian::Stem get_stemmer(const std::string& iso_lang)
 {
-    return iso_lang == "fr" ?
-        Xapian::Stem{new FrenchContractionStemmer} :
-        Xapian::Stem{iso_lang};
+    Xapian::Stem stem(iso_lang);
+
+    if (iso_lang == "fr") {
+        static const std::vector<std::string> elisions = {
+            "qu", "c", "d", "j", "l", "m", "n", "s", "t"
+        };
+        stem = Xapian::Stem{ new ElisionStemmer(&elisions, stem) };
+    }
+    else if (iso_lang == "it") {
+        static const std::vector<std::string> elisions = {
+            "c",     "l",      "un",    "m",    "t",    "s",    "v",
+            "d",     "all",    "dall",  "dell", "nell", "sull", "coll",
+            "pell",  "gl",     "agl",   "dagl", "degl", "negl", "sugl",
+            "nient", "nessun", "quest", "quell"
+        };
+        stem = Xapian::Stem{ new ElisionStemmer(&elisions, stem) };
+    }
+    else if (iso_lang == "ga") {
+        static const std::vector<std::string> elisions = {
+            "d", "m", "b"
+        };
+        stem = Xapian::Stem{ new ElisionStemmer(&elisions, stem) };
+    }
+
+    return stem;
 }
 
 #ifdef HAVE_CLD2
@@ -438,7 +479,7 @@ static uint8_t parse_indexlevel(const std::string& s)
 static std::string format_indexlevel(uint8_t level)
 {
     char hex[4];
-    bin_to_lchex(&level, 1, hex);
+    bin_to_hex(&level, 1, hex, BH_LOWER);
     return std::string(hex, 2);
 }
 
@@ -1971,17 +2012,185 @@ static Xapian::Query *xapian_query_new_match_word_break(const xapian_db_t *db,
     return q;
 }
 
+/**
+ * Attempt to query the input term 'str' as a number.
+ *
+ * We currently do not normalize numbers before indexing, so
+ * depending on the locale of the text the same number might
+ * be indexed differently. For decimals, either the '.' or ','
+ * characters might separate the whole number part from the
+ * fraction. Similarly, thousands in the whole number might
+ * be separated with either of these characters.
+ *
+ * This function attempts to parse the term 'str' as a number,
+ * optionally ending with a wildcard character. If it determines
+ * the input to be a number, then it returns a query that matches
+ * all typical representations of that number. Otherwise it
+ * returns NULL.
+ */
+static Xapian::Query *xapian_query_new_numbermatch(enum search_part partnum,
+                                                   const char *str)
+{
+    std::string prefix(get_term_prefix(partnum));
+    std::string_view s(str);
+
+    if (s.empty() || !isdigit(s.front()))
+        return NULL;
+
+    // Remove trailing wildcard character, if any.
+    bool is_wildcard = false;
+    if (s.back() == '*') {
+        is_wildcard = true;
+        s.remove_suffix(1);
+    }
+
+    // Split number in whole number and fractional part.
+    // Determine thousands separator character, if any.
+    std::string_view num = s;
+    std::string_view frac; // starts with decimal point
+    char thd_sep = 0;      // thousands separator
+    size_t i = s.find_last_of(".,");
+    if (i != std::string_view::npos) {
+        size_t j = s.substr(0, i).find_last_of(".,");
+        if (j != std::string_view::npos) {
+            if (s[i] != s[j]) {
+                num = s.substr(0, i);
+                frac = s.substr(i);
+            }
+            thd_sep = s[j];
+        }
+        else {
+            num = s.substr(0, i);
+            frac = s.substr(i);
+        }
+    }
+
+    // Validate fractional part.
+    if (!frac.empty()) {
+        // Fractional part may just be the wildcard.
+        if (frac.size() < 2 && !is_wildcard) {
+            return NULL;
+        }
+        // Or it must be one or more digits.
+        for (size_t i = 1; i < frac.size(); ++i) {
+            if (!isdigit(frac[i])) return NULL;
+        }
+    }
+
+    // Validate whole number part.
+    if (thd_sep) {
+        // First thousands separator must be preceeded
+        // by at least one and at most three digits.
+        size_t first = num.find(thd_sep);
+        if (first < 1 || first > 3) {
+            return NULL;
+        }
+        for (size_t i = 0; i < first; ++i) {
+            if (!isdigit(num[i])) return NULL;
+        }
+        // Last thousands separator must be followed
+        // by three digits, or less than three digits
+        // and the wildcard.
+        size_t last = num.rfind(thd_sep);
+        if (num.size() - last != 4
+            || (num.size() - last < 4 && (!is_wildcard || !frac.empty())))
+        {
+            return NULL;
+        }
+        for (size_t i = last + 1; i < num.size(); ++i) {
+            if (!isdigit(num[i])) return NULL;
+        }
+        // All quadruplets between the first and the last
+        // thousands separator must start with the separator,
+        // followed by three digits.
+        for (size_t i = first; i < last; i += 4) {
+            if (last - i < 4 || num[i] != thd_sep) {
+                return NULL;
+            }
+            for (size_t j = i + 1; j < i + 4; ++j) {
+                if (!isdigit(num[j])) return NULL;
+            }
+        }
+    }
+    else {
+        // No thousands separator detected, the whole number must
+        // not be empty and must only contain digits.
+        if (num.empty()) {
+            return NULL;
+        }
+        for (size_t i = 0; i < num.size(); ++i) {
+            if (!isdigit(num[i])) return NULL;
+        }
+    }
+
+    // The input string is a number, now build the query terms.
+    std::vector<std::string> terms;
+    std::string barenum; // whole number without thousand separator
+    for (size_t i = 0; i < num.size(); i++) {
+        if (isdigit(num[i])) barenum.push_back(num[i]);
+    }
+
+    // Format number without thousands separator.
+    if (frac.size()) {
+        std::string term = prefix + barenum;
+        size_t n = term.size();
+        term.append(frac);
+        term[n] = '.';
+        terms.push_back(term);
+        term[n] = ',';
+        terms.push_back(term);
+    }
+    else {
+        terms.push_back(prefix + barenum);
+    }
+
+    // Format number with thousands separator.
+    if (barenum.size() > 3) {
+        for (char sep : { '.', ',' }) {
+            std::string term = prefix;
+            size_t count = 0;
+            for (size_t i = barenum.size(); i > 0; --i) {
+                if (count == 3) {
+                    term.push_back(sep);
+                    count = 0;
+                }
+                term.push_back(barenum[i - 1]);
+                count++;
+            }
+            std::reverse(term.begin(), term.end());
+            if (frac.size()) {
+                size_t n = term.size();
+                term.append(frac);
+                term[n] = sep == '.' ? ',' : '.';
+            }
+            terms.push_back(term);
+        }
+    }
+
+    // Build query from terms.
+    Xapian::Query q;
+    for(const std::string &t: terms) {
+        q |= is_wildcard ? Xapian::Query(Xapian::Query::OP_WILDCARD, t)
+                         : Xapian::Query(t);
+    }
+    return new Xapian::Query(q);
+}
+
 static Xapian::Query *xapian_query_new_match_internal(const xapian_db_t *db,
                                                       enum search_part partnum,
                                                       const char *str,
                                                       int convert_flags)
 {
     charset_t utf8 = charset_lookupname("utf-8");
-    char *mystr = charset_convert(str, utf8, convert_flags);
+    struct buf buf = BUF_INITIALIZER;
+    buf_init_ro_cstr(&buf, str);
+    buf_trim(&buf);
+    char *mystr = charset_convert(buf_cstring(&buf), utf8, convert_flags);
     charset_free(&utf8);
+    buf_free(&buf);
     if (!mystr) return NULL;
 
-    static Xapian::Query *q = NULL;
+    static Xapian::Query *q = NULL; // FIXME static????
 
     try {
         // Handle special value search parts.
@@ -2010,6 +2219,13 @@ static Xapian::Query *xapian_query_new_match_internal(const xapian_db_t *db,
             q = query_new_messageid(db, partnum, mystr);
         }
         else {
+            if (isdigit(mystr[0])) {
+                // Try parsing the query string as a number.
+                q = xapian_query_new_numbermatch(partnum, mystr);
+                if (q) goto done;
+                // Fall through handling it as arbitrary text.
+            }
+
             // Match unstructured search parts
             int need_word_break = 0;
             for (const unsigned char *p = (const unsigned char *)mystr; *p; p++) {
@@ -2040,6 +2256,7 @@ static Xapian::Query *xapian_query_new_match_internal(const xapian_db_t *db,
                          err.get_description().c_str());
     }
 
+done:
     free(mystr);
     return q;
 }
@@ -2311,6 +2528,13 @@ EXPORTED int xapian_query_run(const xapian_db_t *db, const xapian_query_t *qq,
     return r;
 }
 
+EXPORTED void xapian_query_serialize(xapian_query_t *xq, struct buf *buf)
+{
+    if (!xq) return;
+    const Xapian::Query *query = (const Xapian::Query *)xq;
+    buf_appendcstr(buf, query->get_description().c_str());
+}
+
 /* ====================================================================== */
 
 struct xapian_snipgen
@@ -2320,6 +2544,7 @@ struct xapian_snipgen
     Xapian::Database *memdb;
     std::vector<std::string> *loose_terms;
     std::vector<std::string> *queries;
+    std::vector<Xapian::Query> *numbers;
     char *cyrusid;
     char doctype;
     struct buf *buf;
@@ -2351,6 +2576,7 @@ EXPORTED void xapian_snipgen_free(xapian_snipgen_t *snipgen)
     delete snipgen->default_stemmer;
     delete snipgen->loose_terms;
     delete snipgen->queries;
+    delete snipgen->numbers;
     delete snipgen->memdb;
     free(snipgen->cyrusid);
     buf_destroy(snipgen->buf);
@@ -2403,17 +2629,34 @@ static Xapian::Query xapian_snipgen_build_query(xapian_snipgen_t *snipgen, Xapia
         }
     }
 
+    if (snipgen->numbers) {
+        for(size_t i = 0; i < snipgen->numbers->size(); ++i) {
+            q |= (*snipgen->numbers)[i];
+        }
+    }
+
     return q;
 }
 
 EXPORTED int xapian_snipgen_add_match(xapian_snipgen_t *snipgen,
                                       const char *match)
 {
-    size_t len = strlen(match);
+    struct buf buf = BUF_INITIALIZER;
+    buf_init_ro_cstr(&buf, match);
+    buf_trim(&buf);
+    match = buf_cstring(&buf);
+    size_t len = buf_len(&buf);
     bool is_query = len > 1 && ((match[0] == '"' && match[len-1] == '"') ||
                                 (strchr(match, '*') != NULL));
 
-    if (is_query) {
+    if (Xapian::Query *q = xapian_query_new_numbermatch(SEARCH_PART_BODY, match)) {
+        if (!snipgen->numbers) {
+            snipgen->numbers = new std::vector<Xapian::Query>;
+        }
+        snipgen->numbers->push_back(*q);
+        delete q;
+    }
+    else if (is_query) {
         if (!snipgen->queries) {
             snipgen->queries = new std::vector<std::string>;
         }
@@ -2425,6 +2668,7 @@ EXPORTED int xapian_snipgen_add_match(xapian_snipgen_t *snipgen,
         snipgen->loose_terms->push_back(match);
     }
 
+    buf_free(&buf);
     return 0;
 }
 
@@ -2486,7 +2730,7 @@ EXPORTED int xapian_snipgen_doc_part(xapian_snipgen_t *snipgen,
                                      const struct buf *part)
 {
     // Ignore empty queries.
-    if (!snipgen->loose_terms && !snipgen->queries) return 0;
+    if (!snipgen->loose_terms && !snipgen->queries && !snipgen->numbers) return 0;
 
     // Don't exceed allowed snippet length.
     if (buf_len(snipgen->buf) >= snipgen->max_len) return 0;
@@ -2540,6 +2784,9 @@ EXPORTED int xapian_snipgen_end_doc(xapian_snipgen_t *snipgen, struct buf *buf)
 
     delete snipgen->queries;
     snipgen->queries = NULL;
+
+    delete snipgen->numbers;
+    snipgen->numbers = NULL;
 
     free(snipgen->cyrusid);
     snipgen->cyrusid = NULL;

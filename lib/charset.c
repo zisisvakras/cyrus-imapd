@@ -1,46 +1,9 @@
-/* charset.c -- International character set support
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* charset.c -- International character set support */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -85,6 +48,7 @@ EXPORTED void charset_lib_done(void)
 #define unicode_isvalid(c) \
         (!((c >= 0xd800 && c <= 0xdfff) || ((unsigned)c > 0x10ffff)))
 
+// clang-format: off
 static const char QPSAFECHAR[256] = {
 /* control chars are unsafe */
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -108,6 +72,7 @@ static const char QPSAFECHAR[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+// clang-format: on
 
 struct qp_state {
     int isheader;
@@ -284,6 +249,7 @@ static const char *convert_name(struct convert_rock *rock);
 /*
  * Table for decoding hexadecimal in quoted-printable
  */
+// clang-format: off
 static const unsigned char index_hex[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
@@ -302,11 +268,13 @@ static const unsigned char index_hex[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
 };
+// clang-format: on
 #define HEXCHAR(c)  (index_hex[(unsigned char)(c)])
 
 /*
  * Table for decoding base64
  */
+// clang-format: off
 static const char index_64[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XS,XS,XX, XX,XS,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
@@ -325,10 +293,12 @@ static const char index_64[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
 };
+// clang-format: on
 
 /*
  * Table for decoding base64url
  */
+// clang-format: off
 static const char index_64url[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XS,XS,XX, XX,XS,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
@@ -347,6 +317,31 @@ static const char index_64url[256] = {
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
     XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
 };
+// clang-format: on
+
+/*
+ * Table for decoding base64jmapid
+ */
+// clang-format: off
+static const char index_64jmapid[256] = {
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XS,XS,XX, XX,XS,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XS,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX, 0,XX,XX,
+     1, 2, 3, 4,  5, 6, 7, 8,  9,10,XX,XX, XX,64,XX,XX,
+    XX,11,12,13, 14,15,16,17, 18,19,20,21, 22,23,24,25,
+    26,27,28,29, 30,31,32,33, 34,35,36,XX, XX,XX,XX,37,
+    XX,38,39,40, 41,42,43,44, 45,46,47,48, 49,50,51,52,
+    53,54,55,56, 57,58,59,60, 61,62,63,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+    XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX, XX,XX,XX,XX,
+};
+// clang-format: on
 #define CHAR64(c, index)  (index[(unsigned char)(c)])
 
 EXPORTED int encoding_lookupname(const char *s)
@@ -374,6 +369,8 @@ EXPORTED int encoding_lookupname(const char *s)
             return ENCODING_BASE64;
         if (!strcasecmp(s, "BASE64URL"))
             return ENCODING_BASE64URL;
+        if (!strcasecmp(s, "BASE64JMAPID"))
+            return ENCODING_BASE64JMAPID;
         if (!strcasecmp(s, "BINARY"))
             return ENCODING_NONE;
         break;
@@ -405,6 +402,7 @@ EXPORTED const char *encoding_name(int encoding)
     case ENCODING_QP: return "QUOTED-PRINTABLE";
     case ENCODING_BASE64: return "BASE64";
     case ENCODING_BASE64URL: return "BASE64URL";
+    case ENCODING_BASE64JMAPID: return "BASE64JMAPID";
     case ENCODING_UNKNOWN: return "UNKNOWN";
     default: return "WTF";
     }
@@ -574,7 +572,7 @@ static int b64_flush(struct convert_rock *rock)
 {
     struct b64_state *s = (struct b64_state *)rock->state;
     if (s->invalid) {
-        if (s->index == index_64url)
+        if (s->index != index_64)
             return -1;
         else
             xsyslog(LOG_WARNING, "ignoring invalid base64 characters", NULL);
@@ -1061,6 +1059,7 @@ static void uni2utf8(struct convert_rock *rock, uint32_t c)
      * defined last valid codepoint is 0x10ffff so we only handle that
      * range. */
 
+    // clang-format: off
     if (c > 0xffff) {
         convert_putc(rock->next, 0xF0 + ((c >> 18) & 0x07));
         convert_putc(rock->next, 0x80 + ((c >> 12) & 0x3f));
@@ -1079,6 +1078,7 @@ static void uni2utf8(struct convert_rock *rock, uint32_t c)
     else {
         convert_putc(rock->next, c);
     }
+    // clang-format: on
 }
 
 /* Given an octet which is a codepoint in some 7bit or 8bit character
@@ -2172,6 +2172,130 @@ static void convert_ncleanup(struct convert_rock *rock, int n, int is_free) {
 }
 #define convert_free(rock) convert_ncleanup(rock, 0, 1)
 
+struct iso2022jp_state {
+    uint32_t seq[6];
+    size_t len;
+};
+
+static int iso2022jp_flush(struct convert_rock *rock)
+{
+    struct iso2022jp_state *state = rock->state;
+
+    for (size_t i = 0; i < state->len; i++)
+        convert_putc(rock->next, state->seq[i]);
+
+    state->len = 0;
+    return 0;
+}
+
+static void iso2022jp_convert(struct convert_rock *rock, uint32_t c)
+{
+    /*
+     * The ISO-2022-JP encoding is defined as segments of
+     * one-byte or two-byte characters, see RFC 1468.
+     * Segments start with escape sequences.
+     *
+     * One-byte character segments start with the sequence:
+     * ESC "(" ( "B" / "J" )
+     *
+     * Two-byte character segments start with the sequence:
+     * ESC "$" ( "@" / "B" )
+     *
+     * A segment must not be empty, that is: an escape sequence
+     * must not be followed directly by other escape sequence.
+     * Unfortunately some encoders do produce empty segments,
+     * e.g. they produce bytes such as
+     *
+     * ESC "(" "B" ESC "$" "@"
+     *
+     * where the initial three bytes are useless because they
+     * are not followed by any segment data but immediately
+     * by another escape sequence.
+     *
+     * The ICU library emits a REPLACEMENT character for any
+     * empty segment and this is by design:
+     * https://unicode-org.atlassian.net/browse/ICU-6175
+     * But we don't want those REPLACEMENT characters and
+     * cross-checking with iconv, Java and Go shows that
+     * ignoring empty segments is an equally fine choice.
+     *
+     * In this function, we keep track of up to the last 6 bytes
+     * and check if they represent two escape sequences. If so,
+     * we simply discard the first sequence from the byte stream,
+     * thus prevent ICU from inserting a REPLACEMENT character.
+     */
+
+    struct iso2022jp_state *state = rock->state;
+
+    switch (state->len % 3) {
+    case 0:
+        if (c == 27) {
+            // Buffer ESC and wait for next input.
+            state->seq[state->len++] = c;
+            return;
+        }
+        break;
+    case 1:
+        if (c == '(' || c == '$') {
+            // Buffer byte and wait for next input.
+            state->seq[state->len++] = c;
+            return;
+        }
+        break;
+    case 2:
+        if (c == 'B' || (c == 'J' && state->seq[state->len - 1] == '(')
+            || (c == '@' && state->seq[state->len - 1] == '$'))
+        {
+            // This byte finishes a sequence.
+            if (state->len == 5) {
+                // Discard the first sequence, move the second
+                // sequence to the start of the buffer.
+                state->seq[0] = state->seq[3];
+                state->seq[1] = state->seq[4];
+                state->seq[2] = c;
+                state->len = 3;
+            }
+            else {
+                // Buffer byte and wait for next input.
+                state->seq[state->len++] = c;
+            }
+            return;
+        }
+        break;
+    }
+
+    // Codepoint c is not part of a sequence.
+    iso2022jp_flush(rock);
+    convert_putc(rock->next, c);
+}
+
+static void iso2022jp_cleanup(struct convert_rock *rock, int is_free)
+{
+    if (!rock || !rock->state) return;
+
+    struct iso2022jp_state *state = rock->state;
+    if (is_free) {
+        free(state);
+        free(rock);
+    }
+    else {
+        state->len = 0;
+    }
+}
+
+static struct convert_rock *iso2022jp_init(struct convert_rock *next)
+{
+    struct convert_rock *rock = xzmalloc(sizeof(struct convert_rock));
+    struct iso2022jp_state *state = xzmalloc(sizeof(struct iso2022jp_state));
+
+    rock->f = iso2022jp_convert;
+    rock->flush = iso2022jp_flush;
+    rock->cleanup = iso2022jp_cleanup;
+    rock->next = next;
+    rock->state = state;
+    return rock;
+}
+
 struct ucharbuf {
     UChar *s;
     int32_t len;
@@ -2348,7 +2472,12 @@ static struct convert_rock *b64_init(struct convert_rock *next, int enc)
 {
     struct convert_rock *rock = xzmalloc(sizeof(struct convert_rock));
     struct b64_state *state = xzmalloc(sizeof(struct b64_state));
-    state->index = enc == ENCODING_BASE64URL ? index_64url : index_64;
+    if (enc == ENCODING_BASE64JMAPID)
+        state->index = index_64jmapid;
+    else if (enc == ENCODING_BASE64URL)
+        state->index = index_64url;
+    else
+        state->index = index_64;
     rock->state = state;
     rock->f = b64_2byte;
     rock->flush = b64_flush;
@@ -2404,6 +2533,11 @@ static struct convert_rock *convert_init(struct charset_charset *s,
     } else {
         table_reset(rock, to_uni);
     } 
+
+    if (to_uni && !strcmpsafe("iso-2022-jp", charset_canon_name(s))) {
+        // See iso2022jp_convert for more info.
+        rock = iso2022jp_init(rock);
+    }
 
     return rock;
 }
@@ -2503,10 +2637,17 @@ struct convert_rock *striphtml_init(int flags, struct convert_rock *next)
     return rock;
 }
 
-static int convert_to_name(struct buf *dst,
-                           const char *to_name,
-                           charset_t charset,
-                           const char *src, size_t len)
+enum fastpath_result {
+    FASTPATH_SUCCESS,
+    FASTPATH_ERROR,
+    FASTPATH_UNSUPPORTED,
+};
+
+static enum fastpath_result convert_fastpath(struct buf *dst,
+                                             const char *to_name,
+                                             charset_t charset,
+                                             const char *src,
+                                             size_t len)
 {
     UErrorCode err = U_ZERO_ERROR;
     const char *from;
@@ -2515,11 +2656,16 @@ static int convert_to_name(struct buf *dst,
     /* determine the name of the source encoding */
     from = charset_canon_name(charset);
 
+    if (!strcmpsafe("iso-2022-jp", from)) {
+        // See iso2022jp_convert for more info.
+        return FASTPATH_UNSUPPORTED;
+    }
+
     /* allocate the target buffer */
     /* we preflight to compromise between memory and runtime efficiency */
     n = ucnv_convert(to_name, from, dst->s, 0, src, len, &err) + 1;
     if (err != U_BUFFER_OVERFLOW_ERROR)
-        return -1;
+        return FASTPATH_ERROR;
 
     /* ucnv_convert return value includes size with NUL byte */
     if (n < 2) {
@@ -2533,12 +2679,12 @@ static int convert_to_name(struct buf *dst,
     err = U_ZERO_ERROR;
     ucnv_convert(to_name, from, dst->s, n, src, len, &err);
     if (U_FAILURE(err)) {
-        return -1;
+        return FASTPATH_ERROR;
     }
 
     buf_truncate(dst, n - 1);
     buf_cstring(dst);
-    return 0;
+    return FASTPATH_SUCCESS;
 }
 
 static charset_t lookup_buf(const char *buf, size_t len)
@@ -2555,6 +2701,7 @@ static charset_t lookup_buf(const char *buf, size_t len)
 /* of course = and _ are not included in the set, because they themselves
    need to be quoted it’s just saying they can be present in the Q wordi
    itself, because they’re part of the quoting system */
+// clang-format: off
 static const char QPMIMEPHRASESAFECHAR[256] = {
 /* control chars are unsafe */
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -2582,6 +2729,7 @@ static const char QPMIMEPHRASESAFECHAR[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+// clang-format: on
 
 
 /* API */
@@ -2795,11 +2943,18 @@ EXPORTED char *charset_to_imaputf7(const char *msg_base, size_t len, charset_t c
     /* check if we can convert the whole block at once */
     if (encoding == ENCODING_NONE) {
         struct buf buf = BUF_INITIALIZER;
-        if (convert_to_name(&buf, "imap-mailbox-name", charset, msg_base, len) < 0) {
+        switch (
+            convert_fastpath(&buf, "imap-mailbox-name", charset, msg_base, len))
+        {
+        case FASTPATH_SUCCESS:
+            return buf_release(&buf);
+        case FASTPATH_ERROR:
             buf_free(&buf);
             return NULL;
+        case FASTPATH_UNSUPPORTED:
+            // Take slow path.
+            break;
         }
-        else return buf_release(&buf);
     }
 
     /* set up the conversion path */
@@ -2819,6 +2974,7 @@ EXPORTED char *charset_to_imaputf7(const char *msg_base, size_t len, charset_t c
 
         case ENCODING_BASE64:
         case ENCODING_BASE64URL:
+        case ENCODING_BASE64JMAPID:
             input = b64_init(input, encoding);
             /* XXX have to have nl-mapping base64 in order to
              * properly count \n as 2 raw characters
@@ -2956,7 +3112,15 @@ EXPORTED int charset_to_utf8(struct buf *dst, const char *src, size_t len, chars
 
     /* check if we can convert the whole block at once */
     if (encoding == ENCODING_NONE) {
-        return convert_to_name(dst, "utf-8", charset, src, len);
+        switch (convert_fastpath(dst, "utf-8", charset, src, len)) {
+        case FASTPATH_SUCCESS:
+            return 0;
+        case FASTPATH_ERROR:
+            return -1;
+        case FASTPATH_UNSUPPORTED:
+            // Take slow path.
+            break;
+        }
     }
 
     /* set up the conversion path */
@@ -2978,6 +3142,7 @@ EXPORTED int charset_to_utf8(struct buf *dst, const char *src, size_t len, chars
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         input = b64_init(input, encoding);
         /* XXX have to have nl-mapping base64 in order to
          * properly count \n as 2 raw characters
@@ -3040,6 +3205,7 @@ EXPORTED int charset_decode(struct buf *dst, const char *src, size_t len, int en
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         input = b64_init(input, encoding);
         /* XXX have to have nl-mapping base64 in order to
          * properly count \n as 2 raw characters
@@ -3063,8 +3229,25 @@ static void encode_b64(struct buf *dst, const char *src, size_t len, int encodin
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     static const char b64url[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    const char *b64 = encoding == ENCODING_BASE64URL ? b64url : b64std;
-    char pad = encoding == ENCODING_BASE64URL ? '\0' : '=';
+    static const char b64jmapid[] =
+        "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+    const char *b64;
+    char pad;
+
+    switch (encoding) {
+    case ENCODING_BASE64JMAPID:
+        b64 = b64jmapid;
+        pad = '\0';
+        break;
+    case ENCODING_BASE64URL:
+        b64 = b64url;
+        pad = '\0';
+        break;
+    default:
+        b64 = b64std;
+        pad = '=';
+        break;
+    }
 
     const uint8_t *s = (uint8_t*)src;
     size_t r = len;
@@ -3094,15 +3277,18 @@ static void encode_b64(struct buf *dst, const char *src, size_t len, int encodin
 
 EXPORTED int charset_encode(struct buf *dst, const char *src, size_t len, int encoding)
 {
-    if (encoding == ENCODING_NONE) {
+    switch (encoding) {
+    case ENCODING_NONE:
         buf_setmap(dst, src, len);
         return 0;
-    }
-    else if (encoding == ENCODING_BASE64 || encoding == ENCODING_BASE64URL) {
+
+    case ENCODING_BASE64:
+    case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         encode_b64(dst, src, len, encoding);
         return 0;
-    }
-    else if (encoding == ENCODING_QP) {
+
+    case ENCODING_QP: {
         size_t outlen = 0;
         char *val = charset_qpencode_mimebody(src, len, 0, &outlen);
         if (val && outlen)
@@ -3110,7 +3296,10 @@ EXPORTED int charset_encode(struct buf *dst, const char *src, size_t len, int en
         free(val);
         return 0;
     }
-    else return -1;
+
+    default:
+        return -1;
+    }
 }
 
 /* Decode bytes from src to sha1 of bytes */
@@ -3140,6 +3329,7 @@ EXPORTED int charset_decode_sha1(uint8_t dest[SHA1_DIGEST_LENGTH], size_t *decod
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         input = b64_init(input, encoding);
         /* XXX have to have nl-mapping base64 in order to
          * properly count \n as 2 raw characters
@@ -3606,6 +3796,7 @@ EXPORTED int charset_searchfile(const char *substr, comp_pat *pat,
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         input = b64_init(input, encoding);
         /* XXX have to have nl-mapping base64 in order to
          * properly count \n as 2 raw characters
@@ -3684,6 +3875,7 @@ EXPORTED int charset_extract(int (*cb)(const struct buf *, void *),
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         input = b64_init(input, encoding);
         /* XXX have to have nl-mapping base64 in order to
          * properly count \n as 2 raw characters
@@ -3754,6 +3946,7 @@ EXPORTED const char *charset_decode_mimebody(const char *msg_base, size_t len, i
 
     case ENCODING_BASE64:
     case ENCODING_BASE64URL:
+    case ENCODING_BASE64JMAPID:
         tobuffer = buffer_init(len);
         input = b64_init(tobuffer, encoding);
         break;
@@ -4143,6 +4336,28 @@ static char *encode_addrheader(const char *header, size_t len, int force_quote,
         if (phrase_len) {
             /* display-name precedes address */
             const char *phrase = header + n;
+
+            /* if phrase and address is separated by ','
+             * then header isn't a valid address list */
+            if (memchr(phrase, ',', addr - phrase)) {
+                // check if comma is within a quoted-string
+                const char *qstart = phrase;
+                while (strchr(" \t", *qstart))
+                    qstart++;
+
+                const char *qend = phrase + phrase_len - 1;
+                while (strchr(" \t", *qend))
+                    qend--;
+
+                if (*qstart != '"' || *qend != '"'
+                    || memchr(qstart + 1, '"', qend - qstart - 1))
+                {
+                    // this isn't a quoted string
+                    buf_free(&buf);
+                    break;
+                }
+            }
+
             int need_encode = 0, need_bytes = phrase_len;
             const char *c;
 
@@ -4189,14 +4404,24 @@ static char *encode_addrheader(const char *header, size_t len, int force_quote,
 
     } while ((addr = find_addr(header + n , len - n, &addr_len)));
 
-    return buf_release(&buf);
+    if (n < len) {
+        // this isn't a valid address-list header
+        buf_free(&buf);
+    }
+
+    return buf_releasenull(&buf);
 }
 
-/* "Q" encode the header field body (per RFC 2047) of 'len' bytes
- * located at 'header'.
- * Returns a buffer which the caller must free.
- */
 EXPORTED char *charset_encode_mimeheader(const char *header, size_t len, int force_quote)
+{
+    if (!header) return NULL;
+
+    if (!len) len = strlen(header);
+
+    return qp_encode(header, len, 1, force_quote, NULL);
+}
+
+EXPORTED char *charset_encode_addrheader(const char *header, size_t len, int force_quote)
 {
     if (!header) return NULL;
 
@@ -4206,8 +4431,9 @@ EXPORTED char *charset_encode_mimeheader(const char *header, size_t len, int for
     const char *addr = find_addr(header, len, &addr_len);
 
     if (addr) {
-        /* "Q" encode as an address header */
-        return encode_addrheader(header, len, force_quote, addr, addr_len);
+        /* try to "Q" encode as an address header */
+        char *s = encode_addrheader(header, len, force_quote, addr, addr_len);
+        if (s) return s;
     }
     
     return qp_encode(header, len, 1, force_quote, NULL);
@@ -4372,6 +4598,7 @@ EXPORTED struct char_counts charset_count_validutf8(const char *data, size_t dat
     return counts;
 }
 
+// clang-format: off
 static const unsigned char hexdigit[256] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
@@ -4407,6 +4634,7 @@ static const unsigned char hexdigit[256] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 };
+// clang-format: on
 
 EXPORTED int charset_decode_percent(struct buf *dst, const char *val)
 {
@@ -4432,6 +4660,7 @@ EXPORTED int charset_decode_percent(struct buf *dst, const char *val)
     return r;
 }
 
+// clang-format: off
 const char QSTRINGCHAR[256] = {
 /* control chars 9 (TAB), 10 (LF), 13 (CR) and space (32)
  * are not permitted, all other control characters obsolete */
@@ -4456,6 +4685,7 @@ const char QSTRINGCHAR[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+// clang-format: on
 
 EXPORTED void charset_append_mime_param(struct buf *buf, unsigned flags,
                                         const char *name, const char *value)

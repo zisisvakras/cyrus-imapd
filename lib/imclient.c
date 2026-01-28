@@ -1,46 +1,9 @@
-/* imclient.c -- Streaming IMxP client library
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* imclient.c -- Streaming IMxP client library */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -60,16 +23,12 @@
 
 #include <sasl/sasl.h>
 
-#ifdef HAVE_SSL
 #include <openssl/lhash.h>
 #include <openssl/bn.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/ssl.h>
-#else
-#include <errno.h>
-#endif /* HAVE_SSL */
 
 #include "assert.h"
 #include "xmalloc.h"
@@ -147,11 +106,9 @@ struct imclient {
     sasl_conn_t *saslconn;
     int saslcompleted;
 
-#ifdef HAVE_SSL
     SSL_CTX *tls_ctx;
     SSL *tls_conn;
     int tls_on; /* whether we are under a layer or not */
-#endif /* HAVE_SSL */
 };
 
 /*
@@ -255,11 +212,9 @@ EXPORTED int imclient_connect(struct imclient **imclient,
                  "BYE", CALLBACK_NOLITERAL, (imclient_proc_t *)0, (void *)0,
                  (char *)0);
 
-#ifdef HAVE_SSL
     (*imclient)->tls_ctx=NULL;
     (*imclient)->tls_conn=NULL;
     (*imclient)->tls_on=0;
-#endif /* HAVE_SSL */
 
     if (!didinit) {
         /* attempt to start sasl */
@@ -269,7 +224,7 @@ EXPORTED int imclient_connect(struct imclient **imclient,
     }
 
   /* client new connection */
-  saslresult=sasl_client_new("imap", /* xxx ideally this should be configurable */
+  saslresult=sasl_client_new("imap", /* XXX ideally this should be configurable */
                              (*imclient)->servername,
                              NULL, NULL,
                              cbs ? cbs : callbacks,
@@ -960,17 +915,12 @@ EXPORTED void imclient_processoneevent(struct imclient *imclient)
               n=0;
           }
 
-#ifdef HAVE_SSL
           if (imclient->tls_on==1)
           {
             n = SSL_write(imclient->tls_conn, cryptptr, cryptlen);
           } else {
             n = write(imclient->fd, cryptptr, cryptlen);
           }
-#else  /* HAVE_SSL */
-          n = write(imclient->fd, cryptptr,
-                    cryptlen);
-#endif /* HAVE_SSL */
 
           if (n > 0) {
             imclient->outstart += writelen;
@@ -985,17 +935,12 @@ EXPORTED void imclient_processoneevent(struct imclient *imclient)
 
           /* No protection mechanism, just write the plaintext */
 
-#ifdef HAVE_SSL
           if (imclient->tls_on==1)
           {
             n = SSL_write(imclient->tls_conn, imclient->outstart, writelen);
           } else {
             n = write(imclient->fd, imclient->outstart, writelen);
           }
-#else  /* HAVE_SSL */
-          n = write(imclient->fd, imclient->outstart, writelen);
-#endif /* HAVE_SSL */
-
 
             if (n > 0) {
                 imclient->outstart += n;
@@ -1006,7 +951,6 @@ EXPORTED void imclient_processoneevent(struct imclient *imclient)
 
         if (FD_ISSET(imclient->fd, &rfds))
         {
-#ifdef HAVE_SSL
           /* just do a SSL read instead if we're under a tls layer */
           if (imclient->tls_on==1)
           {
@@ -1015,10 +959,6 @@ EXPORTED void imclient_processoneevent(struct imclient *imclient)
           } else {
             n = read(imclient->fd, buf, sizeof(buf));
           }
-
-#else  /* HAVE_SSL */
-          n = read(imclient->fd, buf, sizeof(buf));
-#endif /* HAVE_SSL */
 
           if (n >= 0) {
             if (n == 0) {
@@ -1067,7 +1007,6 @@ static void authresult(struct imclient *imclient __attribute__((unused)),
 }
 
 /* Command completion for starttls */
-#ifdef HAVE_SSL
 static void tlsresult(struct imclient *imclient __attribute__((unused)),
                       void *rock,
                       struct imclient_reply *reply)
@@ -1085,8 +1024,6 @@ static void tlsresult(struct imclient *imclient __attribute__((unused)),
     }
     else result->replytype = replytype_bad;
 }
-#endif /* HAVE_SSL */
-
 
 static sasl_security_properties_t *make_secprops(int min,int max)
 {
@@ -1291,7 +1228,7 @@ static int imclient_authenticate_sub(struct imclient *imclient,
   return (result.replytype != replytype_ok);
 }
 
-/* xxx service is not needed here */
+/* XXX service is not needed here */
 EXPORTED int imclient_authenticate(struct imclient *imclient,
                           char *mechlist,
                           char *service __attribute__((unused)),
@@ -1483,8 +1420,6 @@ static void imclient_writebase64(struct imclient *imclient,
 
 
 /*************** All these functions help do the starttls; these are copied from imtest.c ********/
-#ifdef HAVE_SSL
-
 static int verify_depth;
 static int verify_error = X509_V_OK;
 
@@ -1575,21 +1510,6 @@ static int verify_callback(int ok, X509_STORE_CTX * ctx)
 }
 
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-/* taken from OpenSSL apps/s_cb.c */
-static RSA *tmp_rsa_cb(SSL *s __attribute__((unused)),
-                       int export __attribute__((unused)),
-                       int keylength)
-{
-    static RSA *rsa_tmp = NULL;
-
-    if (rsa_tmp == NULL) {
-        rsa_tmp = RSA_generate_key(keylength, RSA_F4, NULL, NULL);
-    }
-    return (rsa_tmp);
-}
-#endif
-
 /*
  * Seed the random number generator.
  */
@@ -1631,11 +1551,7 @@ static int tls_init_clientengine(struct imclient *imclient,
         return -1;
     }
 
-#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
     imclient->tls_ctx = SSL_CTX_new(TLS_client_method());
-#else
-    imclient->tls_ctx = SSL_CTX_new(SSLv23_client_method());
-#endif
     if (imclient->tls_ctx == NULL) {
         return -1;
     };
@@ -1677,10 +1593,6 @@ static int tls_init_clientengine(struct imclient *imclient,
             printf("[ TLS engine: cannot load cert/key data, may be a cert/key mismatch]\n");
             return -1;
         }
-
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    SSL_CTX_set_tmp_rsa_callback(imclient->tls_ctx, tmp_rsa_cb);
-#endif
 
     verify_depth = verifydepth;
     SSL_CTX_set_verify(imclient->tls_ctx, verify_flags, verify_callback);
@@ -1866,7 +1778,7 @@ EXPORTED int tls_start_clienttls(struct imclient *imclient,
 
     sts = SSL_connect(imclient->tls_conn);
     if (sts <= 0) {
-        printf("[ SSL_connect error %d ]\n", sts); /* xxx get string error? */
+        printf("[ SSL_connect error %d ]\n", sts); /* XXX get string error? */
         session = SSL_get_session(imclient->tls_conn);
         if (session) {
             SSL_CTX_remove_session(imclient->tls_ctx, session);
@@ -1901,18 +1813,12 @@ EXPORTED int tls_start_clienttls(struct imclient *imclient,
 
     return 0;
 }
-#endif /* HAVE_SSL */
 
 EXPORTED int imclient_havetls(void)
 {
-#ifdef HAVE_SSL
     return 1;
-#else
-    return 0;
-#endif
 }
 
-#ifdef HAVE_SSL
 EXPORTED int imclient_starttls(struct imclient *imclient,
                              char *cert_file,
                              char *key_file,
@@ -1955,7 +1861,7 @@ EXPORTED int imclient_starttls(struct imclient *imclient,
 
   imclient->tls_on = 1;
 
-  auth_id=""; /* xxx this really should be peer_CN or
+  auth_id=""; /* XXX this really should be peer_CN or
                  issuer_CN but I can't figure out which is
                  which at the moment */
 
@@ -1971,14 +1877,3 @@ EXPORTED int imclient_starttls(struct imclient *imclient,
 
   return 0;
 }
-#else
-EXPORTED int imclient_starttls(struct imclient *imclient __attribute__((unused)),
-                             char *cert_file __attribute__((unused)),
-                             char *key_file __attribute__((unused)),
-                             char *CAfile __attribute__((unused)),
-                             char *CApath __attribute__((unused)))
-{
-  printf("[ TLS support not present (imclient_starttls) ]\n");
-  return 1;
-}
-#endif /* HAVE_SSL */

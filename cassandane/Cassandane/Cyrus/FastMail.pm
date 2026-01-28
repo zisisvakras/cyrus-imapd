@@ -45,12 +45,10 @@ use JSON::XS;
 use Net::CalDAVTalk 0.09;
 use Net::CardDAVTalk 0.05;
 use Net::CardDAVTalk::VCard;
-use Mail::JMAPTalk 0.12;
 use Data::Dumper;
 use Storable 'dclone';
 
-use lib '.';
-use base qw(Cassandane::Cyrus::TestCase);
+use base qw(Cassandane::Cyrus::TestCase Cassandane::Mixin::QuotaHelper);
 use Cassandane::Util::Log;
 
 use charnames ':full';
@@ -118,6 +116,7 @@ sub new
                  reverseacls => 'yes',
                  rfc3028_strict => 'no',
                  savedate => 'yes',
+                 servername => 'slot1',
                  sieve_extensions => 'fileinto reject vacation imapflags notify envelope body relational regex subaddress copy mailbox mboxmetadata servermetadata date index variables imap4flags editheader duplicate vacation-seconds fcc x-cyrus-jmapquery x-cyrus-snooze x-cyrus-log mailboxid special-use',
                  sieve_utf8fileinto => 'yes',
                  sieve_use_lmtp_reject => 'no',
@@ -210,12 +209,13 @@ sub _fmjmap_req
     my $jmap = delete $args{jmap} || $self->{jmap};
 
     my $rnum = "R" . $RNUM++;
-    my $res = $jmap->Request({methodCalls => [[$cmd, \%args, $rnum]],
-                              using => [ $self->default_using ] });
-    my $res1 = $res->{methodResponses}[0];
-    $self->assert_not_null($res1);
-    $self->assert_str_equals($rnum, $res1->[2]);
-    return $res1;
+    my $res = $jmap->CallMethods(
+        [[$cmd, \%args, $rnum]],
+        [ $self->default_using ],
+    );
+    $self->assert_not_null($res->[0]);
+    $self->assert_str_equals($rnum, $res->[0][2]);
+    return $res->[0];
 }
 
 sub _fmjmap_ok
@@ -232,30 +232,6 @@ sub _fmjmap_err
     my $res = $self->_fmjmap_req($cmd, %args);
     $self->assert_str_equals("error", $res->[0]);
     return $res->[1];
-}
-
-sub _set_quotaroot
-{
-    my ($self, $quotaroot) = @_;
-    $self->{quotaroot} = $quotaroot;
-}
-
-sub _set_quotalimits
-{
-    my ($self, %resources) = @_;
-    my $admintalk = $self->{adminstore}->get_client();
-
-    my $quotaroot = delete $resources{quotaroot} || $self->{quotaroot};
-    my @quotalist;
-    foreach my $resource (keys %resources)
-    {
-        my $limit = $resources{$resource}
-            or die "No limit specified for $resource";
-        push(@quotalist, uc($resource), $limit);
-    }
-    $self->{limits}->{$quotaroot} = { @quotalist };
-    $admintalk->setquota($quotaroot, \@quotalist);
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
 }
 
 use Cassandane::Tiny::Loader 'tiny-tests/FastMail';

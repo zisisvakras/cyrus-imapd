@@ -3,8 +3,8 @@ use Cassandane::Tiny;
 
 sub test_calendar_get_freebusy_only
     :min_version_3_5 :JMAPExtensions :NoAltNameSpace
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     xlog $self, "create other user";
@@ -13,15 +13,8 @@ sub test_calendar_get_freebusy_only
     $admintalk->setacl('user.other', admin => 'lrswipkxtecdan') or die;
     $admintalk->setacl('user.other', other => 'lrswipkxtecdn') or die;
 
-    my $service = $self->{instance}->get_service("http");
-    my $otherJmap = Mail::JMAPTalk->new(
-        user => 'other',
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
+    my $other_user = $self->{instance}->create_user_without_setup('other');
+    my $otherJmap = $other_user->jmap;
     $otherJmap->DefaultUsing([
         'urn:ietf:params:jmap:core',
         'https://cyrusimap.org/ns/jmap/calendars',
@@ -34,14 +27,8 @@ sub test_calendar_get_freebusy_only
     ]);
     $admintalk->setacl('user.other.#calendars.Default', cassandane => 'l9') or die;
 
-    $res = $jmap->ua->get($jmap->uri(), {
-        headers => {
-            'Authorization' => $jmap->auth_header(),
-        },
-        content => '',
-    });
-    $self->assert_str_equals('200', $res->{status});
-    my $session = eval { decode_json($res->{content}) };
+    my $session = $jmap->get_client_session->client_session;
+
     my $capabilities = $session->{accounts}{other}{accountCapabilities};
     $self->assert_not_null($capabilities->{'https://cyrusimap.org/ns/jmap/calendars'});
 
@@ -52,5 +39,4 @@ sub test_calendar_get_freebusy_only
         }, 'R1'],
     ]);
     $self->assert_deep_equals([], $res->[0][1]{list});
-
 }

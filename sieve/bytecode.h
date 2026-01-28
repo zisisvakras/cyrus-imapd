@@ -1,44 +1,6 @@
-/* bytecode.h -- bytecode definition
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* bytecode.h -- bytecode definition */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef SIEVE_BYTECODE_H
 #define SIEVE_BYTECODE_H
@@ -165,6 +127,7 @@ typedef union
  * <match-type: int> <relational-match: int> <collation: int>
  */
 
+// clang-format: off
 enum bytecode {
     B_STOP,
     B_KEEP_ORIG,                /* legacy keep w/o support for :flags          */
@@ -196,19 +159,19 @@ enum bytecode {
     B_UNMARK,                   /* deprecated -
                                    translated to removeflag "\\Flagged";       */
 
-    B_ADDFLAG_ORIG,	        /* legacy addflag w/o support for variables
+    B_ADDFLAG_ORIG,             /* legacy addflag w/o support for variables
 
                                    require "imap4flags"
 
                                    <flag-list: string-list>                    */
 
-    B_SETFLAG_ORIG,	        /* legacy setflag w/o support for variables
+    B_SETFLAG_ORIG,             /* legacy setflag w/o support for variables
 
                                    require "imap4flags"
 
                                    <flag-list: string-list>                    */
 
-    B_REMOVEFLAG_ORIG,	        /* legacy removeflag w/o support for variables
+    B_REMOVEFLAG_ORIG,          /* legacy removeflag w/o support for variables
 
                                    require "imap4flags"
 
@@ -456,7 +419,9 @@ enum bytecode {
     /*****  insert new actions above this line  *****/
     B_ILLEGAL_VALUE             /* any value >= this code is illegal */
 };
+// clang-format: on
 
+// clang-format: off
 enum bytecode_comps {
     BC_FALSE,
     BC_TRUE,
@@ -594,6 +559,7 @@ enum bytecode_comps {
     /*****  insert new tests above this line  *****/
     BC_ILLEGAL_VALUE    /* any value >= this code is illegal */
 };
+// clang-format: on
 
 /* currently one enum so as to help determine where values are being misused.
  * we have left placeholders incase we need to add more later to the middle */
@@ -732,13 +698,13 @@ enum bytecode_cal_bitflags {
 };
 
 enum bytecode_variables_bitflags {
-    BFV_LOWER	        = 1<<0,
-    BFV_UPPER	        = 1<<1,
+    BFV_LOWER           = 1<<0,
+    BFV_UPPER           = 1<<1,
     BFV_LOWERFIRST      = 1<<2,
     BFV_UPPERFIRST      = 1<<3,
     BFV_QUOTEWILDCARD   = 1<<4,
-    BFV_ENCODEURL	= 1<<5,
-    BFV_LENGTH		= 1<<6,
+    BFV_ENCODEURL       = 1<<5,
+    BFV_LENGTH          = 1<<6,
     BFV_QUOTEREGEX      = 1<<7
 };
 

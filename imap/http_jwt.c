@@ -1,45 +1,6 @@
-/* http_jwt.c - HTTP JSON Web Token authentication
- *
- * Copyright (c) 1994-2021 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_jwt.c - HTTP JSON Web Token authentication */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -60,8 +21,6 @@
 #include "imap/http_err.h"
 
 #include "http_jwt.h"
-
-#ifdef HAVE_SSL
 
 #include <openssl/err.h>
 
@@ -123,15 +82,8 @@ static EVP_PKEY *read_public_key(struct buf *pem)
     EVP_PKEY *pkey = PEM_read_bio_PUBKEY(bp, NULL, NULL, NULL);
 
     if (pkey) {
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
         if (!EVP_PKEY_is_a(pkey, "RSA")) {
             xsyslog(LOG_ERR, "Unsupported public key", NULL);
-#else
-        int nid = EVP_PKEY_base_id(pkey);
-        if (nid != EVP_PKEY_RSA) {
-            xsyslog(LOG_ERR, "Unsupported public key",
-                    "type=<%s>", OBJ_nid2ln(nid));
-#endif
             EVP_PKEY_free(pkey);
             pkey = NULL;
         }
@@ -240,6 +192,9 @@ HIDDEN int http_jwt_init(const char *keydir, int age)
 {
     http_jwt_reset();
 
+#ifndef HAVE_FTS
+    return 0;
+#else
     int r = -1;
 
     char *paths[2] = { (char *) keydir, NULL };
@@ -284,6 +239,7 @@ done:
     if (fts) fts_close(fts);
     if (r) http_jwt_reset();
     return r;
+#endif /* HAVE_FTS */
 }
 
 HIDDEN int http_jwt_is_enabled(void)
@@ -331,16 +287,11 @@ static int validate_pkey_type(struct jwt *jwt, EVP_PKEY *pkey)
     if (!jwt->nid)
         return 0;
 
-#if OPENSSL_VERSION_NUMBER >= 0x30000000L
     if (jwt->nid == EVP_PKEY_HMAC && EVP_PKEY_is_a(pkey, "HMAC"))
         return 1;
 
     if (jwt->nid == EVP_PKEY_RSA && EVP_PKEY_is_a(pkey, "RSA"))
         return 1;
-#else
-    if (jwt->nid == EVP_PKEY_base_id(pkey))
-        return 1;
-#endif
 
     return 0;
 }
@@ -609,26 +560,3 @@ done:
     buf_free(&jwt.buf);
     return status;
 }
-
-#else /* !HAVE_SSL */
-
-int http_jwt_init(const char *keydir __attribute__((unused)),
-                  int max_age __attribute__((unused)))
-{
-    return 0;
-}
-
-int http_jwt_reset(void) { return 0; }
-
-int http_jwt_is_enabled(void) { return 0; }
-
-int http_jwt_auth(const char *in __attribute__((unused)),
-                  size_t inlen __attribute__((unused)),
-                  char *out __attribute__((unused)),
-                  size_t outlen __attribute__((unused)))
-{
-    xsyslog(LOG_INFO, "JSON Web Token authentication is disabled", NULL);
-    return SASL_BADAUTH;
-}
-
-#endif /* HAVE_SSL */

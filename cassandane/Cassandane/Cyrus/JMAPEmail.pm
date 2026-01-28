@@ -44,7 +44,6 @@ use DateTime;
 use JSON::XS;
 use Net::CalDAVTalk 0.09;
 use Net::CardDAVTalk 0.03;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use Storable 'dclone';
 use MIME::Base64 qw(encode_base64);
@@ -52,8 +51,7 @@ use Cwd qw(abs_path getcwd);
 use URI;
 use URI::Escape;
 
-use lib '.';
-use base qw(Cassandane::Cyrus::TestCase);
+use base qw(Cassandane::Cyrus::TestCase Cassandane::Mixin::QuotaHelper);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
 
@@ -113,6 +111,18 @@ sub set_up
 {
     my ($self) = @_;
     $self->SUPER::set_up();
+
+    # Tests with :NoStartInstances will need to setup default using
+    # themselves
+    if ($self->{jmap}) {
+        $self->setup_default_using();
+    }
+}
+
+sub setup_default_using
+{
+    my ($self) = @_;
+
     $self->{jmap}->DefaultUsing([
         'urn:ietf:params:jmap:core',
         'urn:ietf:params:jmap:mail',
@@ -146,21 +156,7 @@ sub get_account_capabilities
     my $Request;
     my $Response;
 
-    xlog $self, "get session";
-    $Request = {
-        headers => {
-            'Authorization' => $jmap->auth_header(),
-        },
-        content => '',
-    };
-    $Response = $jmap->ua->get($jmap->uri(), $Request);
-    if ($ENV{DEBUGJMAP}) {
-        warn "JMAP " . Dumper($Request, $Response);
-    }
-    $self->assert_str_equals('200', $Response->{status});
-
-    my $session;
-    $session = eval { decode_json($Response->{content}) } if $Response->{success};
+    my $session = $jmap->get_client_session->client_session;
 
     return $session->{accounts}{cassandane}{accountCapabilities};
 }
@@ -173,15 +169,8 @@ sub defaultprops_for_email_get
 sub download
 {
     my ($self, $accountid, $blobid) = @_;
-    my $jmap = $self->{jmap};
 
-    my $uri = $jmap->downloaduri($accountid, $blobid);
-    my %Headers;
-    $Headers{'Authorization'} = $jmap->auth_header();
-    my %getopts = (headers => \%Headers);
-    my $res = $jmap->ua->get($uri, \%getopts);
-    xlog $self, "JMAP DOWNLOAD @_ " . Dumper($res);
-    return $res;
+    $self->{jmap}->Download($accountid, $blobid);
 }
 
 sub email_query_window_internal
@@ -206,9 +195,6 @@ sub email_query_window_internal
     ];
 
     my $imaptalk = $self->{store}->get_client();
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     xlog $self, "generating email A";
     $exp{A} = $self->make_message("Email A");
@@ -359,30 +345,6 @@ sub email_query_window_internal
     if ($params{calculateTotal}) {
         $self->assert_num_equals(4, $res->[0][1]->{total});
     }
-}
-
-sub _set_quotaroot
-{
-    my ($self, $quotaroot) = @_;
-    $self->{quotaroot} = $quotaroot;
-}
-
-sub _set_quotalimits
-{
-    my ($self, %resources) = @_;
-    my $admintalk = $self->{adminstore}->get_client();
-
-    my $quotaroot = delete $resources{quotaroot} || $self->{quotaroot};
-    my @quotalist;
-    foreach my $resource (keys %resources)
-    {
-        my $limit = $resources{$resource}
-            or die "No limit specified for $resource";
-        push(@quotalist, uc($resource), $limit);
-    }
-    $self->{limits}->{$quotaroot} = { @quotalist };
-    $admintalk->setquota($quotaroot, \@quotalist);
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
 }
 
 use Cassandane::Tiny::Loader 'tiny-tests/JMAPEmail';

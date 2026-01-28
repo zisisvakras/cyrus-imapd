@@ -1,44 +1,6 @@
-/* mboxlist.c -- Mailbox list manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mboxlist.c -- Mailbox list manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -61,6 +23,7 @@
 
 #include "acl.h"
 #include "annotate.h"
+#include "auditlog.h"
 #include "bsearch.h"
 #include "glob.h"
 #include "assert.h"
@@ -92,12 +55,15 @@
 #define KEY_TYPE_NAME 'N'
 #define KEY_TYPE_ID   'I'
 #define KEY_TYPE_ACL  'A'
+#define KEY_TYPE_JID  'J'
 
 #define DB_DOMAINSEP_STR    "\x1D"  /* group separator (GS) */
 #define DB_DOMAINSEP_CHAR   DB_DOMAINSEP_STR[0]
 #define DB_HIERSEP_STR      "\x1F"  /* unit separator  (US) */
 #define DB_HIERSEP_CHAR     DB_HIERSEP_STR[0]
 #define DB_USER_PREFIX      "user" DB_HIERSEP_STR
+
+#define DB_RECORDSEP_CHAR   '\x1E'  /* record separator (RS) */
 
 /* n.b. mailboxes.db isn't versioned (yet) */
 
@@ -134,7 +100,7 @@ static void init_internal();
 EXPORTED mbentry_t *mboxlist_entry_create(void)
 {
     mbentry_t *ret = xzmalloc(sizeof(mbentry_t));
-    /* xxx - initialiser functions here? */
+    /* XXX - initialiser functions here? */
     return ret;
 }
 
@@ -154,6 +120,7 @@ EXPORTED mbentry_t *mboxlist_entry_copy(const mbentry_t *src)
     copy->server = xstrdupnull(src->server);
     copy->acl = xstrdupnull(src->acl);
     copy->uniqueid = xstrdupnull(src->uniqueid);
+    copy->jmapid = xstrdupnull(src->jmapid);
 
     copy->legacy_specialuse = xstrdupnull(src->legacy_specialuse);
 
@@ -193,6 +160,7 @@ EXPORTED void mboxlist_entry_free(mbentry_t **mbentryptr)
     free(mbentry->server);
     free(mbentry->acl);
     free(mbentry->uniqueid);
+    free(mbentry->jmapid);
 
     free(mbentry->legacy_specialuse);
 
@@ -267,17 +235,21 @@ EXPORTED const char *mboxlist_mbtype_to_string(uint32_t mbtype)
 }
 
 static struct dlist *mboxlist_entry_dlist(const char *dbname,
-                                          const mbentry_t *mbentry, int for_ikey)
+                                          const mbentry_t *mbentry, char key)
 {
-    struct dlist *dl = dlist_newkvlist(NULL, for_ikey ? mbentry->uniqueid : dbname);
+    char kvname[2] = { key, '\0' };
+    struct dlist *dl = dlist_newkvlist(NULL, kvname);
 
     dlist_setatom(dl, "T", mboxlist_mbtype_to_string(mbentry->mbtype));
 
-    if (for_ikey) {
+    if (key != KEY_TYPE_NAME)
         dlist_setatom(dl, "N", dbname);
-    }
-    else if (mbentry->uniqueid)
+
+    if (key != KEY_TYPE_ID)
         dlist_setatom(dl, "I", mbentry->uniqueid);
+
+    if (key != KEY_TYPE_JID)
+        dlist_setatom(dl, "J", mbentry->jmapid);
 
     if (mbentry->partition)
         dlist_setatom(dl, "P", mbentry->partition);
@@ -299,7 +271,7 @@ static struct dlist *mboxlist_entry_dlist(const char *dbname,
     if (mbentry->acl)
         dlist_stitch(dl, mailbox_acl_to_dlist(mbentry->acl));
 
-    if (for_ikey) {
+    if (key == KEY_TYPE_ID) {
         struct dlist *hl = dlist_newlist(dl, "H");
         int i;
         for (i = 0; i < mbentry->name_history.count; i++) {
@@ -431,6 +403,16 @@ static void mboxlist_id_to_key(const char *id, struct buf *key)
     buf_reset(key);
     buf_putc(key, KEY_TYPE_ID);
     buf_appendcstr(key, id);
+}
+
+static void mboxlist_jmapid_to_key(const char *userid,
+                                   const char *jid, struct buf *key)
+{
+    buf_reset(key);
+    buf_putc(key, KEY_TYPE_JID);
+    buf_appendcstr(key, userid ? userid : "");
+    buf_putc(key, DB_RECORDSEP_CHAR);
+    buf_appendcstr(key, jid);
 }
 
 /*
@@ -635,6 +617,9 @@ static int parseentry_cb(int type, struct dlistsax_data *d)
             else if (!strcmp(key, "I")) {
                 rock->mbentry->uniqueid = xstrdupnull(d->data);
             }
+            else if (!strcmp(key, "J")) {
+                rock->mbentry->jmapid = xstrdupnull(d->data);
+            }
             else if (!strcmp(key, "M")) {
                 rock->mbentry->mtime = atoi(d->data);
             }
@@ -669,6 +654,7 @@ static int parseentry_cb(int type, struct dlistsax_data *d)
  *  F: _f_oldermodseq
  *  H: name_h_istory
  *  I: unique_i_d
+ *  J: j_mapid
  *  M: _m_time
  *  N: _n_ame
  *  P: _p_artition
@@ -979,6 +965,117 @@ EXPORTED int mboxlist_lookup_by_uniqueid(const char *uniqueid,
     return 0;
 }
 
+/*
+ * read a single _J_mapid record from the mailboxes.db and return a pointer to it
+ */
+static int mboxlist_read_jmapid(const char *inboxid, const char *jmapid,
+                                const char **dataptr, size_t *datalenptr,
+                                struct txn **tid, int wrlock)
+{
+    struct buf key = BUF_INITIALIZER;
+    int r;
+
+    if (!jmapid)
+        return IMAP_MAILBOX_NONEXISTENT;
+
+    mboxlist_jmapid_to_key(inboxid, jmapid, &key);
+
+    if (wrlock) {
+        r = cyrusdb_fetchlock(mbdb, buf_base(&key), buf_len(&key),
+                              dataptr, datalenptr, tid);
+    } else {
+        r = cyrusdb_fetch(mbdb, buf_base(&key), buf_len(&key),
+                          dataptr, datalenptr, tid);
+    }
+
+    switch (r) {
+    case CYRUSDB_OK:
+        /* no entry required, just checking if it exists */
+        r = 0;
+        break;
+
+    case CYRUSDB_AGAIN:
+        r = IMAP_AGAIN;
+        break;
+
+    case CYRUSDB_NOTFOUND:
+        r = IMAP_MAILBOX_NONEXISTENT;
+        break;
+
+    default:
+        syslog(LOG_ERR, "DBERROR: error fetching mboxlist %s: %s",
+               jmapid, cyrusdb_strerror(r));
+        r = IMAP_IOERROR;
+        break;
+    }
+
+    buf_free(&key);
+    return r;
+}
+
+EXPORTED char *mboxlist_find_jmapid(const char *jmapid,
+                                    const char *userid,
+                                    const struct auth_state *auth_state __attribute__((unused)))
+{
+    int r;
+    const char *data;
+    size_t datalen;
+    mbentry_t *mbentry = NULL;
+    char *mbname = NULL;
+
+    init_internal();
+
+    r = mboxlist_read_jmapid(userid, jmapid, &data, &datalen, NULL, 0);
+    if (r) return NULL;
+
+    r = mboxlist_parse_entry(&mbentry, NULL, 0, data, datalen);
+    if (r) return NULL;
+
+    // only note the name down if it's not deleted
+    if (!(mbentry->mbtype & MBTYPE_DELETED)) {
+        mbname = mbentry->name;
+        mbentry->name = NULL;
+    }
+
+    mboxlist_entry_free(&mbentry);
+
+    return mbname;
+}
+
+/*
+ * Lookup 'jmapid' in the mailbox list, ignoring reserved records
+ */
+EXPORTED int mboxlist_lookup_by_jmapid(const char *inboxid, const char *jmapid,
+                                       mbentry_t **entryptr, struct txn **tid)
+{
+    mbentry_t *entry = NULL;
+    const char *data;
+    size_t datalen;
+    int r;
+
+    init_internal();
+
+    r = mboxlist_read_jmapid(inboxid, jmapid, &data, &datalen, tid, 0);
+    if (r) return r;
+
+    r = mboxlist_parse_entry(&entry, NULL, 0, data, datalen);
+    if (r) return r;
+
+    /* Ignore "reserved" entries, like they aren't there */
+    if (entry->mbtype & MBTYPE_RESERVE) {
+        mboxlist_entry_free(&entry);
+        return IMAP_MAILBOX_RESERVED;
+    }
+
+    if (entryptr) {
+        *entryptr = entry;
+        if (!entry->jmapid) entry->jmapid = xstrdup(jmapid);
+    }
+    else mboxlist_entry_free(&entry);
+
+    return 0;
+}
+
 /* given a mailbox name, find the staging directory.  XXX - this should
  * require more locking, and staging directories should be by pid */
 HIDDEN int mboxlist_findstage(const char *name, char *stagedir, size_t sd_len)
@@ -1005,18 +1102,16 @@ HIDDEN int mboxlist_findstage(const char *name, char *stagedir, size_t sd_len)
     return 0;
 }
 
-#define ACL_RECORDSEP_CHAR      '\x1E'  /* record separator (RS) */
-
 static void mboxlist_racl_key(int isuser, const char *keyuser,
                               const char *dbname, struct buf *buf)
 {
     buf_reset(buf);
     buf_putc(buf, KEY_TYPE_ACL);
     buf_putc(buf, isuser ? 'U' : 'S');
-    buf_putc(buf, ACL_RECORDSEP_CHAR);
+    buf_putc(buf, DB_RECORDSEP_CHAR);
     if (keyuser) {
         buf_appendcstr(buf, keyuser);
-        buf_putc(buf, ACL_RECORDSEP_CHAR);
+        buf_putc(buf, DB_RECORDSEP_CHAR);
     }
     if (dbname) {
         buf_appendcstr(buf, dbname);
@@ -1079,7 +1174,6 @@ static int mboxlist_update_raclmodseq_wrapper(const char *acluser,
 static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
                                 const mbentry_t *newmbentry, struct txn **txn, int silent)
 {
-    static strarray_t *admins = NULL;
     struct buf buf = BUF_INITIALIZER;
     strarray_t *oldusers = NULL;
     strarray_t *newusers = NULL;
@@ -1090,8 +1184,6 @@ static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
     mbname_t *mbname = mbname_from_dbname(dbname);
     char *userid = xstrdupnull(mbname_userid(mbname));
     mbname_free(&mbname);
-
-    if (!admins) admins = strarray_split(config_getstring(IMAPOPT_ADMINS), NULL, 0);
 
     if (oldmbentry && !(oldmbentry->mbtype & MBTYPE_DELETED))
         oldusers = strarray_split(oldmbentry->acl, "\t", 0);
@@ -1104,7 +1196,7 @@ static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
             const char *acluser = strarray_nth(oldusers, i);
             if (!strpbrk(strarray_nth(oldusers, i+1), "lr")) continue;
             if (!strcmpsafe(userid, acluser)) continue;
-            if (strarray_contains(admins, acluser)) continue;
+            if (strarray_contains(config_admins, acluser)) continue;
             if (user_can_read(newusers, acluser)) continue;
             mboxlist_racl_key(!!userid, acluser, dbname, &buf);
             r = cyrusdb_delete(mbdb, buf.s, buf.len, txn, /*force*/1);
@@ -1118,7 +1210,7 @@ static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
             const char *acluser = strarray_nth(newusers, i);
             if (!strpbrk(strarray_nth(newusers, i+1), "lr")) continue;
             if (!strcmpsafe(userid, acluser)) continue;
-            if (strarray_contains(admins, acluser)) continue;
+            if (strarray_contains(config_admins, acluser)) continue;
             if (user_can_read(oldusers, acluser)) continue;
             mboxlist_racl_key(!!userid, acluser, dbname, &buf);
             r = cyrusdb_store(mbdb, buf.s, buf.len, "", 0, txn);
@@ -1139,7 +1231,7 @@ static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
 static void assert_namespacelocked(const char *mboxname)
 {
     char *userid = mboxname_to_userid(mboxname);
-    assert(user_isnamespacelocked(userid));
+    assert(user_nslock_islocked(userid));
     free(userid);
 }
 
@@ -1213,6 +1305,7 @@ static int mboxlist_update_entry_full(const char *name, const mbentry_t *mbentry
     int r = 0;
     struct txn *mytid = NULL;
     char *dbname = mbname_dbname(mbname);
+    const char *userid = mbname_userid(mbname);
 
     /* make sure the name is locked first - NOTE, this doesn't guarantee ordering
      * on the I key since we can't tell to lock that (and may be accessing two) so
@@ -1265,66 +1358,85 @@ static int mboxlist_update_entry_full(const char *name, const mbentry_t *mbentry
     if (mbentry) {
         /* Create new N record value */
         struct buf mboxent = BUF_INITIALIZER;
-        struct dlist *dl = mboxlist_entry_dlist(dbname, mbentry, /*for_ikey*/0);
+        struct dlist *dl = mboxlist_entry_dlist(dbname, mbentry, KEY_TYPE_NAME);
         dlist_printbuf(dl, 0, &mboxent);
         mboxlist_dbname_to_key(dbname, strlen(dbname), NULL, &key);
         r = cyrusdb_store(mbdb, buf_base(&key), buf_len(&key),
                           buf_cstring(&mboxent), buf_len(&mboxent), txn);
         dlist_free(&dl);
-        buf_free(&mboxent);
-        if (r) goto done;
+        buf_reset(&mboxent);
+
+        /* If there's an jmapid, update the J key too */
+        if (!r && mbentry->jmapid) {
+            dl = mboxlist_entry_dlist(dbname, mbentry, KEY_TYPE_JID);
+            dlist_printbuf(dl, 0, &mboxent);
+            mboxlist_jmapid_to_key(userid, mbentry->jmapid, &key);
+            r = cyrusdb_store(mbdb, buf_base(&key), buf_len(&key),
+                              buf_cstring(&mboxent), buf_len(&mboxent), txn);
+            dlist_free(&dl);
+            buf_reset(&mboxent);
+        }
 
         /* If there's an uniqueid, update the I key too */
-        if (mbentry->uniqueid) {
+        if (!r && mbentry->uniqueid) {
             /* Fetch the existing value, if any */
             r = mboxlist_lookup_by_uniqueid(mbentry->uniqueid, &oldi, txn);
             if (r == IMAP_MAILBOX_NONEXISTENT) r = 0;
-            else if (r) goto done;
 
-            /* Create a new I key value from the mbentry */
-            mbentry_t *newi = mboxlist_entry_copy(mbentry);
+            if (!r) {
+                /* Create a new I key value from the mbentry */
+                mbentry_t *newi = mboxlist_entry_copy(mbentry);
 
-            /* copy history from the old I key record */
-            if (oldi) {
-                // create a new history item for the old name if renaming
-                if (strcmp(name, oldi->name)) {
-                    former_name_t *item = xzmalloc(sizeof(former_name_t));
-                    item->name = xstrdupnull(oldi->name);
-                    item->mtime = oldi->mtime;
-                    item->uidvalidity = oldi->uidvalidity;
-                    item->foldermodseq = oldi->foldermodseq;
-                    item->createdmodseq = oldi->createdmodseq;
-                    item->mbtype = oldi->mbtype;
-                    item->partition = xstrdupnull(oldi->partition);
-                    ptrarray_append(&newi->name_history, item);
+                /* copy history from the old I key record */
+                if (oldi) {
+                    // create a new history item for the old name if renaming
+                    if (strcmp(name, oldi->name)) {
+                        former_name_t *item = xzmalloc(sizeof(former_name_t));
+                        item->name = xstrdupnull(oldi->name);
+                        item->mtime = oldi->mtime;
+                        item->uidvalidity = oldi->uidvalidity;
+                        item->foldermodseq = oldi->foldermodseq;
+                        item->createdmodseq = oldi->createdmodseq;
+                        item->mbtype = oldi->mbtype;
+                        item->partition = xstrdupnull(oldi->partition);
+                        ptrarray_append(&newi->name_history, item);
+
+                        // and delete the J key for the old item if it's changed
+                        if (oldi->jmapid) {
+                            mbname_t *oldmbname = mbname_from_intname(oldi->name);
+                            const char *olduserid = mbname_userid(oldmbname);
+                            if (strcmpsafe(olduserid, userid) || strcmpsafe(oldi->jmapid, mbentry->jmapid)) {
+                                mboxlist_jmapid_to_key(olduserid, oldi->jmapid, &key);
+                                r = cyrusdb_delete(mbdb, buf_base(&key), buf_len(&key), txn, /*force*/1);
+                            }
+                            mbname_free(&oldmbname);
+                            if (r) goto done;
+                        }
+                    }
+                    // copy the remaining items
+                    while (ptrarray_size(&oldi->name_history)) {
+                        ptrarray_append(&newi->name_history, ptrarray_shift(&oldi->name_history));
+                    }
                 }
-                // copy the remaining items
-                while (ptrarray_size(&oldi->name_history)) {
-                    ptrarray_append(&newi->name_history, ptrarray_shift(&oldi->name_history));
-                }
+
+                /* And finally write the new entry */
+                buf_reset(&mboxent);
+                dl = mboxlist_entry_dlist(dbname, newi, KEY_TYPE_ID);
+                dlist_printbuf(dl, 0, &mboxent);
+                mboxlist_id_to_key(mbentry->uniqueid, &key);
+                r = cyrusdb_store(mbdb, buf_base(&key), buf_len(&key),
+                                  buf_cstring(&mboxent), buf_len(&mboxent), txn);
+                dlist_free(&dl);
+                mboxlist_entry_free(&newi);
             }
-
-            /* And finally write the new entry */
-            dl = mboxlist_entry_dlist(dbname, newi, /*for_ikey*/1);
-            dlist_printbuf(dl, 0, &mboxent);
-            mboxlist_id_to_key(mbentry->uniqueid, &key);
-            r = cyrusdb_store(mbdb, buf_base(&key), buf_len(&key),
-                            buf_cstring(&mboxent), buf_len(&mboxent), txn);
-            dlist_free(&dl);
-            buf_free(&mboxent);
-            mboxlist_entry_free(&newi);
-            if (r) goto done;
         }
 
-        if (config_auditlog && (!old || strcmpsafe(old->acl, mbentry->acl))) {
-            /* XXX is there a difference between "" and NULL? */
-            xsyslog(LOG_NOTICE, "auditlog: acl",
-                                "sessionid=<%s> "
-                                "mailbox=<%s> uniqueid=<%s> mbtype=<%s> "
-                                "oldacl=<%s> acl=<%s> foldermodseq=<%llu>",
-                    session_id(),
-                    name, mbentry->uniqueid, mboxlist_mbtype_to_string(mbentry->mbtype),
-                    old ? old->acl : "NONE", mbentry->acl, mbentry->foldermodseq);
+        buf_free(&mboxent);
+
+        if (r) goto done;
+
+        if (!old || strcmpsafe(old->acl, mbentry->acl)) {
+            auditlog_acl(name, old, mbentry);
         }
     }
     else if (old) {
@@ -1345,6 +1457,13 @@ static int mboxlist_update_entry_full(const char *name, const mbentry_t *mbentry
                 mboxlist_id_to_key(old->uniqueid, &key);
                 r = cyrusdb_delete(mbdb, buf_base(&key), buf_len(&key), txn, /*force*/1);
                 if (r) goto done;
+
+                /* Delete the existing J record value */
+                if (old->jmapid) {
+                    mboxlist_jmapid_to_key(userid, old->jmapid, &key);
+                    r = cyrusdb_delete(mbdb, buf_base(&key), buf_len(&key), txn, /*force*/1);
+                    if (r) goto done;
+                }
             }
         }
     }
@@ -1371,9 +1490,9 @@ EXPORTED int mboxlist_delete(const mbentry_t *mbentry)
 
 EXPORTED int mboxlist_deletelock(const mbentry_t *mbentry)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(mbentry->name);
     int r = mboxlist_delete(mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -1432,9 +1551,9 @@ EXPORTED int mboxlist_update_full(const mbentry_t *mbentry, int localonly, int s
 
 EXPORTED int mboxlist_updatelock(const mbentry_t *mbentry, int localonly)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(mbentry->name);
     int r = mboxlist_update(mbentry, localonly);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -1757,7 +1876,7 @@ EXPORTED int mboxlist_createmailboxcheck(const char *name, int mbtype __attribut
  * will check for children when deciding whether to create or remove
  * intermediate folders */
 EXPORTED int mboxlist_update_intermediaries(const char *frommboxname,
-                                            int mbtype, modseq_t modseq)
+                                            int mbtype)
 {
     mbentry_t *mbentry = NULL;
     mbname_t *mbname = mbname_from_intname(frommboxname);
@@ -1815,8 +1934,6 @@ EXPORTED int mboxlist_update_intermediaries(const char *frommboxname,
         newmbentry.name = (char *)mboxname;
         newmbentry.partition = partition;
         newmbentry.mbtype = mbtype;
-        newmbentry.createdmodseq = modseq;
-        newmbentry.foldermodseq = modseq;
         int flags = MBOXLIST_CREATE_KEEP_INTERMEDIARIES; // avoid infinite looping!
         flags |= MBOXLIST_CREATE_SYNC; /* for silent */
         r = mboxlist_createmailbox(&newmbentry, 0/*options*/, 0/*highestmodseq*/,
@@ -1857,9 +1974,9 @@ EXPORTED int mboxlist_promote_intermediary(const char *mboxname)
     xzfree(mbentry->acl);
     mbentry->acl = xstrdupnull(parent->acl);
 
-    r = mailbox_create(mboxname, mbentry->mbtype,
+    r = mailbox_create(mboxname, mbentry->mbtype, 0 /* version */,
                        mbentry->partition, mbentry->acl,
-                       mbentry->uniqueid, 0 /* options */,
+                       mbentry->uniqueid, NULL /* jmapid */, 0 /* options */,
                        mbentry->uidvalidity,
                        mbentry->createdmodseq,
                        mbentry->foldermodseq, &mailbox);
@@ -1897,14 +2014,15 @@ done:
  *
  */
 
-EXPORTED int mboxlist_createmailbox(const mbentry_t *mbentry,
-                                    unsigned options, modseq_t highestmodseq,
-                                    unsigned isadmin, const char *userid,
-                                    const struct auth_state *auth_state,
-                                    unsigned flags, struct mailbox **mboxptr)
+EXPORTED int mboxlist_createmailbox_version(const mbentry_t *mbentry, int minor_version,
+                                            unsigned options, modseq_t highestmodseq,
+                                            unsigned isadmin, const char *userid,
+                                            const struct auth_state *auth_state,
+                                            unsigned flags, struct mailbox **mboxptr)
 {
     const char *mboxname = mbentry->name;
     char *uniqueid = xstrdupnull(mbentry->uniqueid);
+    const char *jmapid = NULL;
     uint32_t mbtype = mbentry->mbtype;
     uint32_t uidvalidity = mbentry->uidvalidity;
     modseq_t createdmodseq = mbentry->createdmodseq;
@@ -1927,6 +2045,7 @@ EXPORTED int mboxlist_createmailbox(const mbentry_t *mbentry,
     assert_namespacelocked(mboxname);
 
     if ((flags & MBOXLIST_CREATE_SYNC)) {
+        jmapid = mbentry->jmapid;
         silent = 1;
     }
     else {
@@ -1998,8 +2117,9 @@ EXPORTED int mboxlist_createmailbox(const mbentry_t *mbentry,
         }
 
         /* Filesystem Operations */
-        r = mailbox_create(mboxname, mbtype, newpartition, acl, newmbentry->uniqueid,
-                           options, uidvalidity, createdmodseq, highestmodseq, &newmailbox);
+        r = mailbox_create(mboxname, mbtype, minor_version,
+                           newpartition, acl, newmbentry->uniqueid,
+                           jmapid, options, uidvalidity, createdmodseq, highestmodseq, &newmailbox);
         if (!r) r = mailbox_add_conversations(newmailbox, silent);
         if (r) {
             /* CREATE failed - remove mbentry */
@@ -2010,6 +2130,7 @@ EXPORTED int mboxlist_createmailbox(const mbentry_t *mbentry,
 
     /* all is well - activate the mailbox */
     if (newmailbox) {
+        newmbentry->jmapid = xstrdup(mailbox_jmapid(newmailbox));
         newmbentry->uidvalidity = newmailbox->i.uidvalidity;
         newmbentry->createdmodseq = newmailbox->i.createdmodseq;
         newmbentry->foldermodseq = foldermodseq ? foldermodseq : newmailbox->i.highestmodseq;
@@ -2018,7 +2139,7 @@ EXPORTED int mboxlist_createmailbox(const mbentry_t *mbentry,
 
     if (!r && !silent && !(flags & MBOXLIST_CREATE_KEEP_INTERMEDIARIES)) {
         /* create any missing intermediaries */
-        r = mboxlist_update_intermediaries(mboxname, mbtype, newmbentry->foldermodseq);
+        r = mboxlist_update_intermediaries(mboxname, mbtype);
     }
 
     if (r) {
@@ -2077,13 +2198,11 @@ EXPORTED int mboxlist_createmailboxlock(const mbentry_t *mbentry,
                                         const struct auth_state *auth_state,
                                         unsigned flags, struct mailbox **mboxptr)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
-
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(mbentry->name);
     int r = mboxlist_createmailbox(mbentry, options, highestmodseq,
                                    isadmin, userid, auth_state,
                                    flags, mboxptr);
-
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -2108,9 +2227,9 @@ EXPORTED int mboxlist_insertremote(mbentry_t *mbentry,
     }
 
     /* database put */
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(mbentry->name);
     r = mboxlist_update_entry(mbentry->name, mbentry, txn);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     switch (r) {
     case CYRUSDB_OK:
@@ -2139,7 +2258,7 @@ EXPORTED int mboxlist_deleteremote(const char *name, struct txn **in_tid)
     struct txn *lcl_tid = NULL;
     mbentry_t *mbentry = NULL;
     char *dbname = mboxname_to_dbname(name);
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(name);
 
     if(in_tid) {
         tid = in_tid;
@@ -2199,7 +2318,7 @@ EXPORTED int mboxlist_deleteremote(const char *name, struct txn **in_tid)
         cyrusdb_abort(mbdb, *tid);
     }
     mboxlist_entry_free(&mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -2338,6 +2457,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                     int flags)
 {
     mbentry_t *mbentry = NULL;
+    mbentry_t *newmbentry = NULL;
     int r = 0;
     long myrights;
     struct mailbox *mailbox = NULL;
@@ -2397,7 +2517,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
     if (mbentry->mbtype & MBTYPE_INTERMEDIATE) {
         // make it deleted and mark it done!
         if (!mboxname_isdeletedmailbox(name, NULL)) {
-            mbentry_t *newmbentry = mboxlist_entry_copy(mbentry);
+            newmbentry = mboxlist_entry_copy(mbentry);
             newmbentry->mbtype |= MBTYPE_DELETED;
             if (!silent) {
                 newmbentry->foldermodseq = mboxname_nextmodseq(newmbentry->name, newmbentry->foldermodseq,
@@ -2410,7 +2530,6 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                  "mailbox=<%s> error=<%s>",
                                  name, cyrusdb_strerror(r));
             }
-            mboxlist_entry_free(&newmbentry);
         }
         else {
             r = mboxlist_update_entry_full(name, NULL, 0, silent);
@@ -2473,12 +2592,18 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
     }
     if (r && !force) goto done;
 
+    int haschildren = mboxlist_haschildren(name);
+    newmbentry = mboxlist_entry_copy(mbentry);
+    newmbentry->mbtype |= (haschildren ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED);
+
     /* delete underlying mailbox */
     if (!isremote && mailbox) {
         /* only on a real delete do we delete from the remote end as well */
         sync_log_unmailbox(mailbox_name(mailbox));
         mboxevent_extract_mailbox(mboxevent, mailbox);
         mboxevent_set_access(mboxevent, NULL, NULL, userid, mailbox_name(mailbox), 1);
+
+        newmbentry->foldermodseq = mailbox_modseq_dirty(mailbox);
 
         r = mailbox_delete(&mailbox);
         /* abort event notification */
@@ -2488,22 +2613,11 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
 
     if (!isremote && !isentirely && !mboxname_isdeletedmailbox(name, NULL)) {
         /* store a DELETED marker */
-        int haschildren = mboxlist_haschildren(name);
-        mbentry_t *newmbentry = mboxlist_entry_create();
-        newmbentry->name = xstrdupnull(name);
-        newmbentry->mbtype = mbentry->mbtype |
-            (haschildren ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED);
-        if (mailbox) {
-            newmbentry->uniqueid = xstrdupnull(mailbox_uniqueid(mailbox));
-            newmbentry->uidvalidity = mailbox->i.uidvalidity;
-            newmbentry->createdmodseq = mailbox->i.createdmodseq;
-            newmbentry->foldermodseq = mailbox_modseq_dirty(mailbox);
-        }
         r = mboxlist_update_full(newmbentry, /*localonly*/1, silent);
 
         /* any other updated intermediates get the same modseq */
         if (!r && !silent && !keep_intermediaries) {
-            r = mboxlist_update_intermediaries(mbentry->name, mbentry->mbtype, newmbentry->foldermodseq);
+            r = mboxlist_update_intermediaries(mbentry->name, mbentry->mbtype);
         }
 
         /* Bump the modseq of entries of mbtype. There's still a tombstone
@@ -2513,7 +2627,6 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                mbentry->mbtype, MBOXMODSEQ_ISDELETE);
         }
 
-        mboxlist_entry_free(&newmbentry);
     }
     else {
         /* delete entry (including DELETED.* mailboxes, no need
@@ -2526,10 +2639,19 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
             r = IMAP_IOERROR;
             if (!force) goto done;
         }
-        if (r && !force) goto done;
+        /* bump the folder deletedmodseq so we know we can't calculate
+         * Mailbox/changes from before this.  Don't bump for the inbox
+         * because when that's being deleted it's the last entry for
+         * the user */
+        if (!mboxname_isusermailbox(mbentry->name, 1) && !mboxname_isdeletedmailbox(mbentry->name, NULL)) {
+            mboxname_setmodseq(mbentry->name, mbentry->foldermodseq,
+                               mbentry->mbtype & ~MBTYPE_DELETED,
+                               MBOXMODSEQ_ISFOLDER|MBOXMODSEQ_ISDELETE);
+        }
     }
 
  done:
+    mboxlist_entry_free(&newmbentry);
     mailbox_close(&mailbox);
     mboxlist_entry_free(&mbentry);
     mbname_free(&mbname);
@@ -2543,11 +2665,9 @@ EXPORTED int mboxlist_deletemailboxlock(const char *name, int isadmin,
                                     struct mboxevent *mboxevent,
                                     int flags)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
-
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(name);
     int r = mboxlist_deletemailbox(name, isadmin, userid, auth_state, mboxevent, flags);
-
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -2734,6 +2854,17 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
     assert_namespacelocked(mbentry->name);
     assert_namespacelocked(newname);
 
+    myrights = cyrus_acl_myrights(auth_state, mbentry->acl);
+
+    /* 0. check the ACLs up-front */
+    if (!isadmin) {
+        if (!(myrights & ACL_DELETEMBOX)) {
+            r = (myrights & ACL_LOOKUP) ?
+                IMAP_PERMISSION_DENIED : IMAP_MAILBOX_NONEXISTENT;
+            return r;
+        }
+    }
+
     /* special-case: intermediate mailbox */
     if (mbentry->mbtype & MBTYPE_INTERMEDIATE) {
         r = mboxlist_create_namecheck(newname, userid, auth_state,
@@ -2749,17 +2880,6 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
 
         /* skip ahead to the database update */
         goto dbupdate;
-    }
-
-    myrights = cyrus_acl_myrights(auth_state, mbentry->acl);
-
-    /* check the ACLs up-front */
-    if (!isadmin) {
-        if (!(myrights & ACL_DELETEMBOX)) {
-            r = (myrights & ACL_LOOKUP) ?
-                IMAP_PERMISSION_DENIED : IMAP_MAILBOX_NONEXISTENT;
-            return r;
-        }
     }
 
     /* 1. open mailbox */
@@ -2817,6 +2937,7 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
         newmbentry->acl = xstrdupnull(mailbox_acl(oldmailbox));
         newmbentry->uidvalidity = oldmailbox->i.uidvalidity;
         newmbentry->uniqueid = xstrdupnull(mailbox_uniqueid(oldmailbox));
+        newmbentry->jmapid = xstrdupnull(mailbox_jmapid(oldmailbox));
         newmbentry->createdmodseq = oldmailbox->i.createdmodseq;
         newmbentry->foldermodseq = silent ? mailbox_foldermodseq(oldmailbox)
                                           : mboxname_nextmodseq(newname, mailbox_foldermodseq(oldmailbox),
@@ -2881,6 +3002,7 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
         newmbentry->acl = xstrdupnull(mailbox_acl(newmailbox));
         newmbentry->uidvalidity = newmailbox->i.uidvalidity;
         newmbentry->uniqueid = xstrdupnull(mailbox_uniqueid(newmailbox));
+        newmbentry->jmapid = xstrdupnull(mailbox_jmapid(newmailbox));
         newmbentry->createdmodseq = newmailbox->i.createdmodseq;
         newmbentry->foldermodseq = newmailbox->i.highestmodseq;
     }
@@ -2893,6 +3015,7 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
         newmbentry->acl = xstrdupnull(mailbox_acl(oldmailbox));
         newmbentry->uidvalidity = oldmailbox->i.uidvalidity;
         newmbentry->uniqueid = xstrdupnull(mailbox_uniqueid(oldmailbox));
+        newmbentry->jmapid = xstrdupnull(mailbox_jmapid(oldmailbox));
         newmbentry->createdmodseq = oldmailbox->i.createdmodseq;
         newmbentry->foldermodseq = oldmailbox->i.highestmodseq;
 
@@ -2917,6 +3040,7 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
         oldmbentry->mbtype = mbentry->mbtype | MBTYPE_DELETED;
         oldmbentry->uidvalidity = mbentry->uidvalidity;
         oldmbentry->uniqueid = xstrdupnull(mbentry->uniqueid);
+        oldmbentry->jmapid = xstrdupnull(mbentry->jmapid);
         oldmbentry->createdmodseq = mbentry->createdmodseq;
         oldmbentry->foldermodseq = newmbentry->foldermodseq;
 
@@ -3001,8 +3125,8 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
         r = mailbox_commit(newmailbox);
 
     if (!keep_intermediaries && !silent) {
-        if (!r) r = mboxlist_update_intermediaries(oldname, newmbentry->mbtype, newmbentry->foldermodseq);
-        if (!r) r = mboxlist_update_intermediaries(newname, newmbentry->mbtype, newmbentry->foldermodseq);
+        if (!r) r = mboxlist_update_intermediaries(oldname, newmbentry->mbtype);
+        if (!r) r = mboxlist_update_intermediaries(newname, newmbentry->mbtype);
     }
 
     if (r) {
@@ -3067,11 +3191,11 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
 
             if (mbtype_isa(mailbox_mbtype(newmailbox)) == MBTYPE_SIEVE) {
 #ifdef USE_SIEVE
-                mailbox_add_sieve(newmailbox);
+                mailbox_add_sieve(newmailbox, NULL);
 #endif
 #ifdef WITH_DAV
             } else {
-                mailbox_add_dav(newmailbox);
+                mailbox_add_dav(newmailbox, NULL);
 #endif
             }
 
@@ -3084,12 +3208,9 @@ EXPORTED int mboxlist_renamemailbox(const mbentry_t *mbentry,
             char *oldpartition = xstrdupnull(mailbox_partition(oldmailbox));
             char *olduniqueid = (mailbox_mbtype(oldmailbox) & MBTYPE_LEGACY_DIRS) ?
                 NULL : xstrdup(mailbox_uniqueid(oldmailbox));
-            if (config_auditlog)
-                syslog(LOG_NOTICE, "auditlog: partitionmove sessionid=<%s> "
-                       "mailbox=<%s> uniqueid=<%s> oldpart=<%s> newpart=<%s>",
-                       session_id(),
-                       mailbox_name(oldmailbox), mailbox_uniqueid(oldmailbox),
-                       oldpartition, partition);
+
+            auditlog_mailbox("partitionmove", NULL, oldmailbox, newpartition);
+
             /* this will sync-log the name anyway */
             mailbox_close(&oldmailbox);
             mailbox_delete_cleanup(NULL, oldpartition, oldname, olduniqueid);
@@ -3169,11 +3290,11 @@ EXPORTED int mboxlist_set_usergroup(const char *userid, const char *group, int v
 
     buf_setcstr(&fwd, "UG");
     buf_appendcstr(&fwd, userid);
-    buf_putc(&fwd, ACL_RECORDSEP_CHAR);
+    buf_putc(&fwd, DB_RECORDSEP_CHAR);
     buf_appendcstr(&fwd, group);
     buf_setcstr(&rev, "UG");
     buf_appendcstr(&rev, group);
-    buf_putc(&rev, ACL_RECORDSEP_CHAR);
+    buf_putc(&rev, DB_RECORDSEP_CHAR);
     buf_appendcstr(&rev, userid);
     if (val) {
         if (!r) r = cyrusdb_store(mbdb, buf_base(&fwd), buf_len(&fwd), "", 0, &tid);
@@ -3223,7 +3344,7 @@ EXPORTED int mboxlist_lookup_usergroups(const char *item, strarray_t *dest)
     struct buf prefix = BUF_INITIALIZER;
     buf_setcstr(&prefix, "UG");
     buf_appendcstr(&prefix, item);
-    buf_putc(&prefix, ACL_RECORDSEP_CHAR);
+    buf_putc(&prefix, DB_RECORDSEP_CHAR);
     struct _usergroup_rock urock = { buf_len(&prefix), dest };
     int r = cyrusdb_foreach(mbdb, buf_base(&prefix), buf_len(&prefix),
                     NULL, _usergroup_add, &urock, 0);
@@ -3269,7 +3390,7 @@ EXPORTED int mboxlist_setacl(const struct namespace *namespace __attribute__((un
 
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(name);
 
     // not "anyone" or a group - do some username normalisation
     if (!isanyone && strncmp(identifier, "group:", 6)) {
@@ -3441,7 +3562,7 @@ EXPORTED int mboxlist_setacl(const struct namespace *namespace __attribute__((un
     free(newacl);
     mboxlist_entry_free(&mbentry);
     mbname_free(&idname);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -3451,7 +3572,7 @@ EXPORTED int mboxlist_updateacl_raw(const char *name, const char *newacl)
 {
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(name);
 
     struct mailbox *mailbox = NULL;
     modseq_t foldermodseq = 0;
@@ -3466,7 +3587,7 @@ EXPORTED int mboxlist_updateacl_raw(const char *name, const char *newacl)
 
     if (!r) r = mboxlist_setacls(name, newacl, foldermodseq, /*silent*/0);
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -3486,7 +3607,7 @@ mboxlist_setacls(const char *name, const char *newacl, modseq_t foldermodseq, in
 {
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(name);
     mbentry_t *mbentry = NULL;
     int r;
 
@@ -3546,7 +3667,7 @@ mboxlist_setacls(const char *name, const char *newacl, modseq_t foldermodseq, in
 
 done:
     mboxlist_entry_free(&mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -3896,6 +4017,43 @@ static int racls_add_cb(const mbentry_t *mbentry, void *rock)
     return r;
 }
 
+struct jfix_dat {
+    struct txn **txn;
+    int *modified;
+};
+
+static int jkey_fix_cb(void *rock,
+                  const char *key, size_t keylen,
+                  const char *data, size_t datalen)
+{
+    struct jfix_dat *dat = (struct jfix_dat *)rock;
+
+    // bonus, it's all good!
+    if (memchr(key, DB_RECORDSEP_CHAR, keylen)) return 0;
+
+    // cyrusdb interface isn't good about old links after a write, so copy everything
+    char *val = xstrndup(data, datalen);
+    char *orig = xstrndup(key, keylen);
+    char *new = xstrndup(key, keylen);
+    char *p = strrchr(new, '.');
+    if (p) *p = DB_RECORDSEP_CHAR;
+
+    int r = cyrusdb_delete(mbdb, orig, keylen, dat->txn, /*force*/0);
+    if (r) goto done;
+
+    r = cyrusdb_store(mbdb, new, keylen, val, datalen, dat->txn);
+    if (r) goto done;
+
+    (*(dat->modified))++;
+
+done:
+    free(val);
+    free(orig);
+    free(new);
+
+    return r;
+}
+
 EXPORTED int mboxlist_set_racls(int enabled)
 {
     struct buf key = BUF_INITIALIZER;
@@ -3906,6 +4064,14 @@ EXPORTED int mboxlist_set_racls(int enabled)
     mboxlist_racl_key(0, NULL, NULL, &key);
 
     init_internal();
+
+    // XXX: temporary fixer for messed up J keys
+    struct jfix_dat dat = { &tid, &modified_mbdb };
+    r = cyrusdb_foreach(mbdb, "J", 1, NULL, jkey_fix_cb, &dat, &tid);
+    if (r) goto out;
+
+    if (modified_mbdb)
+        syslog(LOG_NOTICE, "Rewrote J key separator %d times", modified_mbdb);
 
     if (have_racl && !enabled) {
         syslog(LOG_NOTICE, "removing reverse acl support");
@@ -3931,7 +4097,8 @@ EXPORTED int mboxlist_set_racls(int enabled)
     }
     buf_free(&key);
 
-    if (!modified_mbdb || !tid) return r;
+out:
+    if (!tid) return r;
 
     if (r)
         cyrusdb_abort(mbdb, tid);
@@ -3943,7 +4110,6 @@ EXPORTED int mboxlist_set_racls(int enabled)
 
 
 struct alluser_rock {
-    char *prev;
     user_cb *proc;
     void *rock;
 };
@@ -3951,33 +4117,26 @@ struct alluser_rock {
 static int alluser_cb(const mbentry_t *mbentry, void *rock)
 {
     struct alluser_rock *urock = (struct alluser_rock *)rock;
-    char *userid = mboxname_to_userid(mbentry->name);
+    mbname_t *mbname = mbname_from_intname(mbentry->name);
     int r = 0;
 
-    if (userid) {
-        if (strcmpsafe(urock->prev, userid)) {
-            r = urock->proc(userid, urock->rock);
-            free(urock->prev);
-            urock->prev = userid;
-        } else
-            free(userid);
+    // non deleted user inbox only
+    if (!(mbentry->mbtype & MBTYPE_DELETED)
+     && !mbname_isdeleted(mbname)
+     && !strarray_size(mbname_boxes(mbname))
+     && mbname_userid(mbname)) {
+        r = urock->proc(mbname_userid(mbname), urock->rock);
     }
 
+    mbname_free(&mbname);
     return r;
 }
 
 EXPORTED int mboxlist_alluser(user_cb *proc, void *rock)
 {
-    struct alluser_rock urock;
-    int r = 0;
-
     init_internal();
-
-    urock.prev = NULL;
-    urock.proc = proc;
-    urock.rock = rock;
-    r = mboxlist_allmbox(NULL, alluser_cb, &urock, /*flags*/0);
-    free(urock.prev);
+    struct alluser_rock urock = { proc, rock };
+    int r = mboxlist_allmbox(NULL, alluser_cb, &urock, /*flags*/0);
     return r;
 }
 
@@ -4628,16 +4787,7 @@ EXPORTED int mboxlist_setquotas(const char *root,
                 mboxevent_extract_quota(quotachange_event, &q, res);
             }
 
-            if (config_auditlog) {
-                struct buf item = BUF_INITIALIZER;
-                for (res = 0; res < QUOTA_NUMRESOURCES; res++) {
-                    buf_printf(&item, " old%s=<%lld> new%s=<%lld>",
-                               quota_names[res], oldquotas[res],
-                               quota_names[res], newquotas[res]);
-                }
-                syslog(LOG_NOTICE, "auditlog: setquota root=<%s>%s", root, buf_cstring(&item));
-                buf_free(&item);
-            }
+            auditlog_quota("setquota", root, oldquotas, newquotas);
         }
 
         if (!r)
@@ -4695,16 +4845,7 @@ EXPORTED int mboxlist_setquotas(const char *root,
     }
 
     quota_commit(&tid);
-
-    if (config_auditlog) {
-        struct buf item = BUF_INITIALIZER;
-        for (res = 0; res < QUOTA_NUMRESOURCES; res++) {
-            buf_printf(&item, " new%s=<%lld>",
-                       quota_names[res], newquotas[res]);
-        }
-        syslog(LOG_NOTICE, "auditlog: newquota root=<%s>%s", root, buf_cstring(&item));
-        buf_free(&item);
-    }
+    auditlog_quota("newquota", root, NULL, newquotas);
 
     /* recurse through mailboxes, setting the quota and finding
      * out the usage */
@@ -4758,15 +4899,7 @@ EXPORTED int mboxlist_unsetquota(const char *root, int silent)
      */
     mboxlist_mboxtree(root, mboxlist_rmquota, (void *)root, /*flags*/0);
 
-    if (config_auditlog) {
-        struct buf item = BUF_INITIALIZER;
-        int res;
-        for (res = 0; res < QUOTA_NUMRESOURCES; res++) {
-            buf_printf(&item, " old%s=<%lld>", quota_names[res], q.limits[res]);
-        }
-        syslog(LOG_NOTICE, "auditlog: rmquota root=<%s>%s", root, buf_cstring(&item));
-        buf_free(&item);
-    }
+    auditlog_quota("rmquota", root, q.limits, NULL);
 
     r = quota_deleteroot(root, silent);
     quota_changelockrelease();
@@ -5348,16 +5481,7 @@ EXPORTED int mboxlist_changesub(const char *name, const char *userid,
         mboxevent_free(&mboxevent);
     }
 
-    if (add) {
-        xsyslog(LOG_NOTICE, "auditlog: subscribe",
-                            "sessionid=<%s> userid=<%s> mailbox=<%s>",
-                session_id(), userid, name);
-    }
-    else {
-        xsyslog(LOG_NOTICE, "auditlog: unsubscribe",
-                            "sessionid=<%s> userid=<%s> mailbox=<%s>",
-                session_id(), userid, name);
-    }
+    auditlog_mboxname(add ? "subscribe" : "unsubscribe", userid, name);
 
   done:
     mboxlist_entry_free(&mbentry);
@@ -5637,9 +5761,9 @@ static void _upgrade_cb(const char *key __attribute__((unused)),
         mbentry_t *mbentry = (mbentry_t *) ptrarray_nth(pa, idx);
 
         if (!*urock->r) {
-            struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+            user_nslock_t *user_nslock = user_nslock_lockmb_w(mbentry->name);
             *urock->r = mboxlist_update_entry(mbentry->name, mbentry, urock->tid);
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
         }
 
         mboxlist_entry_free(&mbentry);
@@ -5718,7 +5842,7 @@ EXPORTED int mboxlist_upgrade(int *upgraded)
     mboxlist_close();
 
     /* rename new db file */
-    if (!r) r = rename(newfname, fname);
+    if (!r) r = cyrus_rename(newfname, fname);
 
     if (!r && upgraded) *upgraded = 1;
 
@@ -5931,7 +6055,7 @@ static int mboxlist_upgrade_subs_work(const char *userid,
 
     if (!db_r) {
         /* rename new db file */
-        if (rename(newsubsfname, subsfname) < 0) {
+        if (cyrus_rename(newsubsfname, subsfname) < 0) {
             syslog(LOG_ERR, "DBERROR: renaming %s: %m", newsubsfname);
             fatal("can't rename subscriptions file", EX_TEMPFAIL);
         }
@@ -5979,4 +6103,102 @@ static int mboxlist_upgrade_subs(const char *userid,
     free(lockname);
 
     return r;
+}
+
+#ifdef USE_XAPIAN
+static void find_tier(const char *key, const char *val __attribute__((unused)), void *rock)
+{
+    strarray_t *tiers = (strarray_t *)rock;
+    const char *partition = strstr(key, "searchpartition-");
+    if (!partition) return;
+    strarray_appendm(tiers, xstrndup(key, partition - key));
+}
+#endif /* USE_XAPIAN */
+
+EXPORTED json_t *mbentry_paths_json(const struct mboxlist_entry *mbentry)
+{
+    mbname_t *mbname = mbname_from_intname(mbentry->name);
+    json_t *jres = json_object();
+    const char *userid = mbname_userid(mbname);
+
+    json_t *jmbname = json_object();
+    if (userid)
+        json_object_set_new(jmbname, "userid", json_string(userid));
+    if (mbname_domain(mbname))
+        json_object_set_new(jmbname, "domain", json_string(mbname_domain(mbname)));
+    if (mbname_localpart(mbname))
+        json_object_set_new(jmbname, "localpart", json_string(mbname_localpart(mbname)));
+    if (mbname_isdeleted(mbname))
+        json_object_set_new(jmbname, "isdeleted", json_integer(mbname_isdeleted(mbname)));
+    json_t *jboxes = json_array();
+    const strarray_t *boxes = mbname_boxes(mbname);
+    int i;
+    for (i = 0; i < strarray_size(boxes); i++)
+        json_array_append_new(jboxes, json_string(strarray_nth(boxes, i)));
+    json_object_set_new(jmbname, "boxes", jboxes);
+    json_object_set_new(jmbname, "intname", json_string(mbname_intname(mbname)));
+    json_object_set_new(jres, "mbname", jmbname);
+
+    if (userid) {
+        // user paths
+        json_t *juser = json_object();
+        char *val; // jansson has no API to transfer string ownership
+
+        val = user_hash_meta(userid, "conversations");
+        json_object_set_new(juser, "conversations", json_string(val));
+        free(val);
+
+        val = user_hash_meta(userid, "counters");
+        json_object_set_new(juser, "counters", json_string(val));
+        free(val);
+
+        val = user_hash_meta(userid, "dav");
+        json_object_set_new(juser, "dav", json_string(val));
+        free(val);
+
+        json_object_set_new(juser, "sieve", json_string(user_sieve_path(userid)));
+
+        val = user_hash_meta(userid, "seen");
+        json_object_set_new(juser, "seen", json_string(val));
+        free(val);
+
+        val = user_hash_meta(userid, "sub");
+        json_object_set_new(juser, "sub", json_string(val));
+        free(val);
+#ifdef USE_XAPIAN
+        val = user_hash_meta(userid, "xapianactive");
+        json_object_set_new(juser, "xapianactive", json_string(val));
+        free(val);
+#endif /* USE_XAPIAN */
+
+        json_object_set_new(jres, "user", juser);
+
+#ifdef USE_XAPIAN
+        // xapian tiers
+        json_t *jxapian = json_object();
+        strarray_t tiers = STRARRAY_INITIALIZER;
+        config_foreachoverflowstring(find_tier, &tiers);
+        for (i = 0; i < strarray_size(&tiers); i++) {
+            const char *tier = strarray_nth(&tiers, i);
+            char *basedir = NULL;
+            xapian_basedir(tier, mbentry->name, mbentry->partition, NULL, &basedir);
+            if (basedir) {
+                json_object_set_new(jxapian, tier, json_string(basedir));
+                free(basedir);
+            }
+        }
+        strarray_fini(&tiers);
+
+        json_object_set_new(jres, "xapian", jxapian);
+#endif /* USE_XAPIAN */
+    }
+
+    // mailbox paths
+    json_object_set_new(jres, "archive", json_string(mbentry_archivepath(mbentry, 0)));
+    json_object_set_new(jres, "data", json_string(mbentry_datapath(mbentry, 0)));
+    json_object_set_new(jres, "meta", json_string(mbentry_metapath(mbentry, 0, 0)));
+
+    mbname_free(&mbname);
+
+    return jres;
 }

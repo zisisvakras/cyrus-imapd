@@ -40,10 +40,8 @@
 package Cassandane::Cyrus::IMAPLimits;
 use strict;
 use warnings;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 

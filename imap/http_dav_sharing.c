@@ -1,45 +1,6 @@
-/* http_dav.c -- Routines for dealing with DAV properties in httpd
- *
- * Copyright (c) 1994-2011 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_dav.c -- Routines for dealing with DAV properties in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <sysexits.h>
 
@@ -119,6 +80,7 @@ static xmlDocPtr to_xml(const struct buf *buf)
     return doc;
 }
 
+// clang-format off
 static struct mime_type_t notify_mime_types[] = {
     /* First item MUST be the default type and storage format */
     { DAVNOTIFICATION_CONTENT_TYPE, NULL, "xml",
@@ -128,8 +90,10 @@ static struct mime_type_t notify_mime_types[] = {
     },
     { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 };
+// clang-format on
 
 /* Array of supported REPORTs */
+// clang-format off
 static const struct report_type_t notify_reports[] = {
 
     /* WebDAV Versioning (RFC 3253) REPORTs */
@@ -146,8 +110,10 @@ static const struct report_type_t notify_reports[] = {
 
     { NULL, 0, NULL, NULL, 0, 0 }
 };
+// clang-format on
 
 /* Array of known "live" properties */
+// clang-format off
 static const struct prop_entry notify_props[] = {
 
     /* WebDAV (RFC 4918) properties */
@@ -237,7 +203,9 @@ static const struct prop_entry notify_props[] = {
 
     { NULL, 0, 0, NULL, NULL, NULL }
 };
+// clang-format on
 
+// clang-format off
 static struct meth_params notify_params = {
     notify_mime_types,
     &notify_parse_path,
@@ -266,9 +234,11 @@ static struct meth_params notify_params = {
     { DAV_FINITE_DEPTH, notify_props},
     notify_reports
 };
+// clang-format on
 
 
 /* Namespace for WebDAV notification collections */
+// clang-format off
 struct namespace_t namespace_notify = {
     URL_NS_NOTIFY, 0, "notify", "/dav/notifications", NULL,
     http_allow_noauth_get, /*authschemes*/0,
@@ -302,6 +272,7 @@ struct namespace_t namespace_notify = {
         { NULL,                 NULL },                /* UNLOCK       */
     }
 };
+// clang-format on
 
 
 static void my_dav_init(struct buf *serverinfo __attribute__((unused)))
@@ -368,7 +339,7 @@ int dav_lookup_notify_collection(const char *userid, mbentry_t **mbentryp)
 static int _create_notify_collection(const char *userid, mbentry_t **mbentryp) 
 {
     /* lock the namespace lock and try again */
-    struct mboxlock *namespacelock = user_namespacelock(userid);
+    user_nslock_t *user_nslock = user_nslock_lock_w(userid);
 
     int r = dav_lookup_notify_collection(userid, mbentryp);
 
@@ -391,7 +362,7 @@ static int _create_notify_collection(const char *userid, mbentry_t **mbentryp)
     }
 
  done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -982,10 +953,10 @@ HIDDEN void dav_run_notifications()
     for (item = scheduled_notifications; item; item = next) {
         next = item->next;
         dav_send_notification(item->doc, item->extradata, item->userid, item->resource);
-	xmlFreeDoc(item->doc);
-	free(item->userid);
-	free(item->resource);
-	free(item);
+        xmlFreeDoc(item->doc);
+        free(item->userid);
+        free(item->resource);
+        free(item);
     }
     scheduled_notifications = NULL;
 }
@@ -1145,7 +1116,7 @@ HIDDEN int notify_post(struct transaction_t *txn)
 
             buf_init_ro_cstr(&value, (char *) resp->name);
             r = annotate_state_writemask(astate, annot,
-                                         txn->req_tgt.userid, &value);
+                                         httpd_userisadmin ? "" : txn->req_tgt.userid, &value);
 
             if (mbtype_isa(mailbox_mbtype(shared)) == MBTYPE_CALENDAR) {
                 /* Sharee's copy of calendar SHOULD default to transparent */
@@ -1153,7 +1124,7 @@ HIDDEN int notify_post(struct transaction_t *txn)
                     DAV_ANNOT_NS "<" XML_NS_CALDAV ">schedule-calendar-transp";
                 buf_init_ro_cstr(&value, "transparent");
                 r = annotate_state_writemask(astate, annot,
-                                             txn->req_tgt.userid, &value);
+                                             httpd_userisadmin ? "" : txn->req_tgt.userid, &value);
             }
         }
 
@@ -1492,7 +1463,9 @@ static void xml_add_sharee(const char *userid, void *data, void *rock)
 HIDDEN void xml_add_shareaccess(struct propfind_ctx *fctx,
                                 xmlNodePtr resp, xmlNodePtr node, int legacy)
 {
-    if (mboxname_userownsmailbox(fctx->req_tgt->userid, fctx->mbentry->name)) {
+    const int rights = httpd_myrights(httpd_authstate, fctx->mbentry);
+
+    if (rights & DACL_ADMIN) {
         hash_table table;
         struct invite_rock irock = { fctx->req_tgt->userid, 0, NULL, NULL, 0 };
 
@@ -1519,8 +1492,6 @@ HIDDEN void xml_add_shareaccess(struct propfind_ctx *fctx,
         xmlNewChild(node, fctx->ns[NS_CS], BAD_CAST "shared", NULL);
     }
     else {
-        int rights = httpd_myrights(httpd_authstate, fctx->mbentry);
-
         if ((rights & DACL_SHARERW) == DACL_SHARERW)
             xmlNewChild(node, NULL, BAD_CAST "read-write", NULL);
         else
@@ -1561,31 +1532,23 @@ HIDDEN int propfind_invite(const xmlChar *name, xmlNsPtr ns,
                                  fctx, NULL, rock != 0 /* legacy */ };
     xmlNodePtr node;
 
-    fctx->flags.cs_sharing = (rock != 0);
-
     if (!fctx->mbentry) return HTTP_NOT_FOUND;
+    if (!(httpd_myrights(httpd_authstate, fctx->mbentry) & DACL_ADMIN)) return HTTP_NO_PRIVS;
+
+    fctx->flags.cs_sharing = (rock != 0);
 
     node = xml_add_prop(HTTP_OK, fctx->ns[NS_DAV],
                         &propstat[PROPSTAT_OK], name, ns, NULL, 0);
     irock.node = node;
 
-    if (mboxname_userownsmailbox(fctx->req_tgt->userid, fctx->mbentry->name)) {
-        hash_table table;
+    hash_table table;
 
-        construct_hash_table(&table, 10, 1);
+    construct_hash_table(&table, 10, 1);
 
-        parse_acl(&table, fctx->mbentry->acl);
-        hash_enumerate(&table, &xml_add_sharee, &irock);
+    parse_acl(&table, fctx->mbentry->acl);
+    hash_enumerate(&table, &xml_add_sharee, &irock);
 
-        free_hash_table(&table, &free);
-    }
-    else {
-        struct userid_rights id_rights = 
-            { httpd_myrights(httpd_authstate, fctx->mbentry), 0 /* neg */};
-
-        irock.owner = "";
-        xml_add_sharee(fctx->req_tgt->userid, &id_rights, &irock);
-    }
+    free_hash_table(&table, &free);
 
     return 0;
 }
@@ -1992,7 +1955,7 @@ HIDDEN int dav_post_share(struct transaction_t *txn, struct meth_params *pparams
     }
 
     /* Local mailbox */
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(txn->req_tgt.mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb_w(txn->req_tgt.mbentry->name);
 
     /* Read body */
     ret = parse_xml_body(txn, &root, DAVSHARING_CONTENT_TYPE);
@@ -2162,7 +2125,7 @@ HIDDEN int dav_post_share(struct transaction_t *txn, struct meth_params *pparams
     if (root) xmlFreeDoc(root->doc);
     if (notify) xmlFreeDoc(notify->doc);
     buf_free(&resource);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     dav_run_notifications();
 
     return ret;

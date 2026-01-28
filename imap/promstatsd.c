@@ -1,44 +1,6 @@
-/* promstatsd.c - daemon for collating statistics for Prometheus
- *
- * Copyright (c) 1994-2017 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* promstatsd.c - daemon for collating statistics for Prometheus */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -249,6 +211,7 @@ static int accum_stats(const struct prom_stats *stats, void *rock)
 struct format_metric_rock {
     struct buf *buf;
     enum prom_metric_id metric;
+    int64_t report_time;
 };
 
 static void format_metric(const char *key __attribute__((unused)),
@@ -267,7 +230,7 @@ static void format_metric(const char *key __attribute__((unused)),
         buf_printf(fmrock->buf, ",%s", prom_metric_descs[fmrock->metric].label);
     buf_printf(fmrock->buf, "} %0.f %" PRId64 "\n",
                             stats->metrics[fmrock->metric].value,
-                            stats->metrics[fmrock->metric].last_updated);
+                            fmrock->report_time);
 }
 
 static void do_collate_service_report(struct buf *buf)
@@ -276,6 +239,7 @@ static void do_collate_service_report(struct buf *buf)
     char *doneprocs_lock_fname;
     int doneprocs_lock_fd;
     int i;
+    int64_t report_time;
 
     buf_reset(buf);
     construct_hash_table(&all_stats, 128, 0);
@@ -306,6 +270,7 @@ static void do_collate_service_report(struct buf *buf)
     /* slurp up and accumulate current stats */
     promdir_foreach(&accum_stats, PROMDIR_FOREACH_PIDS, &all_stats);
 
+    report_time = now_ms();
     syslog(LOG_DEBUG, "updating prometheus report for %d services",
                       hash_numrecords(&all_stats));
 
@@ -326,7 +291,7 @@ static void do_collate_service_report(struct buf *buf)
                             prom_metric_type_names[prom_metric_descs[i].type]);
         }
 
-        struct format_metric_rock fmrock = { buf, i };
+        struct format_metric_rock fmrock = { buf, i, report_time };
         hash_enumerate(&all_stats, &format_metric, &fmrock);
     }
 
@@ -745,8 +710,17 @@ int main(int argc, char **argv)
         int ret;
         const char *debugger = config_getstring(IMAPOPT_DEBUG_COMMAND);
         if (debugger) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+            /* This is exactly the kind of usage that -Wformat is designed to
+             * complain about (using user-supplied string as format argument),
+             * but in this case the "user" is the server administrator, and
+             * they're about to attach a debugger, so worrying about leaking
+             * contents of memory here is a little silly! :)
+             */
             snprintf(debugbuf, sizeof(debugbuf), debugger,
                      argv[0], getpid(), "promstatsd");
+#pragma GCC diagnostic pop
             syslog(LOG_DEBUG, "running external debugger: %s", debugbuf);
             ret = system(debugbuf); /* run debugger */
             syslog(LOG_DEBUG, "debugger returned exit status: %d", ret);

@@ -43,14 +43,12 @@ use warnings;
 use DateTime;
 use JSON;
 use JSON::XS;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use Storable 'dclone';
 use File::Basename;
 use IO::File;
 use Cwd qw(abs_path getcwd);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -84,6 +82,9 @@ sub new
                  conversations => 'yes',
                  httpmodules => 'carddav caldav jmap',
                  httpallowcompress => 'no',
+                 jmap_max_objects_in_get => '3',
+                 jmap_max_objects_in_set => '5',
+                 jmap_max_calls_in_request => '5',
                  jmap_nonstandard_extensions => 'yes');
 
     my $self = $class->SUPER::new({
@@ -121,15 +122,7 @@ sub tear_down
 sub download
 {
     my ($self, $accountid, $blobid) = @_;
-    my $jmap = $self->{jmap};
-
-    my $uri = $jmap->downloaduri($accountid, $blobid);
-    my %Headers;
-    $Headers{'Authorization'} = $jmap->auth_header();
-    my %getopts = (headers => \%Headers);
-    my $res = $jmap->ua->get($uri, \%getopts);
-    xlog $self, "JMAP DOWNLOAD @_ " . Dumper($res);
-    return $res;
+    $self->{jmap}->Download($accountid, $blobid);
 }
 
 use Cassandane::Tiny::Loader 'tiny-tests/JMAPSieve';

@@ -1,45 +1,6 @@
-/* http_rss.c -- Routines for handling RSS feeds of mailboxes in httpd
- *
- * Copyright (c) 1994-2011 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_rss.c -- Routines for handling RSS feeds of mailboxes in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -107,6 +68,7 @@ static struct body *body_fetch_section(struct body *body, const char *section);
 
 
 /* Namespace for RSS feeds of mailboxes */
+// clang-format off
 struct namespace_t namespace_rss = {
     URL_NS_RSS, 0, "rss", "/rss", NULL,
     http_allow_noauth_get, /*authschemes*/0,
@@ -138,6 +100,7 @@ struct namespace_t namespace_rss = {
         { NULL,                 NULL }                  /* UNLOCK       */
     }
 };
+// clang-format on
 
 
 static void rss_init(struct buf *serverinfo __attribute__((unused)))
@@ -242,7 +205,7 @@ static int meth_get(struct transaction_t *txn,
             }
 
             etag = message_guid_encode(&record.guid);
-            lastmod = record.internaldate;
+            lastmod = record.internaldate.tv_sec;
             precond = check_precond(txn, etag, lastmod);
 
             switch (precond) {
@@ -810,7 +773,7 @@ static int list_messages(struct transaction_t *txn, struct mailbox *mailbox)
     struct buf attrib = BUF_INITIALIZER;
 
     /* Check any preconditions */
-    lastmod = mailbox->i.last_appenddate;
+    lastmod = mailbox->i.last_appenddate.tv_sec;
     sprintf(etag, "%u-%u-%u",
             mailbox->i.uidvalidity, mailbox->i.last_uid, mailbox->i.exists);
     precond = check_precond(txn, etag, lastmod);
@@ -978,7 +941,7 @@ static int list_messages(struct transaction_t *txn, struct mailbox *mailbox)
         }
 
         /* Make sure the message is new enough */
-        if (record.gmtime < age_mark) continue;
+        if (record.gmtime.tv_sec < age_mark) continue;
 
         /* Feeding this message, increment counter */
         nitems++;
@@ -997,7 +960,7 @@ static int list_messages(struct transaction_t *txn, struct mailbox *mailbox)
                           GUID_URL_SCHEME, message_guid_encode(&record.guid));
 
         /* <updated> - required */
-        time_to_rfc3339(record.gmtime, datestr, sizeof(datestr));
+        time_to_rfc3339(record.gmtime.tv_sec, datestr, sizeof(datestr));
         buf_printf_markup(buf, level, "<updated>%s</updated>", datestr);
 
         /* <published> - optional */
@@ -1104,13 +1067,13 @@ static void display_part(struct transaction_t *txn,
         /* multipart */
         int i = 0;
 
-        if (!strcmp(body->subtype, "ALTERNATIVE") &&
-            !strcmp(body->subpart[0].type, "TEXT")) {
+        if (!strcmpsafe(body->subtype, "ALTERNATIVE") &&
+            !strcmpsafe(body->subpart[0].type, "TEXT")) {
             /* Look for a multipart/ or text/html subpart to display first,
                otherwise start with first subpart */
             for (i = body->numparts; --i;) {
-                if (!strcmp(body->subpart[i].type, "MULTIPART") ||
-                    !strcmp(body->subpart[i].subtype, "HTML")) break;
+                if (!strcmpsafe(body->subpart[i].type, "MULTIPART") ||
+                    !strcmpsafe(body->subpart[i].subtype, "HTML")) break;
             }
         }
 
@@ -1223,10 +1186,10 @@ static void display_part(struct transaction_t *txn,
     else {
         /* Leaf part - display something */
 
-        if (!strcmp(body->type, "TEXT") &&
+        if (!strcmpsafe(body->type, "TEXT") &&
             (!body->disposition || !strcmp(body->disposition, "INLINE"))) {
             /* Display non-attachment text part */
-            int ishtml = !strcmp(body->subtype, "HTML");
+            int ishtml = !strcmpsafe(body->subtype, "HTML");
             charset_t charset = charset_lookupname(body->charset_id);
             int encoding = body->charset_enc;
 
@@ -1246,7 +1209,7 @@ static void display_part(struct transaction_t *txn,
             if (!ishtml) buf_printf_markup(buf, level, "</pre>");
         }
         else {
-            int is_image = !strcmp(body->type, "IMAGE");
+            int is_image = !strcmpsafe(body->type, "IMAGE");
             struct param *param = body->params;
             const char *file_attr = "NAME";
 

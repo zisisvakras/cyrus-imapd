@@ -43,7 +43,6 @@
 #include <config.h>
 #include <stdlib.h>
 #include <string.h>
-#include <syslog.h>
 
 #include "auth.h"
 #include "libcyr_cfg.h"
@@ -109,6 +108,7 @@ static int mymemberof(const struct auth_state *auth_state, const char *identifie
  * Identifiers don't require a digit, really, so that should probably be
  * relaxed, too.
  */
+// clang-format: off
 static const char allowedchars[256] = {
  /* 0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F */
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 00-0F */
@@ -131,6 +131,7 @@ static const char allowedchars[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+// clang-format: on
 
 /*
  * Convert 'identifier' into canonical form.

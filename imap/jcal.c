@@ -1,45 +1,6 @@
-/* jcal.c -- Routines for converting iCalendar to/from jCal
- *
- * Copyright (c) 1994-2013 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jcal.c -- Routines for converting iCalendar to/from jCal */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -683,7 +644,7 @@ static icalproperty *json_array_to_icalproperty(json_t *jprop)
 
     /* Get the property type */
     propname = ucase(icalmemory_tmp_copy(json_string_value(jtype)));
-    kind = icalenum_string_to_property_kind(propname);
+    kind = icalproperty_string_to_kind(propname);
     if (kind == ICAL_NO_PROPERTY) {
         syslog(LOG_WARNING, "Unknown jCal property type: %s", propname);
         return NULL;
@@ -692,7 +653,7 @@ static icalproperty *json_array_to_icalproperty(json_t *jprop)
     /* Get the value type */
     typestr = json_string_value(jvaltype);
     valkind = !strcmp(typestr, "unknown") ? ICAL_X_VALUE :
-        icalenum_string_to_value_kind(ucase(icalmemory_tmp_copy(typestr)));
+        icalvalue_string_to_kind(ucase(icalmemory_tmp_copy(typestr)));
     if (valkind == ICAL_NO_VALUE) {
         syslog(LOG_WARNING, "Unknown jCal value type for %s property: %s",
                propname, typestr);
@@ -791,7 +752,7 @@ EXPORTED icalcomponent *jcal_array_as_icalcomponent(json_t *jobj)
     }
 
     type = json_string_value(jtype);
-    kind = icalenum_string_to_component_kind(ucase(icalmemory_tmp_copy(type)));
+    kind = icalcomponent_string_to_kind(ucase(icalmemory_tmp_copy(type)));
     if (kind == ICAL_NO_COMPONENT) {
         syslog(LOG_WARNING, "Unknown jCal component type: %s", type);
         return NULL;

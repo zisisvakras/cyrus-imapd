@@ -1,45 +1,6 @@
-/* prot.h -- stdio-like module that handles buffering, SASL, and TLS
- *           details for I/O over sockets
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* prot.h -- stdio-like module that handles buffering, SASL, and TLS */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_PROT_H
 #define INCLUDED_PROT_H
@@ -51,9 +12,7 @@
 #include <sasl/sasl.h>
 #include <config.h>
 
-#ifdef HAVE_SSL
 #include <openssl/ssl.h>
-#endif /* HAVE_SSL */
 
 #ifdef HAVE_ZLIB
 #include <zlib.h>
@@ -75,9 +34,9 @@ typedef ssize_t prot_fillcallback_t(unsigned char *buf, size_t len, void *rock);
 struct protstream {
     /* The Buffer */
     unsigned char *buf;
-    unsigned buf_size;
+    size_t buf_size;
     unsigned char *ptr; /* The end of data in the buffer */
-    unsigned cnt; /* Space Remaining in buffer */
+    size_t cnt; /* Space Remaining in buffer */
 
     /* File Descriptors */
     int fd;         /* The Socket */
@@ -88,17 +47,14 @@ struct protstream {
     sasl_conn_t *conn;
     int saslssf;
     int maxplain;
-
-#ifdef HAVE_SSL
     SSL *tls_conn;
-#endif /* HAVE_SSL */
 
 #ifdef HAVE_ZLIB
     /* (De)compress stream */
     z_stream *zstrm;
     /* (De)compress buffer */
     unsigned char *zbuf;
-    unsigned int zbuf_size;
+    size_t zbuf_size;
     /* Compress parameters */
     int zlevel;
     int zflush;
@@ -129,6 +85,8 @@ struct protstream {
     struct protstream *flushonread;
     /* hack to write to an in-memory-string */
     struct buf *writetobuf;
+    /* for printf */
+    struct buf vbuf;
 
     int can_unget;
     uint64_t bytes_in;
@@ -216,7 +174,7 @@ extern size_t prot_lookahead(struct protstream *s,
 /* Allocate/free the protstream structure */
 extern struct protstream *prot_new(int fd, int write);
 extern struct protstream *prot_writebuf(struct buf *buf);
-extern struct protstream *prot_readmap(const char *base, uint32_t len);
+extern struct protstream *prot_readmap(const char *base, size_t len);
 extern struct protstream *prot_readcb(prot_fillcallback_t *proc, void *rock);
 extern int prot_free(struct protstream *s);
 
@@ -234,11 +192,9 @@ extern uint64_t prot_bytes_out(struct protstream *s);
 extern int prot_setsasl(struct protstream *s, sasl_conn_t *conn);
 extern void prot_unsetsasl(struct protstream *s);
 
-#ifdef HAVE_SSL
 /* Set TLS options for a given protstream (requires a completed tls
  * negotiation */
 extern int prot_settls(struct protstream *s, SSL *tlsconn);
-#endif /* HAVE_SSL */
 
 /* Mark this protstream as a "client" for the purpose of generating
  * or consuming literals (thanks LITERAL+) */
@@ -286,7 +242,7 @@ extern int prot_fill(struct protstream *s);
 extern int prot_flush(struct protstream *s);
 
 /* These are protlayer versions of the specified functions */
-extern int prot_write(struct protstream *s, const char *buf, unsigned len);
+extern int prot_write(struct protstream *s, const char *buf, size_t len);
 extern int prot_putbuf(struct protstream *s, const struct buf *buf);
 extern int prot_puts(struct protstream *s, const char *str);
 extern int prot_vprintf(struct protstream *, const char *, va_list)
@@ -299,9 +255,9 @@ extern int prot_printstring(struct protstream *out, const char *s);
 extern int prot_printmap(struct protstream *out, const char *s, size_t n);
 extern int prot_printamap(struct protstream *out, const char *s, size_t n);
 extern int prot_printastring(struct protstream *out, const char *s);
-extern int prot_read(struct protstream *s, char *buf, unsigned size);
-extern int prot_readbuf(struct protstream *s, struct buf *buf, unsigned size);
-extern char *prot_fgets(char *buf, unsigned size, struct protstream *s);
+extern int prot_read(struct protstream *s, char *buf, size_t size);
+extern int prot_readbuf(struct protstream *s, struct buf *buf, size_t size);
+extern char *prot_fgets(char *buf, size_t size, struct protstream *s);
 
 /* select() for protstreams */
 extern int prot_select(struct protgroup *readstreams, int extra_read_fd,

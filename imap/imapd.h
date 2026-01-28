@@ -1,44 +1,6 @@
-/* imapd.h -- Common state for IMAP daemon
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* imapd.h -- Common state for IMAP daemon */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_IMAPD_H
 #define INCLUDED_IMAPD_H
@@ -60,6 +22,9 @@ extern char *imapd_userid;
 
 /* Authorization state for logged in userid */
 extern struct auth_state *imapd_authstate;
+
+/* Client quirks */
+#define QUIRK_SEARCHFUZZY (1<<0)
 
 struct octetinfo
 {
@@ -106,8 +71,6 @@ struct fetchargs {
     strarray_t attribs;
     int isadmin;
     struct auth_state *authstate;
-    hash_table *cidhash;          /* for XCONVFETCH */
-    struct conversations_state *convstate; /* for FETCH_MAILBOXIDS */
 
     range_t partial;              /* For PARTIAL */
 };
@@ -240,9 +203,9 @@ struct searchargs {
     /* used only during parsing */
     int fuzzy_depth;
     uint64_t maxargssize_mark;
-    unsigned did_objectid : 1;
+    uint32_t client_behavior_mask;
 
-    /* For ESEARCH & XCONVMULTISORT */
+    /* For ESEARCH */
     const char *tag;
     int returnopts;
     struct namespace *namespace;
@@ -269,50 +232,6 @@ struct searchargs {
     } partial;
 };
 
-/* Windowing arguments for the XCONVSORT command */
-struct windowargs {
-    int conversations;          /* whether to limit the results by
-                                   conversation id */
-    uint32_t limit;             /* limit on how many messages to return,
-                                 * 0 means unlimited. */
-    uint32_t position;          /* 1-based index into results of first
-                                 * message to return.  0 means not
-                                 * specified which is the same as 1.
-                                 * Mutually exclusive with @anchor */
-    uint32_t anchor;            /* UID of a message used to locate the
-                                 * start of the window; 0 means not
-                                 * specified.  If the anchor is found,
-                                 * the first message reported will be
-                                 * the largest of 1 and the anchor minus
-                                 * @offset.  If specified but not found,
-                                 * an error will be returned.  Mutually
-                                 * exclusive with @position.*/
-    char *anchorfolder;         /* internal mboxname of a folder to
-                                 * which the anchor applies; only used
-                                 * for XCONVMULTISORT. */
-    uint32_t offset;
-    int changedsince;           /* if 1, show messages a) added since @uidnext,
-                                 * b) removed since @modseq, or c) modified
-                                 * since @modseq */
-    modseq_t modseq;
-    uint32_t uidnext;
-    uint32_t upto;              /* UID of a message used to terminate an
-                                 * XCONVUPDATES early, 0 means not
-                                 * specified.  */
-};
-
-struct snippetargs
-{
-    struct snippetargs *next;
-    char *mboxname;             /* internal */
-    uint32_t uidvalidity;
-    struct {
-        uint32_t *data;
-        int count;
-        int alloc;
-    } uids;
-};
-
 /* Bitmask for status queries (RFC 3501) */
 enum {
     STATUS_MESSAGES =           (1<<0),
@@ -321,23 +240,21 @@ enum {
     STATUS_UIDVALIDITY =        (1<<3),
     STATUS_UNSEEN =             (1<<4),
     STATUS_HIGHESTMODSEQ =      (1<<5),  /* RFC 7162 */
-    STATUS_SIZE =               (1<<6),  /* RFC 8438 */
-    STATUS_MAILBOXID =          (1<<7),  /* RFC 8474 */
-    STATUS_DELETED =            (1<<8),  /* RFC 9051 */
-    STATUS_DELETED_STORAGE =    (1<<9),  /* RFC 9208 */
+    STATUS_APPENDLIMIT =        (1<<6),  /* RFC 7889 */
+    STATUS_SIZE =               (1<<7),  /* RFC 8438 */
+    STATUS_MAILBOXID =          (1<<8),  /* RFC 8474 */
+    STATUS_DELETED =            (1<<9),  /* RFC 9051 */
+    STATUS_DELETED_STORAGE =    (1<<10), /* RFC 9208 */
 
     /* Non-standard */
-    STATUS_XCONVEXISTS =        (1<<11),
-    STATUS_XCONVUNSEEN =        (1<<12),
-    STATUS_XCONVMODSEQ =        (1<<13),
+    STATUS_UNIQUEID =           (1<<13),
     STATUS_CREATEDMODSEQ =      (1<<14),
     STATUS_MBOPTIONS =          (1<<15)
     /* New items MUST be handled in imapd.c:list_data_remote() */
 };
 
-#define STATUS_CONVITEMS (STATUS_XCONVEXISTS|STATUS_XCONVUNSEEN|STATUS_XCONVMODSEQ)
-#define STATUS_MBENTRYITEMS (STATUS_MAILBOXID|STATUS_UIDVALIDITY)
-#define STATUS_INDEXITEMS (STATUS_MESSAGES|STATUS_UIDNEXT|STATUS_SIZE|STATUS_HIGHESTMODSEQ|STATUS_CREATEDMODSEQ|STATUS_MBOPTIONS|STATUS_DELETED|STATUS_DELETED_STORAGE)
+#define STATUS_MBENTRYITEMS (STATUS_UNIQUEID|STATUS_UIDVALIDITY)
+#define STATUS_INDEXITEMS (STATUS_MESSAGES|STATUS_UIDNEXT|STATUS_SIZE|STATUS_HIGHESTMODSEQ|STATUS_CREATEDMODSEQ|STATUS_MBOPTIONS|STATUS_DELETED|STATUS_DELETED_STORAGE|STATUS_MAILBOXID)
 #define STATUS_SEENITEMS (STATUS_RECENT|STATUS_UNSEEN)
 
 struct getmetadata_options {
@@ -449,6 +366,9 @@ extern struct protstream *imapd_out, *imapd_in;
 
 /* Bitmask for exhibited client behaviors */
 enum {
+    CB_ANNOTATE    =  (1<<21),  /* ANNOTATE on SELECT/EXAMINE,
+                                   ANNOTATION on APPEND, or
+                                   FETCH/STORE/SEARCH/SORT ANNOTATION    */
     CB_BINARY      =  (1<<0),   /* FETCH BINARY or APPEND literal8       */
     CB_CATENATE    =  (1<<1),   /* CATENATE on APPEND                    */
     CB_COMPRESS    =  (1<<2),   /* COMPRESS                              */
@@ -468,15 +388,16 @@ enum {
     CB_QRESYNC     =  (1<<13),  /* ENABLE QRESYNC or QRESYNC on SELECT   */
     CB_REPLACE     =  (1<<14),  /* REPLACE                               */
     CB_SAVEDATE    =  (1<<15),  /* FETCH SAVEDATE                        */
+    CB_SEARCHFUZZY =  (1<<22),  /* SEARCH FUZZY                          */
     CB_SEARCHRES   =  (1<<16),  /* SAVE on SEARCH                        */
+    CB_UIDBATCHES  =  (1<<20),  /* UIDBATCHES                            */
     CB_UIDONLY     =  (1<<17),  /* ENABLE UIDONLY                        */
     CB_UNSELECT    =  (1<<18),  /* UNSELECT                              */
     CB_UTF8ACCEPT  =  (1<<19),  /* ENABLE UTF8=ACCEPT                    */
 
     /* non-standard - track for possible deprecation                     */
-    CB_ANNOTATE    =  (1<<29),  /* GET/SETANNOTATION or FETCH ANNOTATION */
-    CB_XCONV       =  (1<<30),  /* STATUS XCONV*                         */
-    CB_XLIST       =  (1U<<31),  /* XLIST                                */
+    CB_ANNOTATEMBOX=  (1<<30),  /* GET/SETANNOTATION (old ANNOTATEMORE)  */
+    CB_XLIST       =  (1U<<31), /* XLIST                                 */
 };
 
 #endif /* INCLUDED_IMAPD_H */

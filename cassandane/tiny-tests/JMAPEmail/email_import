@@ -3,8 +3,8 @@ use Cassandane::Tiny;
 
 sub test_email_import
     :min_version_3_1 :needs_component_sieve
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     my $store = $self->{store};
@@ -97,5 +97,6 @@ sub test_email_import
     }, "R1"]]);
     $self->assert_str_equals("Email/import", $res->[0][0]);
     $self->assert_str_equals("alreadyExists", $res->[0][1]->{notCreated}{"1"}{type});
-    $self->assert_not_null($res->[0][1]->{notCreated}{"1"}{existingId});
+    $self->assert_str_equals($msg->{id},
+                             $res->[0][1]->{notCreated}{"1"}{existingId});
 }

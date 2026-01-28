@@ -5,20 +5,12 @@ sub test_rename_deepuser_standardfolders_rightnow
     :AllowMoves :Replication :min_version_3_3
     :JMAPExtensions :RightNow
     :needs_component_replication
+    ($self)
 {
-    my ($self) = @_;
-
     my $admintalk = $self->{adminstore}->get_client();
 
     my $rhttp = $self->{replica}->get_service('http');
-    my $rjmap = Mail::JMAPTalk->new(
-        user => 'cassandane',
-        password => 'pass',
-        host => $rhttp->host(),
-        port => $rhttp->port(),
-        scheme => 'http',
-        url => '/jmap/',
-    );
+    my $rjmap = $self->{replica}->new_jmaptester_for_user($self->default_user);
 
     my $synclogfname = "$self->{instance}->{basedir}/conf/sync/log";
 
@@ -67,6 +59,7 @@ sub test_rename_deepuser_standardfolders_rightnow
     $self->{instance}->getsyslog();
     my $res = $admintalk->rename('user.cassandane', 'user.newuser');
     $self->assert(not $admintalk->get_last_error());
+    $self->{jmap}->set_username_and_password('newuser', 'pass');
 
     xlog $self, "Make sure we didn't create intermediates in the process!";
     my $syslog = join "\n", $self->{instance}->getsyslog();
@@ -78,7 +71,6 @@ sub test_rename_deepuser_standardfolders_rightnow
     $res = $admintalk->select("user.newuser.bar.sub");
     $self->assert(not $admintalk->get_last_error());
 
-    $self->{jmap}->{user} = 'newuser';
     $data = $self->_fmjmap_ok('Mailbox/get', properties => ['name']);
     my %byname_new = map { $_->{name} => $_->{id} } @{$data->{list}};
 
@@ -94,7 +86,7 @@ sub test_rename_deepuser_standardfolders_rightnow
     # check replication is clean
     $self->check_replication('newuser');
 
-    $rjmap->{user} = 'newuser';
+    $rjmap->set_username_and_password('newuser', 'pass');
     $data = $self->_fmjmap_ok('Mailbox/get', jmap => $rjmap, properties => ['name']);
     my %byname_newrepl = map { $_->{name} => $_->{id} } @{$data->{list}};
 

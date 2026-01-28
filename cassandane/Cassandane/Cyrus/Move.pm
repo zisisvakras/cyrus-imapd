@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Instance;
@@ -95,14 +94,14 @@ sub test_move_new_user
     $talk->select("user.user2.sub");
     my $res = $talk->fetch("1", "(flags)");
     my $flags = $res->{1}->{flags};
-    $self->assert(grep { $_ eq "\\Seen" } @$flags);
+    $self->assert_contains("\\Seen", $flags);
 
     xlog $self, "moving back works";
     $talk->move("1", "INBOX");
     $talk->select("INBOX");
     $res = $talk->fetch("1", "(flags)");
     $flags = $res->{1}->{flags};
-    $self->assert(grep { $_ eq "\\Seen" } @$flags);
+    $self->assert_contains("\\Seen", $flags);
 }
 
 1;

@@ -41,7 +41,6 @@ package Cassandane::ServiceFactory;
 use strict;
 use warnings;
 
-use lib '.';
 use Cassandane::Util::Log;
 use Cassandane::Service;
 use Cassandane::IMAPService;
@@ -115,6 +114,12 @@ sub create
                                 type => 'ptloader',
                                 argv => ['ptloader', '-d', '99'],
                                 port => '@basedir@/conf/ptsock',
+                                %params);
+    }
+    elsif ($name =~ m/backupcyrusd/)
+    {
+        return Cassandane::Service->new(
+                                argv => ['backupcyrusd'],
                                 %params);
     }
     else

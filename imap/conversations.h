@@ -1,44 +1,6 @@
-/* conversations.h -- Routines for dealing with the conversations database
- *
- * Copyright (c) 1994-2010 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* conversations.h -- Routines for dealing with the conversations database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef __CYRUS_CONVERSATIONS_H_
 #define __CYRUS_CONVERSATIONS_H_ 1
@@ -66,16 +28,20 @@
     (!mbentry ? NULL : (state->folders_byname ? mbentry->name : mbentry->uniqueid))
 
 typedef bit64   conversation_id_t;
-#define CONV_FMT "%016llx"
+#define CONV_FMT BIT64_FMT
 #define NULLCONVERSATION        (0ULL)
 
 struct index_record;
 struct mailbox;
 
-#define CONVERSATIONS_VERSION 1
+#define CONVERSATIONS_VERSION 2
 #define CONVERSATIONS_KEY_VERSION 0
 #define CONVERSATIONS_STATUS_VERSION 0
-#define CONVERSATIONS_RECORD_VERSION 1
+// RECORD_VERSION history:
+// 0: original version - no version field in record
+// 1: counts messages per folder and GUID, not UID
+// 2: NFC-normalizes conversation subject
+#define CONVERSATIONS_RECORD_VERSION 2
 
 #define CONV_ISDIRTY     (1<<0)
 #define CONV_WITHFOLDERS (1<<1)
@@ -104,6 +70,7 @@ struct conversations_state {
     struct conv_quota quota;
     int trashfolder;
     int version;
+    char *userid;
     char *trashmboxname;
     char *trashmboxid;
     char *path;
@@ -111,6 +78,7 @@ struct conversations_state {
     unsigned quota_loaded:1;
     unsigned quota_dirty:1;
     unsigned is_shared:1;
+    unsigned compact_emailids:1;
 };
 
 typedef struct conversation conversation_t;
@@ -126,7 +94,7 @@ struct conv_thread {
     conv_thread_t *next;
     struct message_guid guid;
     uint32_t exists;
-    time_t internaldate;
+    uint64_t nano_internaldate; // nanoseconds since epoch
     modseq_t createdmodseq;
 };
 
@@ -140,7 +108,7 @@ struct conv_folder {
     uint32_t        prev_exists;
 };
 
-#define CONV_GUIDREC_VERSION 3          // (must be <= 127)
+#define CONV_GUIDREC_VERSION 4          // (must be <= 127)
 #define CONV_GUIDREC_BYNAME_VERSION 1   // last folders byname version
 
 struct conv_guidrec {
@@ -150,11 +118,11 @@ struct conv_guidrec {
     uint32_t        uid;
     const char      *part;
     conversation_id_t cid;
-    conversation_id_t basecid;
+    conversation_id_t basecid;      // if version >= 3
     char            version;
     uint32_t        system_flags;   // if version >= 1
     uint32_t        internal_flags; // if version >= 1
-    time_t          internaldate;   // if version >= 1
+    uint64_t        nano_internaldate;   // if version >= 4 (nanoseconds since epoch)
 };
 
 struct conv_sender {
@@ -231,10 +199,19 @@ extern void conversations_set_suffix(const char *suff);
 extern char *conversations_getmboxpath(const char *mboxname);
 extern char *conversations_getuserpath(const char *username);
 
-extern int conversations_open_path(const char *path, const char *userid, int shared,
-                                   struct conversations_state **statep);
-extern int conversations_open_user(const char *username, int shared,
-                                   struct conversations_state **statep);
+extern int open_conversations_exist(void);
+
+#define conversations_open_path(p, u, sh, sp) \
+    conversations_open_path_version(p, u, sh, sp, 0)
+extern int conversations_open_path_version(const char *path,
+                                           const char *userid, int shared,
+                                           struct conversations_state **statep,
+                                           int version);
+#define conversations_open_user(u, sh, sp) \
+    conversations_open_user_version(u, sh, sp, 0)
+extern int conversations_open_user_version(const char *username, int shared,
+                                           struct conversations_state **statep,
+                                           int version);
 extern int conversations_open_mbox(const char *mboxname, int shared,
                                    struct conversations_state **statep);
 extern struct conversations_state *conversations_get_path(const char *path);
@@ -291,6 +268,17 @@ extern int conversations_guid_cid_lookup(struct conversations_state *state,
    strcmpsafe(conv_guidrec_uniqueid(rec), mailbox_uniqueid(mbox)) : \
    strcmpsafe(conv_guidrec_mboxname(rec), mailbox_name(mbox)) \
  )
+
+/* J record items */
+#define CONV_JMAPID_SIZE 11  // 64-bits base64-encoded w/o padding
+extern int conversations_jmapid_guidrep_lookup(struct conversations_state *state,
+                                               const char *jidrep,
+                                               char guidrep[2*MESSAGE_GUID_SIZE+1]);
+extern void conversations_adjust_internaldate(struct conversations_state *cstate,
+                                              const char *mboxname,
+                                              struct message_guid *guid,
+                                              struct timespec *internaldate);
+
 /* F record items */
 extern int conversation_getstatus(struct conversations_state *state,
                                   const char *mailbox,
@@ -327,13 +315,16 @@ extern int conversation_store(struct conversations_state *state,
  * consistency rules (e.g. the conversation's modseq is the
  * maximum of all the per-folder modseqs).  Sets CONV_DIRTY
  * if any data actually changed.  */
+extern int conversations_nanosecfix_record(struct conversations_state *cstate,
+                                           struct mailbox *mailbox,
+                                           struct index_record *record);
 extern int conversations_update_record(struct conversations_state *cstate,
                                        struct mailbox *mailbox,
                                        const struct index_record *old,
                                        struct index_record *new_,
                                        int allowrenumber,
                                        int ignorelimits,
-				       int silent);
+                                       int silent);
 
 extern int conversation_update(struct conversations_state *state,
                                 conversation_t *conv,
@@ -356,9 +347,10 @@ extern void conversation_update_sender(conversation_t *conv,
                                        ssize_t delta_exists);
 extern void conversation_update_thread(conversation_t *conv,
                                        const struct message_guid *guid,
-                                       time_t internaldate,
+                                       uint64_t nano_internaldate,
                                        modseq_t createdmodseq,
-                                       int delta_exists);
+                                       int delta_exists,
+                                       int force);
 
 extern int conversations_prune(struct conversations_state *state,
                                time_t thresh, unsigned int *,
@@ -368,11 +360,12 @@ extern int conversations_undump(struct conversations_state *, FILE *);
 
 extern int conversations_truncate(struct conversations_state *);
 
-extern const char *conversation_id_encode(conversation_id_t cid);
+extern const char *conversation_id_encode(struct conversations_state *state,
+                                          conversation_id_t cid);
 extern int conversation_id_decode(conversation_id_t *cid, const char *text);
 
 
-extern int conversations_zero_counts(struct conversations_state *state, int wipe);
+extern int conversations_zero_counts(struct conversations_state *state, int wipe, int do_upgrade);
 extern int conversations_cleanup_zero(struct conversations_state *state);
 extern int conversations_zero_modseq(struct conversations_state *state);
 
@@ -383,5 +376,8 @@ extern int conversations_rename_folder(struct conversations_state *state,
 extern int conversations_check_msgid(const char *msgid, size_t len);
 
 extern int conversations_read_quota(struct conversations_state *state, struct conv_quota *q);
+
+extern int conversations_enable_compactids(struct conversations_state *cstate,
+                                           int enable);
 
 #endif /* __CYRUS_CONVERSATIONS_H_ */

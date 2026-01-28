@@ -45,7 +45,6 @@ use Data::Dumper;
 use Date::Format qw(time2str);
 use Time::HiRes qw(usleep);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Instance;
@@ -212,6 +211,7 @@ sub test_lint_channels
         'banana_sync_host' => 'banana.internal',
         'banana_sync_trust_fund' => 'street art',
         'banana_tcp_keepalive' => 'yes',
+        'banana_sasl_mech_list' => 'PLAIN',
     );
 
     $self->_start_instances();
@@ -225,6 +225,7 @@ sub test_lint_channels
         [ sort(
             "banana_sync_trust_fund: street art\n",
             "banana_tcp_keepalive: yes\n",
+            "banana_sasl_mech_list: PLAIN\n",
         ) ],
         [ sort @output ]
     );
@@ -264,6 +265,129 @@ sub test_lint_partitions
             "backuppartition-bad: /tmp/bbad\n",
             "foosearchpartition-bad: /tmp/sbad\n",
             "metapartition-bad: /tmp/mbad\n",
+        ) ],
+        [ sort @output ]
+    );
+}
+
+sub test_lint_partitions_dups
+    :NoStartInstances
+{
+    my ($self) = @_;
+
+    $self->config_set(
+        # each has its own disk path: good
+        'partition-good' => '/tmp/pgood',
+        'metapartition-good' => '/tmp/mgood',
+        'archivepartition-good' => '/tmp/agood',
+        'foosearchpartition-good' => '/tmp/sgood',
+
+        # reusing disk paths for same-named partition: bad
+        'partition-bad1' => '/tmp/bad',
+        'metapartition-bad1' => '/tmp/bad',
+
+        # reusing disk paths for other-named partition: bad
+        'partition-bad2' => '/tmp/bad',
+    );
+
+    # master should fail to start
+    eval {
+        $self->_start_instances();
+    };
+    my $e = $@;
+    $self->assert_not_null($e);
+
+    xlog $self, "test 'cyr_info conf-lint' with duplicated partitions configured";
+
+    my @output = $self->{instance}->run_cyr_info('conf-lint');
+    @output = grep { !m/_db: / } @output;  # skip database types
+
+    $self->assert_deep_equals(
+        [ sort(
+            "partition-bad1: /tmp/bad\n",
+            "metapartition-bad1: /tmp/bad\n",
+            "partition-bad2: /tmp/bad\n",
+        ) ],
+        [ sort @output ]
+    );
+
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{disk path used by multiple partitions});
+}
+
+sub test_lint_partitions_subdirs
+    :NoStartInstances
+{
+    my ($self) = @_;
+
+    $self->config_set(
+        # each has its own disk path: good
+        'partition-good' => '/tmp/pgood',
+        'metapartition-good' => '/tmp/mgood',
+        'archivepartition-good' => '/tmp/agood',
+        'foosearchpartition-good' => '/tmp/sgood',
+
+        # disk paths that are children of other's disk paths: bad
+        'partition-bad1' => '/tmp/bad1',
+        'metapartition-bad1' => '/tmp/bad1/meta',
+        # XXX it can't currently report more than one bad child per parent
+
+        # disk paths that are descendents of other's disk paths: bad
+        'partition-bad2' => '/tmp/bad2',
+        'metapartition-bad2' => '/tmp/bad2/blah/meta',
+        # XXX it can't currently report more than one bad child per parent
+    );
+
+    # master should fail to start
+    eval {
+        $self->_start_instances();
+    };
+    my $e = $@;
+    $self->assert_not_null($e);
+
+    xlog $self, "test 'cyr_info conf-lint' with subdir partitions configured";
+
+    my @output = $self->{instance}->run_cyr_info('conf-lint');
+    @output = grep { !m/_db: / } @output;  # skip database types
+
+    $self->assert_deep_equals(
+        [ sort(
+            "partition-bad1: /tmp/bad1\n",
+            "metapartition-bad1: /tmp/bad1/meta\n",
+            "partition-bad2: /tmp/bad2\n",
+            "metapartition-bad2: /tmp/bad2/blah/meta\n",
+        ) ],
+        [ sort @output ]
+    );
+
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{disk path is a prefix of others});
+}
+
+sub test_lint_services
+    :want_service_http :needs_component_httpd :NoStartInstances
+{
+    my ($self) = @_;
+
+    $self->config_set(
+        'http_sasl_mech_list' => 'PLAIN',
+        'http_sasl_trust_fund' => 'street art',
+        'http_tcp_keepalive' => 'yes',
+        'http_trust_fund' => 'street art',
+    );
+
+    $self->_start_instances();
+
+    xlog $self, "test 'cyr_info conf-lint' with service-specific config";
+
+    my @output = $self->{instance}->run_cyr_info('conf-lint');
+    @output = grep { !m/_db: / } @output;  # skip database types
+
+    $self->assert_deep_equals(
+        [ sort(
+            "http_trust_fund: street art\n",
+            # XXX we don't verify sasl keys, so this isn't reported
+            #"http_sasl_trust_fund: street art\n",
         ) ],
         [ sort @output ]
     );
@@ -352,7 +476,7 @@ sub test_proc_crashed_services
         # sanitizers might complain about the SEGV
         my $ubsan_logdir = $self->{instance}->_sanitizer_log_dir("ubsan");
         unlink("$ubsan_logdir/ubsan.$pid");
-        my $asan_logdir = $self->{instance}->_sanitizer_log_dir("ubsan");
+        my $asan_logdir = $self->{instance}->_sanitizer_log_dir("asan");
         unlink("$asan_logdir/asan.$pid");
 
         @output = $self->{instance}->run_cyr_info('proc');

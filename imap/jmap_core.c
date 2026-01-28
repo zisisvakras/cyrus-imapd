@@ -1,45 +1,6 @@
-/* jmap_core.c -- Routines for handling JMAP Core requests
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_core.c -- Routines for handling JMAP Core requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -62,6 +23,7 @@ static int jmap_core_echo(jmap_req_t *req);
 /* JMAP extension methods */
 static int jmap_usercounters_get(jmap_req_t *req);
 
+// clang-format off
 static jmap_method_t jmap_core_methods_standard[] = {
     {
         "Core/echo",
@@ -71,7 +33,9 @@ static jmap_method_t jmap_core_methods_standard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_core_methods_nonstandard[] = {
     {
         "UserCounters/get",
@@ -81,6 +45,7 @@ static jmap_method_t jmap_core_methods_nonstandard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 HIDDEN void jmap_core_init(jmap_settings_t *settings)
 {
@@ -102,46 +67,49 @@ HIDDEN void jmap_core_init(jmap_settings_t *settings)
     } \
 } while (0)
 
-    _read_bytesize_opt(settings->limits[MAX_SIZE_UPLOAD],
+    int64_t *limits = settings->limits;
+
+    _read_bytesize_opt(limits[MAX_SIZE_UPLOAD],
                        IMAPOPT_JMAP_MAX_SIZE_UPLOAD, 'K');
-    _read_int_opt(settings->limits[MAX_CONCURRENT_UPLOAD],
+    _read_int_opt(limits[MAX_CONCURRENT_UPLOAD],
                   IMAPOPT_JMAP_MAX_CONCURRENT_UPLOAD);
-    _read_bytesize_opt(settings->limits[MAX_SIZE_REQUEST],
+    _read_bytesize_opt(limits[MAX_SIZE_REQUEST],
                        IMAPOPT_JMAP_MAX_SIZE_REQUEST, 'K');
-    _read_int_opt(settings->limits[MAX_CONCURRENT_REQUESTS],
+    _read_int_opt(limits[MAX_CONCURRENT_REQUESTS],
                   IMAPOPT_JMAP_MAX_CONCURRENT_REQUESTS);
-    _read_int_opt(settings->limits[MAX_CALLS_IN_REQUEST],
+    _read_int_opt(limits[MAX_CALLS_IN_REQUEST],
                   IMAPOPT_JMAP_MAX_CALLS_IN_REQUEST);
-    _read_int_opt(settings->limits[MAX_OBJECTS_IN_GET],
+    _read_int_opt(limits[MAX_OBJECTS_IN_GET],
                   IMAPOPT_JMAP_MAX_OBJECTS_IN_GET);
-    _read_int_opt(settings->limits[MAX_OBJECTS_IN_SET],
+    _read_int_opt(limits[MAX_OBJECTS_IN_SET],
                   IMAPOPT_JMAP_MAX_OBJECTS_IN_SET);
-    _read_bytesize_opt(settings->limits[MAX_SIZE_BLOB_SET],
+    _read_bytesize_opt(limits[MAX_SIZE_BLOB_SET],
                        IMAPOPT_JMAP_MAX_SIZE_BLOB_SET, 'K');
-    _read_int_opt(settings->limits[MAX_CATENATE_ITEMS],
+    _read_int_opt(limits[MAX_CATENATE_ITEMS],
                   IMAPOPT_JMAP_MAX_CATENATE_ITEMS);
 
 #undef _read_int_opt
 #undef _read_bytesize_opt
 
+    limits[MAX_CREATEDIDS_IN_REQUEST] =
+        limits[MAX_CALLS_IN_REQUEST] * limits[MAX_OBJECTS_IN_SET];
+
     json_object_set_new(settings->server_capabilities,
             JMAP_URN_CORE,
             json_pack("{s:i s:i s:i s:i s:i s:i s:i s:o}",
-                "maxSizeUpload",
-                settings->limits[MAX_SIZE_UPLOAD],
-                "maxConcurrentUpload",
-                settings->limits[MAX_CONCURRENT_UPLOAD],
-                "maxSizeRequest",
-                settings->limits[MAX_SIZE_REQUEST],
-                "maxConcurrentRequests",
-                settings->limits[MAX_CONCURRENT_REQUESTS],
-                "maxCallsInRequest",
-                settings->limits[MAX_CALLS_IN_REQUEST],
-                "maxObjectsInGet",
-                settings->limits[MAX_OBJECTS_IN_GET],
-                "maxObjectsInSet",
-                settings->limits[MAX_OBJECTS_IN_SET],
-                "collationAlgorithms", json_array()));
+                "maxSizeUpload",          limits[MAX_SIZE_UPLOAD],
+                "maxConcurrentUpload",    limits[MAX_CONCURRENT_UPLOAD],
+                "maxSizeRequest",         limits[MAX_SIZE_REQUEST],
+                "maxConcurrentRequests",  limits[MAX_CONCURRENT_REQUESTS],
+                "maxCallsInRequest",      limits[MAX_CALLS_IN_REQUEST],
+                "maxObjectsInGet",        limits[MAX_OBJECTS_IN_GET],
+                "maxObjectsInSet",        limits[MAX_OBJECTS_IN_SET],
+                "collationAlgorithms",    json_array()));
+
+    json_object_set_new(settings->server_capabilities,
+            JMAP_CORE_EXTENSION,
+            json_pack("{s:i}",
+                "maxCreatedIdsInRequest", limits[MAX_CREATEDIDS_IN_REQUEST]));
 
     if (config_serverinfo == IMAP_ENUM_SERVERINFO_ON) {
         struct utsname buf;
@@ -201,6 +169,7 @@ static int jmap_core_echo(jmap_req_t *req)
 }
 
 /* UserCounters/get method */
+// clang-format off
 static const jmap_property_t usercounters_props[] = {
     {
         "id",
@@ -283,7 +252,7 @@ static const jmap_property_t usercounters_props[] = {
         JMAP_PROP_SERVER_SET
     },
     {
-        "contactFoldersModSeq",
+        "contactsFoldersModSeq",
         NULL,
         JMAP_PROP_SERVER_SET
     },
@@ -313,12 +282,17 @@ static const jmap_property_t usercounters_props[] = {
         JMAP_PROP_SERVER_SET
     },
     {
-        "contactFoldersDeletedModSeq",
+        "contactsFoldersDeletedModSeq",
         NULL,
         JMAP_PROP_SERVER_SET
     },
     {
         "notesFoldersDeletedModSeq",
+        NULL,
+        JMAP_PROP_SERVER_SET
+    },
+    {
+        "submissionFoldersDeletedModSeq",
         NULL,
         JMAP_PROP_SERVER_SET
     },
@@ -345,6 +319,7 @@ static const jmap_property_t usercounters_props[] = {
 
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
 {
@@ -367,6 +342,9 @@ static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
     if (jmap_wantprop(get->props, "notesModSeq"))
         json_object_set_new(res, "notesModSeq",
                             json_integer(req->counters.notesmodseq));
+    if (jmap_wantprop(get->props, "submissionModSeq"))
+        json_object_set_new(res, "submissionModSeq",
+                            json_integer(req->counters.submissionmodseq));
     if (jmap_wantprop(get->props, "sieveScriptModSeq"))
         json_object_set_new(res, "sieveScriptModSeq",
                             json_integer(req->counters.sievemodseq));
@@ -383,6 +361,9 @@ static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
     if (jmap_wantprop(get->props, "notesDeletedModSeq"))
         json_object_set_new(res, "notesDeletedModSeq",
                             json_integer(req->counters.notesdeletedmodseq));
+    if (jmap_wantprop(get->props, "submissionDeletedModSeq"))
+        json_object_set_new(res, "submissionDeletedModSeq",
+                            json_integer(req->counters.submissiondeletedmodseq));
     if (jmap_wantprop(get->props, "sieveScriptDeletedModSeq"))
         json_object_set_new(res, "sieveScriptDeletedModSeq",
                             json_integer(req->counters.sievedeletedmodseq));
@@ -399,6 +380,9 @@ static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
     if (jmap_wantprop(get->props, "notesFoldersModSeq"))
         json_object_set_new(res, "notesFoldersModSeq",
                             json_integer(req->counters.notesfoldersmodseq));
+    if (jmap_wantprop(get->props, "submissionFoldersModSeq"))
+        json_object_set_new(res, "submissionFoldersModSeq",
+                            json_integer(req->counters.submissionfoldersmodseq));
     if (jmap_wantprop(get->props, "sieveScriptFoldersModSeq"))
         json_object_set_new(res, "sieveScriptFoldersModSeq",
                             json_integer(req->counters.sievefoldersmodseq));
@@ -415,6 +399,9 @@ static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
     if (jmap_wantprop(get->props, "notesFoldersDeletedModSeq"))
         json_object_set_new(res, "notesFoldersDeletedModSeq",
                             json_integer(req->counters.notesfoldersdeletedmodseq));
+    if (jmap_wantprop(get->props, "submissionFoldersDeletedModSeq"))
+        json_object_set_new(res, "submissionFoldersDeletedModSeq",
+                            json_integer(req->counters.submissionfoldersdeletedmodseq));
     if (jmap_wantprop(get->props, "sieveScriptFoldersDeletedModSeq"))
         json_object_set_new(res, "sieveScriptFoldersDeletedModSeq",
                             json_integer(req->counters.sievefoldersdeletedmodseq));
@@ -436,7 +423,7 @@ static void usercounters_get(jmap_req_t *req, struct jmap_get *get)
 static int jmap_usercounters_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
 
     /* Parse request */

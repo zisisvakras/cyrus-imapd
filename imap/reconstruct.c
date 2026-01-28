@@ -1,44 +1,6 @@
-/* reconstruct.c -- program to reconstruct a mailbox
- *
- * Copyright (c) 1994-2017 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* reconstruct.c -- program to reconstruct a mailbox */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -98,6 +60,7 @@
 #include "quota.h"
 #include "seen.h"
 #include "tok.h"
+#include "user.h"
 #include "util.h"
 
 /* generated headers are not necessarily in current directory */
@@ -115,7 +78,6 @@ struct reconstruct_rock {
 static const char *progname = NULL;
 
 /* forward declarations */
-static void do_mboxlist(void);
 static int do_reconstruct_p(const mbentry_t *mbentry, void *rock);
 static int do_reconstruct(struct findall_data *data, void *rock);
 static void reconstruct_mbentry(const char *path);
@@ -141,13 +103,23 @@ static void shut_down(int code)
     exit(code);
 }
 
+static int delete_cb(void *rock,
+                     const char *key,
+                     size_t keylen,
+                     const char *val __attribute__((unused)),
+                     size_t vallen __attribute__((unused)))
+{
+    struct conversations_state *state = (struct conversations_state *)rock;
+    int r = cyrusdb_delete(state->db, key, keylen, &state->txn, /*force*/1);
+    return r;
+}
+
 int main(int argc, char **argv)
 {
     int opt, i, r;
     int dousers = 0;
     int dopaths = 0;
     int rflag = 0;
-    int mflag = 0;
     int fflag = 0;
     int xflag = 0;
     struct buf buf = BUF_INITIALIZER;
@@ -158,10 +130,11 @@ int main(int argc, char **argv)
     progname = basename(argv[0]);
 
     /* keep this in alphabetical order */
-    static const char short_options[] = "C:GIMOPRUV:fmnop:qrsux";
+    static const char short_options[] = "C:DGIMOPRUV:Tcfnop:qrsux";
 
     static const struct option long_options[] = {
         /* n.b. no long option for -C */
+        { "always-dirty", no_argument, NULL, 'D' },
         { "force-reparse", no_argument, NULL, 'G' },
         { "update-uniqueids", no_argument, NULL, 'I' },
         { "prefer-mboxlist", no_argument, NULL, 'M' },
@@ -170,6 +143,8 @@ int main(int argc, char **argv)
         { "guid-mismatch-keep", no_argument, NULL, 'R' },
         { "guid-mismatch-discard", no_argument, NULL, 'U' },
         { "set-version", required_argument, NULL, 'V' },
+        { "recalc-nanosec", no_argument, NULL, 'T' },
+        { "keep-cache", no_argument, NULL, 'c' },
         { "scan-filesystem", no_argument, NULL, 'f' },
         { "dry-run", no_argument, NULL, 'n' },
         { "ignore-odd-files", no_argument, NULL, 'o' },
@@ -207,12 +182,12 @@ int main(int argc, char **argv)
             dopaths = 1;
             break;
 
-        case 'm':
-            mflag = 1;
-            break;
-
         case 'n':
             reconstruct_flags &= ~RECONSTRUCT_MAKE_CHANGES;
+            break;
+
+        case 'D':
+            reconstruct_flags |= RECONSTRUCT_ALWAYS_DIRTY;
             break;
 
         case 'G':
@@ -266,6 +241,14 @@ int main(int argc, char **argv)
                 setversion = atoi(optarg);
             break;
 
+        case 'T':
+            reconstruct_flags |= RECONSTRUCT_RECALC_NANOSEC;
+            break;
+
+        case 'c':
+            reconstruct_flags |= RECONSTRUCT_KEEP_CACHE;
+            break;
+
         default:
             usage();
         }
@@ -283,14 +266,13 @@ int main(int argc, char **argv)
     signals_set_shutdown(&shut_down);
     signals_add_handlers(0);
 
-    if (mflag) {
-        if (rflag || fflag || optind != argc) {
-            cyrus_done();
-            usage();
-        }
-        do_mboxlist();
+    if (dousers && dopaths) {
+        cyrus_done();
+        usage();
     }
-    else if (dousers && dopaths) {
+
+    if ((reconstruct_flags & RECONSTRUCT_RECALC_NANOSEC) &&
+        !(dousers && setversion)) {
         cyrus_done();
         usage();
     }
@@ -371,8 +353,46 @@ int main(int argc, char **argv)
 
     for (i = optind; i < argc; i++) {
         if (dousers) {
+            struct conversations_state *state = NULL;
+            if (setversion &&
+                (reconstruct_flags & RECONSTRUCT_RECALC_NANOSEC) &&
+                (reconstruct_flags & RECONSTRUCT_MAKE_CHANGES)) {
+                /* delete G & J keys in conversations db */
+
+                r = conversations_open_user(argv[i], 0/*shared*/, &state);
+                if (r) {
+                    fprintf(stderr,
+                            "failed opening conversations db for user '%s'\n",
+                            argv[i]);
+                    continue;
+                }
+
+                r = cyrusdb_foreach(state->db, "G", 1, NULL, delete_cb,
+                                    state, &state->txn);
+                if (r) {
+                    fprintf(stderr,
+                            "failed deleting conv G records for user '%s'\n",
+                            argv[i]);
+                }
+                else {
+                    r = cyrusdb_foreach(state->db, "J", 1, NULL, delete_cb,
+                                        state, &state->txn);
+                    if (r) {
+                        fprintf(stderr,
+                                "failed deleting conv J records for user '%s'\n",
+                                argv[i]);
+                    }
+                }
+                if (r) {
+                    conversations_abort(&state);
+                    continue;
+                }
+
+            }
             mboxlist_usermboxtree(argv[i], NULL, do_reconstruct_p, &rrock,
                                   MBOXTREE_TOMBSTONES|MBOXTREE_DELETED);
+
+            conversations_commit(&state);
             continue;
         }
         else if (dopaths) {
@@ -464,6 +484,8 @@ static void usage(void)
     fprintf(stderr, "-O                 delete odd files (unlike -o)\n");
     fprintf(stderr, "-M                 prefer mailboxes.db over cyrus.header\n");
     fprintf(stderr, "-V <version>       Change the cyrus.index minor version to the version specified\n");
+    fprintf(stderr, "-T                 recalculate nanosecond internaldates\n");
+    fprintf(stderr, "                   (this option ONLY used with -V and -u)\n");
     fprintf(stderr, "-u                 give usernames instead of mailbox prefixes\n");
     fprintf(stderr, "-P                 give paths to cyrus.header files instead of mailbox prefixes\n");
     fprintf(stderr, "                   (this option ONLY repairs/creates mailboxes.db records)\n");
@@ -518,30 +540,70 @@ static int do_reconstruct(struct findall_data *data, void *rock)
     /* don't repeat */
     if (hash_lookup(name, &rrock->visited)) return 0;
 
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    /* make sure data is loaded in memory to limit lock time */
+    index_warmup(data->mbentry, WARMUP_ALL, /*uids*/NULL);
+
+    user_nslock_t *user_nslock = user_nslock_lock_w(mbname_userid(data->mbname));
 
     if (setversion) {
         r = mailbox_open_exclusive(name, &mailbox);
         if (r) {
             com_err(name, r, "Failed to open mailbox to set version");
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
             return 0;
         }
-        if (setversion != mailbox->i.minor_version) {
+        if ((setversion != mailbox->i.minor_version) ||
+            (mailbox->i.minor_version >= 20 &&
+             (reconstruct_flags & RECONSTRUCT_RECALC_NANOSEC))) {
             int oldversion = mailbox->i.minor_version;
+            ptrarray_t records = PTRARRAY_INITIALIZER;
             /* need to re-set the version! */
-            int r = mailbox_setversion(mailbox, setversion);
+            int r = mailbox_setversion(mailbox, setversion,
+                                       reconstruct_flags, &records);
             char *extname = mboxname_to_external(name, &recon_namespace, NULL);
             if (r) {
                 printf("FAILED TO REPACK %s with new version %s\n", extname, error_message(r));
             }
+            else if (!make_changes){
+                printf("Test conversion %s version %d to %d succeeded\n",
+                       extname, oldversion, setversion);
+            }
             else {
                 printf("Converted %s version %d to %d\n", extname, oldversion, setversion);
             }
-	    free(extname);
+
+            if (ptrarray_size(&records)) {
+                // make the file timestamps correct and/or cleanup ptrarray
+                int i, n = ptrarray_size(&records);
+
+                mailbox_close(&mailbox);
+                user_nslock_release(&user_nslock);
+
+                if (!r) {
+                    r = mailbox_open_irl(name, &mailbox);
+                    if (r) {
+                        syslog(LOG_ERR,
+                               "Failed to open mailbox '%s' to set file timestamps: %s",
+                               extname, error_message(r));
+                    }
+                    else {
+                        mailbox_unlock_index(mailbox, NULL);
+                    }
+                }
+
+                for (i = 0; i < n; i++) {
+                    struct index_record *record = ptrarray_nth(&records, i);
+                    if (mailbox)
+                        mailbox_set_datafile_timestamps(mailbox, record);
+                    free(record);
+                }
+                ptrarray_fini(&records);
+            }
+
+            free(extname);
         }
         mailbox_close(&mailbox);
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
         return 0;
     }
 
@@ -549,7 +611,7 @@ static int do_reconstruct(struct findall_data *data, void *rock)
     if (r) {
         com_err(name, r, "%s",
                 (r == IMAP_IOERROR) ? error_message(errno) : "Failed to reconstruct mailbox");
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
         return 0;
     }
 
@@ -683,7 +745,7 @@ static int do_reconstruct(struct findall_data *data, void *rock)
     }
     mailbox_close(&mailbox);
     free(extname);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     if (rrock->discovered) {
         char fnamebuf[MAX_MAILBOX_PATH];
@@ -746,15 +808,6 @@ static int do_reconstruct(struct findall_data *data, void *rock)
 }
 
 /*
- * Reconstruct the mailboxes list.
- */
-static void do_mboxlist(void)
-{
-    fprintf(stderr, "reconstructing mailboxes.db currently not supported\n");
-    exit(EX_USAGE);
-}
-
-/*
  * Reconstruct an mbentry from a mailbox header path.
  */
 static void reconstruct_mbentry(const char *header_path)
@@ -764,7 +817,7 @@ static void reconstruct_mbentry(const char *header_path)
     size_t pathlen = strlen(header_path);
     size_t fnamelen = strlen(FNAME_HEADER);
     mbentry_t *mbentry = NULL;
-    struct mboxlock *namespacelock = NULL;
+    user_nslock_t *user_nslock = NULL;
     int fix_header = 0;
 
     if (!realpath(header_path, real)) {
@@ -792,7 +845,7 @@ static void reconstruct_mbentry(const char *header_path)
         goto done;
     }
 
-    namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock = user_nslock_lockmb_w(mbentry->name);
 
     if (!mbentry->uniqueid) {
         /* Look elsewhere for a UID */
@@ -945,7 +998,7 @@ static void reconstruct_mbentry(const char *header_path)
     }
 
   done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mboxlist_entry_free(&mbentry);
     buf_free(&buf);
 }

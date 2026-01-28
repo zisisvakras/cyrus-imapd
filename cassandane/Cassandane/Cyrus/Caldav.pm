@@ -38,7 +38,7 @@
 #
 
 package Cassandane::Cyrus::Caldav;
-use v5.26.0; # strict + indented here-docs
+use v5.28.0; # strict, indented here-docs, stable sig/attr ordering
 use warnings;
 use DateTime;
 use JSON::XS;
@@ -49,7 +49,6 @@ use Data::Dumper;
 use Text::VCardFast;
 use Cwd qw(abs_path);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;

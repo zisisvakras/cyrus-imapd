@@ -1,44 +1,6 @@
-/*  cyrusdb_flat: a sorted flat textfile backend
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/*  cyrusdb_flat: a sorted flat textfile backend */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -713,7 +675,7 @@ static int mystore(struct dbengine *db,
     if (mytid) {
         /* setup so further accesses will be against fname.NEW */
         if (fstat(writefd, &sbuf) == -1) {
-            /* xxx ? */
+            /* XXX ? */
         }
 
         if (!(*mytid)->fnamenew) (*mytid)->fnamenew = xstrdup(fnamebuf);
@@ -727,7 +689,7 @@ static int mystore(struct dbengine *db,
         /* commit immediately */
         if (fsync(writefd) ||
             fstat(writefd, &sbuf) == -1 ||
-            rename(fnamebuf, db->fname) == -1) {
+            cyrus_rename(fnamebuf, db->fname) == -1) {
             xsyslog(LOG_ERR, "IOERROR: commit failed",
                              "fname=<%s>",
                              fnamebuf);
@@ -807,7 +769,7 @@ static int commit_txn(struct dbengine *db, struct txn *tid)
         writefd = tid->fd;
         if (fsync(writefd) ||
             fstat(writefd, &sbuf) == -1 ||
-            rename(tid->fnamenew, db->fname) == -1) {
+            cyrus_rename(tid->fnamenew, db->fname) == -1) {
             xsyslog(LOG_ERR, "IOERROR: commit failed",
                              "fname=<%s>",
                              tid->fnamenew);

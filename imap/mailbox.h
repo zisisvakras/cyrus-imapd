@@ -1,44 +1,6 @@
-/* mailbox.h -- Mailbox format definitions
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mailbox.h -- Mailbox format definitions */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_MAILBOX_H
 #define INCLUDED_MAILBOX_H
@@ -50,6 +12,7 @@
 
 #include "byteorder.h"
 #include "conversations.h"
+#include "logfmt.h"
 #include "message_guid.h"
 #include "message.h"
 #include "ptrarray.h"
@@ -62,7 +25,6 @@
 #define MAX_MAILBOX_NAME 510
 #define MAX_MAILBOX_BUFFER 1024
 #define MAX_MAILBOX_PATH 4096
-
 #define MAX_USER_FLAGS (16*8)
 
 #define MAILBOX_HEADER_MAGIC ("\241\002\213\015Cyrus mailbox header\n" \
@@ -78,8 +40,8 @@
  * If you change MAILBOX_MINOR_VERSION you MUST also make corresponding
  * changes to backend_version() in backend.c.
  */
-#define MAILBOX_MINOR_VERSION       (19) /* read comment above! */
-#define MAILBOX_CACHE_MINOR_VERSION (13)
+#define MAILBOX_MINOR_VERSION       (20) /* read comment above! */
+#define MAILBOX_CACHE_MINOR_VERSION (14)
 
 #define FNAME_HEADER "/cyrus.header"
 #define FNAME_INDEX "/cyrus.index"
@@ -136,6 +98,7 @@ struct statusdata {
     uint32_t uidnext;
     uint32_t uidvalidity;
     const char *mailboxid;
+    const char *uniqueid;
     uint32_t unseen;
     uint32_t mboptions;
     quota_t size;
@@ -146,33 +109,37 @@ struct statusdata {
     conv_status_t xconv;
 };
 
-#define STATUSDATA_INIT { NULL, 0, 0, 0, 0, 0, NULL, 0, 0, 0, 0, 0, 0, 0, CONV_STATUS_INIT }
+#define STATUSDATA_INIT { NULL, 0, 0, 0, 0, 0, NULL, NULL, 0, 0, 0, 0, 0, 0, 0, CONV_STATUS_INIT }
 
+// sorting for good packing rather than on-disk file order, since not
+// all target datastructures are neat sizes
 struct index_record {
     uint32_t uid;
-    time_t internaldate;
-    time_t sentdate;
-    uint32_t size;
     uint32_t header_size;
-    time_t gmtime;
-    size_t cache_offset;
-    time_t last_updated;
     uint32_t system_flags;
     uint32_t internal_flags;
+    uint32_t cache_crc;
+    uint32_t cache_version;
+    uint64_t cache_offset;
+    uint64_t size;
+    uint64_t modseq;
+    uint64_t createdmodseq;
+    uint64_t cid;
+    uint64_t basecid;
+    struct timespec internaldate;
+    struct timespec sentdate;
+    struct timespec gmtime;
+    struct timespec last_updated;
+    struct timespec savedate;
+    // this is 4x uint32_t
     uint32_t user_flags[MAX_USER_FLAGS/32];
-    time_t savedate;
-    uint16_t cache_version;
+    // this is 21x char - how annoyingly offset
     struct message_guid guid;
-    modseq_t modseq;
-    bit64 cid;
-    modseq_t createdmodseq;
-    bit32 cache_crc;
 
     /* metadata */
     uint32_t recno;
     unsigned silentupdate:1;
     unsigned ignorelimits:1;
-    bit64 basecid;
     struct cacherecord crec;
 };
 
@@ -192,10 +159,10 @@ struct index_header {
     uint32_t start_offset;
     uint32_t record_size;
     uint32_t num_records;
-    time_t last_appenddate;
+    struct timespec last_appenddate;
     uint32_t last_uid;
     quota_t quota_mailbox_used;
-    time_t pop3_last_login;
+    struct timespec pop3_last_login;
     uint32_t uidvalidity;
 
     uint32_t deleted;
@@ -208,9 +175,9 @@ struct index_header {
     modseq_t highestmodseq;
     modseq_t deletedmodseq;
     uint32_t exists;
-    time_t first_expunged;
-    time_t last_repack_time;
-    time_t changes_epoch;
+    struct timespec first_expunged;
+    struct timespec last_repack_time;
+    struct timespec changes_epoch;
 
     modseq_t createdmodseq;
 
@@ -218,9 +185,9 @@ struct index_header {
     struct synccrcs synccrcs;
 
     uint32_t recentuid;
-    time_t recenttime;
+    struct timespec recenttime;
 
-    time_t pop3_show_after;
+    struct timespec pop3_show_after;
     quota_t quota_annot_used;
     quota_t quota_deleted_used;
     quota_t quota_expunged_used;
@@ -243,9 +210,17 @@ struct mailbox_header {
     char *name;
     char *acl;
     char *uniqueid;
+    char *jmapid;
     char *quotaroot;
     char *flagname[MAX_USER_FLAGS];
     int mbtype;
+};
+
+enum cstate_flags_val {
+    CSTATE_FLAG_UNSET = 0,
+    CSTATE_FLAG_NOCONV = 1,
+    CSTATE_FLAG_EXTERN = 2,
+    CSTATE_FLAG_LOCAL = 3
 };
 
 struct mailbox {
@@ -281,10 +256,11 @@ struct mailbox {
     struct annotate_state *annot_state;
 
     /* conversations */
-    struct conversations_state *local_cstate;
+    unsigned cstate_flag;
+    struct conversations_state *cstate_value;
 
     /* namespace lock */
-    struct mboxlock *local_namespacelock;
+    struct usernamespacelocks *user_nslock;
 
 #ifdef WITH_DAV
     struct caldav_db *local_caldav;
@@ -302,6 +278,8 @@ struct mailbox {
     int header_dirty;
     int quota_dirty;
     int has_changed;
+    int spool_dirfd;
+    int archive_dirfd;
     time_t last_updated; /* for appends*/
     quota_t quota_previously_used[QUOTA_NUMRESOURCES]; /* for quota change */
 
@@ -337,53 +315,48 @@ struct mailbox_iter;
  * add new fields to the header, don't forget to add them to the tests
  * too!
  */
-#define OFFSET_GENERATION_NO 0
-#define OFFSET_FORMAT 4
-#define OFFSET_MINOR_VERSION 8
-#define OFFSET_START_OFFSET 12
-#define OFFSET_RECORD_SIZE 16
-#define OFFSET_NUM_RECORDS 20
-#define OFFSET_LAST_APPENDDATE 24
-#define OFFSET_LAST_UID 28
-#define OFFSET_QUOTA_MAILBOX_USED 32  /* offset for 64bit quotas */
-#define OFFSET_POP3_LAST_LOGIN 40
-#define OFFSET_UIDVALIDITY 44
-#define OFFSET_DELETED 48      /* added for ACAP */
-#define OFFSET_ANSWERED 52
-#define OFFSET_FLAGGED 56
-#define OFFSET_EXISTS 60           /* Non-expunged records */
-#define OFFSET_MAILBOX_OPTIONS 64
-#define OFFSET_LEAKED_CACHE 68     /* Number of leaked records in cache file */
-#define OFFSET_HIGHESTMODSEQ 72    /* CONDSTORE (64-bit modseq) */
-#define OFFSET_DELETEDMODSEQ 80    /* CONDSTORE (64-bit modseq) */
-#define OFFSET_FIRST_EXPUNGED 88   /* last_updated of oldest expunged message */
-#define OFFSET_LAST_REPACK_TIME 92 /* time of last expunged cleanup  */
-#define OFFSET_HEADER_FILE_CRC 96  /* CRC32 of the index header file */
-#define OFFSET_SYNCCRCS_BASIC 100  /* XOR of SYNC CRCs of unexpunged records */
-#define OFFSET_RECENTUID 104       /* last UID the owner was told about */
-#define OFFSET_RECENTTIME 108      /* last timestamp for seen data */
-#define OFFSET_POP3_SHOW_AFTER 112 /* time after which to show messages 
-                                    * to POP3 */
-#define OFFSET_QUOTA_ANNOT_USED 116 /* bytes of per-mailbox and per-message
-                                     * annotations for this mailbox */
-#define OFFSET_SYNCCRCS_ANNOT 120  /* SYNC_CRC of the annotations */
-#define OFFSET_UNSEEN 124          /* total number of UNSEEN messages (owner) */
+#define OFFSET_GENERATION_NO           0
+#define OFFSET_FORMAT                  4
+#define OFFSET_MINOR_VERSION           8
+#define OFFSET_START_OFFSET           12
+#define OFFSET_RECORD_SIZE            16
+#define OFFSET_NUM_RECORDS            20
+#define OFFSET_LAST_APPENDDATE        24 /* grew to 64-bit in v20 */
+#define OFFSET_QUOTA_MAILBOX_USED     32 /* offset for 64bit quotas */
+#define OFFSET_POP3_LAST_LOGIN        40 /* grew to 64-bit in v20 */
+#define OFFSET_DELETED                48 /* added for ACAP */
+#define OFFSET_ANSWERED               52
+#define OFFSET_FLAGGED                56
+#define OFFSET_EXISTS                 60 /* Non-expunged records */
+#define OFFSET_MAILBOX_OPTIONS        64
+#define OFFSET_LEAKED_CACHE           68 /* Number of leaked records in cache file */
+#define OFFSET_HIGHESTMODSEQ          72 /* CONDSTORE (64-bit modseq) */
+#define OFFSET_DELETEDMODSEQ          80 /* CONDSTORE (64-bit modseq) */
+#define OFFSET_LAST_UID               88
+#define OFFSET_UIDVALIDITY            92
+#define OFFSET_HEADER_FILE_CRC        96 /* CRC32 of the index header file */
+#define OFFSET_SYNCCRCS_BASIC        100 /* XOR of SYNC CRCs of unexpunged records */
+#define OFFSET_RECENTTIME            104 /* last timestamp for seen data
+                                          * (grew to 64-bit in v20) */
+#define OFFSET_POP3_SHOW_AFTER       112 /* time after which to show messages 
+                                          * to POP3 (grew to 64-bit in v20) */
+#define OFFSET_SYNCCRCS_ANNOT        120 /* SYNC_CRC of the annotations */
+#define OFFSET_UNSEEN                124 /* total number of UNSEEN messages (owner) */
 #define OFFSET_MAILBOX_CREATEDMODSEQ 128 /* MODSEQ at creation time */
-#define OFFSET_QUOTA_DELETED_USED 136  /* bytes of \Deleted messages
-                                        * for this mailbox (64-bit) */
-#define OFFSET_QUOTA_EXPUNGED_USED 144 /* bytes of \Expunged messages
-                                        * for this mailbox (64-bit) */
-#define OFFSET_CHANGES_EPOCH 152   /* time from which we can calculate changes */
-#define OFFSET_HEADER_CRC 156
-
-#define PRE19_OFFSET_MAILBOX_OPTIONS 60
-#define PRE19_OFFSET_LEAKED_CACHE 64
-#define PRE19_OFFSET_HIGHESTMODSEQ 68
-#define PRE19_OFFSET_DELETEDMODSEQ 76
-#define PRE19_OFFSET_EXISTS 84
-#define PRE19_OFFSET_CHANGES_EPOCH 136
-#define PRE19_OFFSET_QUOTA_DELETED_USED 140
-#define PRE19_OFFSET_QUOTA_EXPUNGED_USED 148
+#define OFFSET_QUOTA_DELETED_USED    136 /* bytes of \Deleted messages
+                                           * for this mailbox (64-bit) */
+#define OFFSET_QUOTA_EXPUNGED_USED   144 /* bytes of \Expunged messages
+                                          * for this mailbox (64-bit) */
+#define OFFSET_QUOTA_ANNOT_USED      152 /* bytes of per-mailbox and per-message
+                                          * annotations for this mailbox */
+#define OFFSET_CHANGES_EPOCH         160 /* time from which we can calculate changes
+                                          * (grew to 64-bit in v20) */
+#define OFFSET_FIRST_EXPUNGED        168 /* last_updated of oldest expunged message
+                                          * (grew to 64-bit in v20) */
+#define OFFSET_LAST_REPACK_TIME      176 /* time of last expunged cleanup
+                                          * (grew to 64-bit in v20) */
+#define OFFSET_RECENTUID             184 /* last UID the owner was told about */
+#define OFFSET_HEADER_CRC            188
 
 /* Offsets of index_record fields in index/expunge file
  *
@@ -395,24 +368,25 @@ struct mailbox_iter;
  * add new fields to the record, don't forget to add them to the tests
  * too!
  */
-#define OFFSET_UID 0
-#define OFFSET_INTERNALDATE 4
-#define OFFSET_SENTDATE 8
-#define OFFSET_SIZE 12
-#define OFFSET_HEADER_SIZE 16
-#define OFFSET_GMTIME 20
-#define OFFSET_CACHE_OFFSET 24
-#define OFFSET_LAST_UPDATED 28
-#define OFFSET_SYSTEM_FLAGS 32
-#define OFFSET_USER_FLAGS 36
-#define OFFSET_SAVEDATE 52 /* added in v15 */
-#define OFFSET_CACHE_VERSION 56
-#define OFFSET_MESSAGE_GUID 60
-#define OFFSET_MODSEQ 80 /* CONDSTORE (64-bit modseq) */
-#define OFFSET_THRID 88       /* conversation id, added in v13 */
-#define OFFSET_CREATEDMODSEQ 96 /* modseq of creation time, added in v16 */
-#define OFFSET_CACHE_CRC 104 /* CRC32 of cache record */
-#define OFFSET_RECORD_CRC 108
+#define OFFSET_UID              0
+#define OFFSET_CACHE_OFFSET     4
+#define OFFSET_INTERNALDATE     8 /* grew to 64-bit in v20 (nsec since epoch) */
+#define OFFSET_SENTDATE        16 /* grew to 64-bit in v20 */
+#define OFFSET_SIZE            24 /* grew to 64-bit in v20 */
+#define OFFSET_HEADER_SIZE     32
+#define OFFSET_SYSTEM_FLAGS    36
+#define OFFSET_USER_FLAGS      40
+#define OFFSET_CACHE_VERSION   56
+#define OFFSET_MESSAGE_GUID    60
+#define OFFSET_MODSEQ          80 /* CONDSTORE (64-bit modseq) */
+#define OFFSET_CID             88 /* conversation id, added in v13 */
+#define OFFSET_CREATEDMODSEQ   96 /* modseq of creation time, added in v16 */
+#define OFFSET_GMTIME         104 /* grew to 64-bit in v20 */
+#define OFFSET_LAST_UPDATED   112 /* grew to 64-bit in v20 */
+#define OFFSET_SAVEDATE       120 /* added in v15 */
+#define OFFSET_BASECID        128 /* base conversation id, added in v20 */
+#define OFFSET_CACHE_CRC      136 /* CRC32 of cache record */
+#define OFFSET_RECORD_CRC     140
 
 #define INDEX_HEADER_SIZE (OFFSET_HEADER_CRC+4)
 #define INDEX_RECORD_SIZE (OFFSET_RECORD_CRC+4)
@@ -478,6 +452,9 @@ typedef enum _MsgInternalFlags {
 #define RECONSTRUCT_REMOVE_ODDFILES (1<<7)
 #define RECONSTRUCT_IGNORE_ODDFILES (1<<8)
 #define RECONSTRUCT_PREFER_MBOXLIST (1<<9)
+#define RECONSTRUCT_RECALC_NANOSEC  (1<<10)
+#define RECONSTRUCT_KEEP_CACHE      (1<<11)
+#define RECONSTRUCT_ALWAYS_DIRTY    (1<<12)
 
 #define MAX_CACHED_HEADER_SIZE 32 /* Max size of a cached header name */
 
@@ -531,11 +508,15 @@ enum {
 
 /*
  * This structure maintains a list of FLAG_ to the string literal mapping.
+ * The defines are validated at compile time in mailbox.c
  */
 struct MsgFlagMap {
     const char *code;
     MsgFlags flag;
 };
+#define N_MSGFLAGMAP (11)
+#define FLAGMAPSTR_MAXLEN (1 + 3 * N_MSGFLAGMAP)
+extern void flags_to_str(const struct index_record *record, char *flagstr);
 
 unsigned mailbox_cached_header(const char *s);
 unsigned mailbox_cached_header_inline(const char *text);
@@ -558,6 +539,7 @@ extern unsigned mailbox_should_archive(struct mailbox *mailbox,
                                        void *rock);
 
 extern int open_mailboxes_exist();
+extern int open_mailboxes_namelocked(const char *userid);
 
 /* map individual messages in */
 extern int mailbox_map_record(struct mailbox *mailbox, const struct index_record *record, struct buf *buf);
@@ -591,6 +573,7 @@ extern int mailbox_delete(struct mailbox **mailboxptr);
 extern const struct mboxlist_entry *mailbox_mbentry(const struct mailbox *mailbox);
 extern const char *mailbox_name(const struct mailbox *mailbox);
 extern const char *mailbox_uniqueid(const struct mailbox *mailbox);
+extern const char *mailbox_jmapid(const struct mailbox *mailbox);
 extern const char *mailbox_partition(const struct mailbox *mailbox);
 extern const char *mailbox_acl(const struct mailbox *mailbox);
 extern const char *mailbox_quotaroot(const struct mailbox *mailbox);
@@ -661,8 +644,10 @@ extern void mailbox_archive(struct mailbox *mailbox, struct mailbox_iter *iter,
 extern void mailbox_remove_files_from_object_storage(struct mailbox *mailbox, unsigned flags);
 extern void mailbox_unlock_index(struct mailbox *mailbox, struct statusdata *sd);
 
-extern int mailbox_create(const char *name, uint32_t mbtype, const char *part, const char *acl,
-                          const char *uniqueid, int options, unsigned uidvalidity,
+extern int mailbox_create(const char *name, uint32_t mbtype, int minor_version,
+                          const char *part, const char *acl,
+                          const char *uniqueid, const char *jmapid,
+                          int options, unsigned uidvalidity,
                           modseq_t createdmodseq, modseq_t highestmodseq,
                           struct mailbox **mailboxptr);
 
@@ -680,8 +665,7 @@ extern int mailbox_rename_copy(struct mailbox *oldmailbox,
                                struct mailbox **newmailboxptr);
 extern int mailbox_rename_cleanup(struct mailbox **mailboxptr);
 
-
-extern int mailbox_copyfile(const char *from, const char *to, int nolink);
+extern int mailbox_copyfile_fdptr(const char *from, const char *to, int nolink, int *dirfdp);
 
 extern int mailbox_reconstruct(const char *name, int flags, struct mailbox **mailboxp);
 
@@ -693,9 +677,11 @@ extern int mailbox_reconstruct(const char *name, int flags, struct mailbox **mai
 #define mailbox_make_uniqueid(mailbox) mailbox_set_uniqueid(mailbox, makeuuid())
 
 extern void mailbox_set_uniqueid(struct mailbox *mailbox, const char *uniqueid);
+extern void mailbox_set_jmapid(struct mailbox *mailbox, const char *jmapid);
 extern void mailbox_set_mbtype(struct mailbox *mailbox, uint32_t mbtype);
 
-extern int mailbox_setversion(struct mailbox *mailbox, int version);
+extern int mailbox_setversion(struct mailbox *mailbox,
+                              int version, unsigned flags, ptrarray_t *records);
 
 extern int mailbox_index_recalc(struct mailbox *mailbox);
 
@@ -737,7 +723,7 @@ extern struct mailbox_iter *mailbox_iter_init(struct mailbox *mailbox,
                                               unsigned flags);
 /* Set a timer on the iterator, after which it returns no more messages.
  * The time is measured in CLOCK_MONOTONIC time as returned by
- * clock_gettime. The nchecktime argument defines how many records are
+ * cyrus_gettime. The nchecktime argument defines how many records are
  * processed before the clock is checked again. */
 extern void mailbox_iter_timer(struct mailbox_iter *iter,
                                struct timespec until, unsigned nchecktime);
@@ -748,10 +734,11 @@ extern void mailbox_iter_done(struct mailbox_iter **iterp);
 
 struct synccrcs mailbox_synccrcs(struct mailbox *mailbox, int recalc);
 
-extern int mailbox_add_dav(struct mailbox *mailbox);
+extern int mailbox_add_dav(struct mailbox *mailbox, hashu64_table *cmodseqs);
 extern int mailbox_delete_dav(struct mailbox *mailbox);
-extern int mailbox_add_sieve(struct mailbox *mailbox);
-extern int mailbox_add_email_alarms(struct mailbox *mailbox);
+extern int mailbox_add_sieve(struct mailbox *mailbox, hashu64_table *cmodseqs);
+extern int mailbox_add_email_alarms(struct mailbox *mailbox,
+                                    hashu64_table *cmodseqs);
 
 extern int mailbox_add_conversations(struct mailbox *mailbox, int silent);
 __attribute__((nonnull))
@@ -778,5 +765,14 @@ extern int mailbox_changequotaroot(struct mailbox *mailbox,
 extern int mailbox_parse_datafilename(const char *name, uint32_t *uidp);
 
 extern struct mboxlist_entry *mailbox_mbentry_from_path(const char *header_path);
+
+extern int mailbox_set_datafile_timestamps(struct mailbox *mailbox,
+                                           struct index_record *record);
+
+/* data-type aware logging */
+extern void logfmt_push_mailbox(struct logfmt *lf,
+                                const struct mailbox *mailbox);
+extern void logfmt_push_record(struct logfmt *lf,
+                               const struct index_record *record);
 
 #endif /* INCLUDED_MAILBOX_H */

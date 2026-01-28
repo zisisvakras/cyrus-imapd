@@ -4,8 +4,8 @@ use Cassandane::Tiny;
 sub test_email_query_unicodefdfx
     :min_version_3_3 :needs_component_sieve
     :SearchLanguage :needs_dependency_cld2
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     # Unicode block FDFX for Arabic contains some code points that
@@ -18,16 +18,16 @@ sub test_email_query_unicodefdfx
     my $blobId = $data->{blobId};
 
     my $res = $jmap->CallMethods([
-		['Email/import', {
-			emails => {
-				"1" => {
-					blobId => $blobId,
-					mailboxIds => {
-						'$inbox' =>  JSON::true},
-				},
-			},
-		}, "R1"]
-	]);
+        ['Email/import', {
+            emails => {
+                "1" => {
+                    blobId => $blobId,
+                    mailboxIds => {
+                        '$inbox' =>  JSON::true},
+                },
+            },
+        }, "R1"]
+    ]);
     $self->assert_not_null($res->[0][1]{created}{1});
 
     xlog $self, "run squatter";

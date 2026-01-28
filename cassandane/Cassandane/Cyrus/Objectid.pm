@@ -43,7 +43,6 @@ use warnings;
 use DateTime;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Generator;
@@ -72,7 +71,7 @@ sub tear_down
 # Test uniqueid and rename
 #
 sub test_uniqueid
-    :AltNamespace :min_version_3_1
+    :AltNamespace :Conversations :min_version_3_1
 {
     my ($self) = @_;
 
@@ -107,9 +106,6 @@ sub test_emailid_threadid
     my $talk = $self->{store}->get_client();
 
     $talk->create('foo');
-
-    # check IMAP server has the XCONVERSATIONS capability
-    $self->assert($self->{store}->get_client()->capability()->{xconversations});
 
     my %exp;
 

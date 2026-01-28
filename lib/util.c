@@ -1,44 +1,6 @@
-/* util.c -- general utility functions
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* util.c -- general utility functions */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -46,6 +8,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <grp.h>
+#include <libgen.h>
 #include <limits.h>
 #include <pwd.h>
 #include <string.h>
@@ -54,10 +17,6 @@
 #include <syslog.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#if defined(__linux__) && defined(HAVE_LIBCAP)
-#include <sys/capability.h>
-#include <sys/prctl.h>
-#endif
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
@@ -71,12 +30,14 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
+#include "assert.h"
 #include "byteorder.h"
 #include "libconfig.h"
+#include "logfmt.h"
 #include "map.h"
 #include "retry.h"
+#include "sessionid.h"
 #include "util.h"
-#include "assert.h"
 #include "xmalloc.h"
 #include "xunlink.h"
 #ifdef HAVE_ZLIB
@@ -174,77 +135,6 @@ const unsigned char convert_to_uppercase[256] = {
     0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
     0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff
 };
-
-static const uint16_t lchexchars[256] = {
-#if BYTE_ORDER == LITTLE_ENDIAN
-    0x3030, 0x3130, 0x3230, 0x3330, 0x3430, 0x3530, 0x3630, 0x3730,
-    0x3830, 0x3930, 0x6130, 0x6230, 0x6330, 0x6430, 0x6530, 0x6630,
-    0x3031, 0x3131, 0x3231, 0x3331, 0x3431, 0x3531, 0x3631, 0x3731,
-    0x3831, 0x3931, 0x6131, 0x6231, 0x6331, 0x6431, 0x6531, 0x6631,
-    0x3032, 0x3132, 0x3232, 0x3332, 0x3432, 0x3532, 0x3632, 0x3732,
-    0x3832, 0x3932, 0x6132, 0x6232, 0x6332, 0x6432, 0x6532, 0x6632,
-    0x3033, 0x3133, 0x3233, 0x3333, 0x3433, 0x3533, 0x3633, 0x3733,
-    0x3833, 0x3933, 0x6133, 0x6233, 0x6333, 0x6433, 0x6533, 0x6633,
-    0x3034, 0x3134, 0x3234, 0x3334, 0x3434, 0x3534, 0x3634, 0x3734,
-    0x3834, 0x3934, 0x6134, 0x6234, 0x6334, 0x6434, 0x6534, 0x6634,
-    0x3035, 0x3135, 0x3235, 0x3335, 0x3435, 0x3535, 0x3635, 0x3735,
-    0x3835, 0x3935, 0x6135, 0x6235, 0x6335, 0x6435, 0x6535, 0x6635,
-    0x3036, 0x3136, 0x3236, 0x3336, 0x3436, 0x3536, 0x3636, 0x3736,
-    0x3836, 0x3936, 0x6136, 0x6236, 0x6336, 0x6436, 0x6536, 0x6636,
-    0x3037, 0x3137, 0x3237, 0x3337, 0x3437, 0x3537, 0x3637, 0x3737,
-    0x3837, 0x3937, 0x6137, 0x6237, 0x6337, 0x6437, 0x6537, 0x6637,
-    0x3038, 0x3138, 0x3238, 0x3338, 0x3438, 0x3538, 0x3638, 0x3738,
-    0x3838, 0x3938, 0x6138, 0x6238, 0x6338, 0x6438, 0x6538, 0x6638,
-    0x3039, 0x3139, 0x3239, 0x3339, 0x3439, 0x3539, 0x3639, 0x3739,
-    0x3839, 0x3939, 0x6139, 0x6239, 0x6339, 0x6439, 0x6539, 0x6639,
-    0x3061, 0x3161, 0x3261, 0x3361, 0x3461, 0x3561, 0x3661, 0x3761,
-    0x3861, 0x3961, 0x6161, 0x6261, 0x6361, 0x6461, 0x6561, 0x6661,
-    0x3062, 0x3162, 0x3262, 0x3362, 0x3462, 0x3562, 0x3662, 0x3762,
-    0x3862, 0x3962, 0x6162, 0x6262, 0x6362, 0x6462, 0x6562, 0x6662,
-    0x3063, 0x3163, 0x3263, 0x3363, 0x3463, 0x3563, 0x3663, 0x3763,
-    0x3863, 0x3963, 0x6163, 0x6263, 0x6363, 0x6463, 0x6563, 0x6663,
-    0x3064, 0x3164, 0x3264, 0x3364, 0x3464, 0x3564, 0x3664, 0x3764,
-    0x3864, 0x3964, 0x6164, 0x6264, 0x6364, 0x6464, 0x6564, 0x6664,
-    0x3065, 0x3165, 0x3265, 0x3365, 0x3465, 0x3565, 0x3665, 0x3765,
-    0x3865, 0x3965, 0x6165, 0x6265, 0x6365, 0x6465, 0x6565, 0x6665,
-    0x3066, 0x3166, 0x3266, 0x3366, 0x3466, 0x3566, 0x3666, 0x3766,
-    0x3866, 0x3966, 0x6166, 0x6266, 0x6366, 0x6466, 0x6566, 0x6666
-#else
-    0x3030, 0x3031, 0x3032, 0x3033, 0x3034, 0x3035, 0x3036, 0x3037,
-    0x3038, 0x3039, 0x3061, 0x3062, 0x3063, 0x3064, 0x3065, 0x3066,
-    0x3130, 0x3131, 0x3132, 0x3133, 0x3134, 0x3135, 0x3136, 0x3137,
-    0x3138, 0x3139, 0x3161, 0x3162, 0x3163, 0x3164, 0x3165, 0x3166,
-    0x3230, 0x3231, 0x3232, 0x3233, 0x3234, 0x3235, 0x3236, 0x3237,
-    0x3238, 0x3239, 0x3261, 0x3262, 0x3263, 0x3264, 0x3265, 0x3266,
-    0x3330, 0x3331, 0x3332, 0x3333, 0x3334, 0x3335, 0x3336, 0x3337,
-    0x3338, 0x3339, 0x3361, 0x3362, 0x3363, 0x3364, 0x3365, 0x3366,
-    0x3430, 0x3431, 0x3432, 0x3433, 0x3434, 0x3435, 0x3436, 0x3437,
-    0x3438, 0x3439, 0x3461, 0x3462, 0x3463, 0x3464, 0x3465, 0x3466,
-    0x3530, 0x3531, 0x3532, 0x3533, 0x3534, 0x3535, 0x3536, 0x3537,
-    0x3538, 0x3539, 0x3561, 0x3562, 0x3563, 0x3564, 0x3565, 0x3566,
-    0x3630, 0x3631, 0x3632, 0x3633, 0x3634, 0x3635, 0x3636, 0x3637,
-    0x3638, 0x3639, 0x3661, 0x3662, 0x3663, 0x3664, 0x3665, 0x3666,
-    0x3730, 0x3731, 0x3732, 0x3733, 0x3734, 0x3735, 0x3736, 0x3737,
-    0x3738, 0x3739, 0x3761, 0x3762, 0x3763, 0x3764, 0x3765, 0x3766,
-    0x3830, 0x3831, 0x3832, 0x3833, 0x3834, 0x3835, 0x3836, 0x3837,
-    0x3838, 0x3839, 0x3861, 0x3862, 0x3863, 0x3864, 0x3865, 0x3866,
-    0x3930, 0x3931, 0x3932, 0x3933, 0x3934, 0x3935, 0x3936, 0x3937,
-    0x3938, 0x3939, 0x3961, 0x3962, 0x3963, 0x3964, 0x3965, 0x3966,
-    0x6130, 0x6131, 0x6132, 0x6133, 0x6134, 0x6135, 0x6136, 0x6137,
-    0x6138, 0x6139, 0x6161, 0x6162, 0x6163, 0x6164, 0x6165, 0x6166,
-    0x6230, 0x6231, 0x6232, 0x6233, 0x6234, 0x6235, 0x6236, 0x6237,
-    0x6238, 0x6239, 0x6261, 0x6262, 0x6263, 0x6264, 0x6265, 0x6266,
-    0x6330, 0x6331, 0x6332, 0x6333, 0x6334, 0x6335, 0x6336, 0x6337,
-    0x6338, 0x6339, 0x6361, 0x6362, 0x6363, 0x6364, 0x6365, 0x6366,
-    0x6430, 0x6431, 0x6432, 0x6433, 0x6434, 0x6435, 0x6436, 0x6437,
-    0x6438, 0x6439, 0x6461, 0x6462, 0x6463, 0x6464, 0x6465, 0x6466,
-    0x6530, 0x6531, 0x6532, 0x6533, 0x6534, 0x6535, 0x6536, 0x6537,
-    0x6538, 0x6539, 0x6561, 0x6562, 0x6563, 0x6564, 0x6565, 0x6566,
-    0x6630, 0x6631, 0x6632, 0x6633, 0x6634, 0x6635, 0x6636, 0x6637,
-    0x6638, 0x6639, 0x6661, 0x6662, 0x6663, 0x6664, 0x6665, 0x6666
-#endif
-};
-
 
 #ifdef EXTRA_IDENT
 #define CYRUS_VERSION_STR PACKAGE_VERSION "-" EXTRA_IDENT
@@ -393,49 +283,6 @@ keyvalue *kv_bsearch(const char* key, keyvalue* kv, int nelem,
     return (cmp ? NULL : kv + mid);
 }
 
-/* Examine the name of a file, and return a single character
- *  (as an int) that can be used as the name of a hash
- *  directory.  Stop before the first dot.  Caller is responsible
- *  for skipping any prefix of the name.
- */
-EXPORTED int dir_hash_c(const char *name, int full)
-{
-    int c;
-
-    if (full) {
-        unsigned char *pt;
-        uint32_t n;
-        enum {
-            DIR_X = 3,
-            DIR_Y = 5,
-            DIR_P = 23,
-            DIR_A = 'A'
-        };
-
-        n = 0;
-        pt = (unsigned char *)name;
-        while (*pt && *pt != '.') {
-            n = ((n << DIR_X) ^ (n >> DIR_Y)) ^ *pt;
-            n &= UINT32_MAX;
-            ++pt;
-        }
-        c = DIR_A + (n % DIR_P);
-    }
-    else {
-        c = tolower(*name);
-        if (!Uisascii(c) || !Uislower(c)) c = 'q';
-    }
-
-    return c;
-}
-
-EXPORTED char *dir_hash_b(const char *name, int full, char buf[2])
-{
-    buf[0] = (char)dir_hash_c(name, full);
-    buf[1] = '\0';
-    return buf;
-}
-
 EXPORTED int cyrus_close_sock(int fd)
 {
     shutdown(fd, SHUT_RD);
@@ -521,44 +368,169 @@ EXPORTED int removedir(const char *path)
     return nftw(path, removedir_cb, 128, FTW_DEPTH|FTW_PHYS);
 }
 
+EXPORTED int xrenameat(int dirfd, const char *src, const char *dest)
+{
+    char *copy = xstrdup(dest);
+    const char *file = basename(copy);
+    int r = renameat(AT_FDCWD, src, dirfd, file);
+    free(copy);
+    return r;
+}
+
+#define XOPENDIR_CREATE 1
+#define XOPENDIR_NOSYNC 2
+static int xopendirpath(const char *path, int flags)
+{
+#if defined(O_DIRECTORY)
+    int dirfd = open(path, O_RDONLY|O_DIRECTORY, 0600);
+#else
+    int dirfd = open(path, O_RDONLY, 0600);
+#endif
+    if (dirfd >= 0) return dirfd; // exists, we're good
+    if (!(flags & XOPENDIR_CREATE)) return dirfd; // not creating? Bail
+
+    int parentfd = xopendir(path, flags);
+    if (parentfd < 0) return parentfd; // failed, can't get further
+
+    char *copy = xstrdup(path);
+    const char *leaf = basename(copy);
+    // ignore exist, if someone else won that's OK
+    if (mkdirat(parentfd, leaf, 0755) == -1) {
+        if (errno != EEXIST) {
+            xsyslog(LOG_ERR, "IOERROR: failed to create intermediate directory",
+                             "filename=<%s>", path);
+            int saved_errno = errno;
+            free(copy);
+            close(parentfd);
+            errno = saved_errno;
+            return -1;
+        }
+        /* otherwise OK, directory already created */
+    }
+    else if (!(flags & XOPENDIR_NOSYNC)) {
+        if (fsync(parentfd) < 0) {
+            xsyslog(LOG_ERR, "IOERROR: fsync directory failed",
+                             "filename=<%s>", path);
+            int saved_errno = errno;
+            free(copy);
+            close(parentfd);
+            errno = saved_errno;
+            return -1;
+        }
+    }
+
+    free(copy);
+    close(parentfd);
+
+#if defined(O_DIRECTORY)
+    dirfd = open(path, O_RDONLY|O_DIRECTORY, 0600);
+#else
+    dirfd = open(path, O_RDONLY, 0600);
+#endif
+
+    return dirfd;
+}
+
+EXPORTED int xopendir(const char *dest, int flags)
+{
+    char *copy = xstrdup(dest);
+    const char *dir = dirname(copy);
+    int dirfd = xopendirpath(dir, flags);
+    free(copy);
+    return dirfd;
+}
+
+EXPORTED void xclosedir(int dirfd)
+{
+    // make sure close doesn't clear errno
+    int saved_errno = errno;
+    close(dirfd);
+    errno = saved_errno;
+}
+
+EXPORTED int cyrus_settime_fdptr(const char *path, struct timespec *when, int *dirfdp)
+{
+    int local_dirfd = -1;
+    if (!dirfdp) dirfdp = &local_dirfd;
+
+    if (*dirfdp < 0) *dirfdp = xopendir(path, /*flags*/0);
+    if (*dirfdp < 0) return *dirfdp;
+
+    struct timespec ts[2];
+    ts[0] = *when;
+    ts[1] = *when;
+
+    char *copy = xstrdup(path);
+    const char *leaf = basename(copy);
+    int r = utimensat(*dirfdp, leaf, ts, 0);
+    free(copy);
+
+    if (local_dirfd >= 0) xclosedir(local_dirfd);
+
+    return r;
+}
+
+EXPORTED int cyrus_unlink_fdptr(const char *path, int *dirfdp)
+{
+    int local_dirfd = -1;
+    if (!dirfdp) dirfdp = &local_dirfd;
+
+    if (*dirfdp < 0) *dirfdp = xopendir(path, /*flags*/0);
+    if (*dirfdp < 0) return *dirfdp;
+
+    char *copy = xstrdup(path);
+    const char *leaf = basename(copy);
+    int r = xunlinkat(*dirfdp, leaf, /*flags*/0);
+    free(copy);
+
+    if (local_dirfd >= 0) xclosedir(local_dirfd);
+
+    return r;
+}
+
+// rename a file (probably in the same directory) and fsync the
+// destination directory before returning
+EXPORTED int cyrus_rename(const char *src, const char *dest)
+{
+    int dirfd = xopendir(dest, XOPENDIR_CREATE);
+    if (dirfd < 0) {
+        return dirfd;
+    }
+
+    int r = xrenameat(dirfd, src, dest);
+    if (!r) r = fsync(dirfd);
+    xclosedir(dirfd);
+
+    return r;
+}
+
 /* Create all parent directories for the given path,
  * up to but not including the basename.
+ * NOTE: this used to just call:
+ *  mkdir ("/foo");
+ *  mkdir ("/foo/bar");
+ *   etc; all the way up to basename
+ *  Since it's used a lot for paths we don't care about, this API just uses _NOSYNC.
+ *  If you want sync, then call xopendir directly.
  */
 EXPORTED int cyrus_mkdir(const char *pathname, mode_t mode __attribute__((unused)))
 {
-    char *path = xstrdupnull(pathname);    /* make a copy to write into */
-    char *p = path;
-    int save_errno;
-    struct stat sbuf;
-
-    if (!p || *p == '\0')
-        return -1;
-
-    while ((p = strchr(p+1, '/'))) {
-        *p = '\0';
-        if (mkdir(path, 0755) == -1 && errno != EEXIST) {
-            save_errno = errno;
-            if (stat(path, &sbuf) == -1) {
-                errno = save_errno;
-                xsyslog(LOG_ERR, "IOERROR: creating directory",
-                                 "path=<%s>", path);
-                free(path);
-                return -1;
-            }
-        }
-        if (errno == EEXIST)
-            errno = 0;
-        *p = '/';
-    }
-
-    free(path);
+    int fd = xopendir(pathname, XOPENDIR_CREATE|XOPENDIR_NOSYNC);
+    if (fd < 0) return -1;
+    close(fd);
     return 0;
 }
 
-static int _copyfile_helper(const char *from, const char *to, int flags)
+EXPORTED int cyrus_copyfile_fdptr(const char *from, const char *to,
+                                  int flags, int *dirfdp)
 {
+    /* copy over self is an error */
+    if (!strcmp(from, to))
+        return -1;
+
     int srcfd = -1;
     int destfd = -1;
+    int local_dirfd = -1;
     const char *src_base = 0;
     size_t src_size = 0;
     struct stat sbuf;
@@ -566,18 +538,37 @@ static int _copyfile_helper(const char *from, const char *to, int flags)
     int r = 0;
     int nolink = flags & COPYFILE_NOLINK;
     int keeptime = flags & COPYFILE_KEEPTIME;
+    int nodirsync = flags & COPYFILE_NODIRSYNC;
+    char *copy = xstrdup(to);
+    const char *leaf = basename(copy);
+
+    if (!dirfdp) dirfdp = &local_dirfd;
+    if (*dirfdp < 0) *dirfdp = xopendir(to, flags & COPYFILE_MKDIR ? XOPENDIR_CREATE : 0);
+    if (*dirfdp < 0) {
+        r = -1;
+        goto done;
+    }
 
     /* try to hard link, but don't fail - fall back to regular copy */
     if (!nolink) {
-        if (link(from, to) == 0) return 0;
-        if (errno == EEXIST) {
-            if (xunlink(to) == -1) {
+        r = linkat(AT_FDCWD, from, *dirfdp, leaf, 0);
+        if (r && errno == EEXIST) {
+            /* n.b. unlink rather than xunlink.  at this point we believe
+             * a file definitely exists that we want to remove, so if
+             * unlink tells us ENOENT then that's super weird and we're
+             * probably racing against something
+             */
+            if (unlinkat(*dirfdp, leaf, 0) == -1) {
                 xsyslog(LOG_ERR, "IOERROR: unlinking to recreate failed",
                                  "filename=<%s>", to);
-                return -1;
+                errno = 0;
+                r = -1;
+                goto done;
             }
-            if (link(from, to) == 0) return 0;
+
+            r = linkat(AT_FDCWD, from, *dirfdp, leaf, 0);
         }
+        if (!r) goto sync;
     }
 
     srcfd = open(from, O_RDONLY, 0666);
@@ -602,11 +593,10 @@ static int _copyfile_helper(const char *from, const char *to, int flags)
         goto done;
     }
 
-    destfd = open(to, O_RDWR|O_TRUNC|O_CREAT, 0666);
+    destfd = openat(*dirfdp, leaf, O_RDWR|O_TRUNC|O_CREAT, 0666);
     if (destfd == -1) {
-        if (!(flags & COPYFILE_MKDIR))
-            xsyslog(LOG_ERR, "IOERROR: create failed",
-                             "filename=<%s>", to);
+        xsyslog(LOG_ERR, "IOERROR: create failed",
+                         "filename=<%s>", to);
         r = -1;
         goto done;
     }
@@ -619,7 +609,7 @@ static int _copyfile_helper(const char *from, const char *to, int flags)
         xsyslog(LOG_ERR, "IOERROR: retry_write failed",
                          "filename=<%s>", to);
         r = -1;
-        xunlink(to);  /* remove any rubbish we created */
+        xunlinkat(*dirfdp, leaf, /*flags*/0);  /* remove any rubbish we created */
         goto done;
     }
 
@@ -648,107 +638,34 @@ static int _copyfile_helper(const char *from, const char *to, int flags)
             xsyslog(LOG_ERR, "IOERROR: setting times failed",
                              "filename=<%s>", to);
             r = -1;
+            xunlink(to);  /* remove any rubbish we created */
+            goto done;
+        }
+    }
+
+sync:
+    if (!nodirsync && local_dirfd >= 0) {
+        if (fsync(local_dirfd) < 0) {
+            xsyslog(LOG_ERR, "IOERROR: fsync directory failed",
+                             "filename=<%s>", to);
+            r = -1;
+            xunlink(to);  /* remove any rubbish we created */
+            goto done;
         }
     }
 
 done:
     map_free(&src_base, &src_size);
+    free(copy);
 
     if (srcfd != -1) close(srcfd);
     if (destfd != -1) close(destfd);
+    if (local_dirfd != -1) close(local_dirfd);
 
     return r;
 }
 
-EXPORTED int cyrus_copyfile(const char *from, const char *to, int flags)
-{
-    int r;
-
-    /* copy over self is an error */
-    if (!strcmp(from, to))
-        return -1;
-
-    r = _copyfile_helper(from, to, flags);
-
-    /* try creating the target directory if requested */
-    if (r && (flags & COPYFILE_MKDIR)) {
-        r = cyrus_mkdir(to, 0755);
-        if (!r) r = _copyfile_helper(from, to, flags & ~COPYFILE_MKDIR);
-    }
-
-    if (!r && (flags & COPYFILE_RENAME)) {
-        /* remove the original file if the copy succeeded */
-        xunlink(from);
-    }
-
-    return r;
-}
-
-#if defined(__linux__) && defined(HAVE_LIBCAP)
-EXPORTED int set_caps(int stage, int is_master)
-{
-    cap_t cap = NULL;
-    int r = 0;
-    int e = errno;
-    static const char * const capsets[2][5] = {
-        { /* !master */
-            "cap_setuid=ep",    /* BEFORE_SETUID */
-            "=",                /* AFTER_SETUID */
-            "=",                /* doesn't happen */
-            "=",                /* doesn't happen */
-            "="                 /* doesn't happen */
-        }, { /* master */
-            "cap_net_bind_service=p cap_setuid=ep",     /* BEFORE_SETUID */
-            "cap_net_bind_service=p",                   /* AFTER_SETUID */
-            "cap_net_bind_service=ep",                  /* BEFORE_BIND */
-            "cap_net_bind_service=p",                   /* AFTER_BIND */
-            "="                                         /* AFTER_FORK */
-        }
-    };
-
-    cap = cap_from_text(capsets[!!is_master][stage]);
-    assert(cap != NULL);
-
-    r = cap_set_proc(cap);
-    if (r < 0) {
-        syslog(LOG_ERR, "cannot set caps: %m");
-        goto out;
-    }
-
-    if ((stage == BEFORE_SETUID) || (stage == AFTER_SETUID)) {
-        r = prctl(PR_SET_KEEPCAPS, (stage == BEFORE_SETUID));
-        if (r < 0) {
-            syslog(LOG_ERR, "cannot set keepcaps flag: %m");
-            goto out;
-        }
-    }
-
-  out:
-    if (cap) cap_free(cap);
-    errno = e;   /* preserve errno so the caller's error reporting is easy */
-
-    return r;
-}
-#else
-EXPORTED int set_caps(int stage __attribute__((unused)),
-                      int is_master __attribute__((unused)))
-{
-    return 0;
-}
-#endif
-
-static int cyrus_cap_setuid(int uid, int is_master)
-{
-    int r;
-
-    set_caps(BEFORE_SETUID, is_master);
-    r = setuid(uid);
-    set_caps(AFTER_SETUID, is_master);
-
-    return r;
-}
-
-EXPORTED int become_cyrus(int is_master)
+EXPORTED int become_cyrus(void)
 {
     struct passwd *p;
     struct group *g;
@@ -757,7 +674,7 @@ EXPORTED int become_cyrus(int is_master)
     int result;
     static uid_t uid = 0;
 
-    if (uid) return cyrus_cap_setuid(uid, is_master);
+    if (uid) return setuid(uid);
 
     const char *cyrus = cyrus_user();
     const char *mail = cyrus_group();
@@ -787,7 +704,6 @@ EXPORTED int become_cyrus(int is_master)
         newgid == getgid()) {
         /* already the Cyrus user, stop trying */
         uid = newuid;
-        set_caps(AFTER_SETUID, is_master);
         return 0;
     }
 
@@ -803,7 +719,7 @@ EXPORTED int become_cyrus(int is_master)
         return -1;
     }
 
-    result = cyrus_cap_setuid(newuid, is_master);
+    result = setuid(newuid);
 
     /* Only set static uid if successful, else future calls won't reset gid */
     if (result == 0)
@@ -857,11 +773,11 @@ EXPORTED int64_t now_ms(void)
 {
     struct timespec ts;
 
-    if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+    if (cyrus_gettime(CLOCK_REALTIME, &ts) == 0) {
         return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
     }
     else {
-        syslog(LOG_WARNING, "clock_gettime(): %m");
+        syslog(LOG_WARNING, "cyrus_gettime(): %m");
         return time(NULL) * 1000;
     }
 }
@@ -929,7 +845,7 @@ EXPORTED void cmdtime_netend(void)
  * Like the system clock() but works in system time
  * rather than process virtual time.  Would be more
  * useful and sensible if it worked in system monotonic
- * time using clock_gettime(CLOCK_MONOTONIC) but that
+ * time using cyrus_gettime(CLOCK_MONOTONIC) but that
  * would require linking with -lrt.
  */
 EXPORTED clock_t sclock(void)
@@ -1054,626 +970,6 @@ EXPORTED int parsehex(const char *p, const char **ptr, int maxlen, bit64 *res)
     return 0;
 }
 
-/* buffer handling functions */
-
-#ifdef HAVE_DECLARE_OPTIMIZE
-static inline size_t roundup(size_t size)
-    __attribute__((pure, always_inline, optimize("-O3")));
-#endif
-static inline size_t roundup(size_t size)
-{
-    if (size < 32)
-        return 32;
-    if (size < 64)
-        return 64;
-    if (size < 128)
-        return 128;
-    if (size < 256)
-        return 256;
-    if (size < 512)
-        return 512;
-    return ((size * 2) & ~1023);
-}
-
-/* this function has a side-effect of always leaving the buffer writable */
-EXPORTED void _buf_ensure(struct buf *buf, size_t n)
-{
-    size_t newlen = buf->len + n;
-    char *s;
-
-    assert(newlen); /* we never alloc zero bytes */
-
-    if (buf->alloc >= newlen)
-        return;
-
-    if (buf->alloc) {
-        buf->alloc = roundup(newlen);
-        buf->s = xrealloc(buf->s, buf->alloc);
-    }
-    else {
-        buf->alloc = roundup(newlen);
-        s = xmalloc(buf->alloc);
-
-        /* if no allocation, but data exists, it means copy on write.
-         * grab a copy of what's there now */
-        if (buf->len) {
-            assert(buf->s);
-            memcpy(s, buf->s, buf->len);
-        }
-
-        /* can release MMAP now, we've copied the data out */
-        if (buf->flags & BUF_MMAP) {
-            size_t len = buf->len; /* don't wipe the length, we still need it */
-            map_free((const char **)&buf->s, &len);
-            buf->flags &= ~BUF_MMAP;
-        }
-
-        buf->s = s;
-    }
-}
-
-EXPORTED const char *buf_cstring(const struct buf *buf)
-{
-    struct buf *backdoor = (struct buf*)buf;
-    buf_ensure(backdoor, 1);
-    backdoor->s[backdoor->len] = '\0';
-    return buf->s;
-}
-
-EXPORTED const char *buf_cstringnull(const struct buf *buf)
-{
-    if (!buf->s) return NULL;
-    return buf_cstring(buf);
-}
-
-EXPORTED const char *buf_cstringnull_ifempty(const struct buf *buf)
-{
-    if (!buf->len) return NULL;
-    return buf_cstring(buf);
-}
-
-EXPORTED const char *buf_cstring_or_empty(const struct buf *buf)
-{
-    if (!buf->s) return "";
-    return buf_cstring(buf);
-}
-
-EXPORTED char *buf_newcstring(struct buf *buf)
-{
-    char *ret = xstrdup(buf_cstring(buf));
-    buf_reset(buf);
-    return ret;
-}
-
-EXPORTED char *buf_release(struct buf *buf)
-{
-    char *ret = (char *)buf_cstring(buf);
-    buf->alloc = 0;
-    buf->s = NULL;
-    buf_free(buf);
-    return ret;
-}
-
-EXPORTED char *buf_releasenull(struct buf *buf)
-{
-    char *ret = (char *)buf_cstringnull(buf);
-    buf->alloc = 0;
-    buf->s = NULL;
-    buf_free(buf);
-    return ret;
-}
-
-EXPORTED void buf_getmap(struct buf *buf, const char **base, size_t *len)
-{
-    *base = buf->s;
-    *len = buf->len;
-}
-
-/* fetch a single line a file - terminated with \n ONLY.
- * buf does not contain the \n.
- * NOTE: if the final line does not contain a \n we still
- * return true so that the caller will process the line,
- * so a file A\nB will return two true responses with bufs
- * containing "A" and "B" respectively before returning a
- * false to the third call */
-EXPORTED int buf_getline(struct buf *buf, FILE *fp)
-{
-    int c;
-
-    buf_reset(buf);
-    while ((c = fgetc(fp)) != EOF) {
-        if (c == '\n')
-            break;
-        buf_putc(buf, c);
-    }
-    /* ensure trailing NULL */
-    buf_cstring(buf);
-
-    /* EOF and no content, we're done */
-    return (!(buf->len == 0 && c == EOF));
-}
-
-#ifdef HAVE_DECLARE_OPTIMIZE
-EXPORTED inline size_t buf_len(const struct buf *buf)
-    __attribute__((always_inline, optimize("-O3")));
-#endif
-EXPORTED inline size_t buf_len(const struct buf *buf)
-{
-    return buf->len;
-}
-
-#ifdef HAVE_DECLARE_OPTIMIZE
-EXPORTED inline const char *buf_base(const struct buf *buf)
-    __attribute__((always_inline, optimize("-O3")));
-#endif
-EXPORTED inline const char *buf_base(const struct buf *buf)
-{
-    return buf->s;
-}
-
-EXPORTED void buf_reset(struct buf *buf)
-{
-    if (buf->flags & BUF_MMAP)
-        map_free((const char **)&buf->s, &buf->len);
-    buf->len = 0;
-    buf->flags = 0;
-}
-
-EXPORTED void buf_truncate(struct buf *buf, ssize_t len)
-{
-    if (len < 0) {
-        len = buf->len + len;
-        if (len < 0) len = 0;
-    }
-    if ((size_t)len > buf->alloc) {
-        /* grow the buffer and zero-fill the new bytes */
-        size_t more = len - buf->len;
-        buf_ensure(buf, more);
-        memset(buf->s + buf->len, 0, more);
-    }
-    buf->len = len;
-}
-
-EXPORTED void buf_setcstr(struct buf *buf, const char *str)
-{
-    buf_setmap(buf, str, strlen(str));
-}
-
-EXPORTED void buf_setmap(struct buf *buf, const char *base, size_t len)
-{
-    buf_reset(buf);
-    if (len) {
-        buf_ensure(buf, len);
-        memcpy(buf->s, base, len);
-        buf->len = len;
-    }
-}
-
-EXPORTED void buf_copy(struct buf *dst, const struct buf *src)
-{
-    buf_setmap(dst, src->s, src->len);
-}
-
-EXPORTED void buf_append(struct buf *dst, const struct buf *src)
-{
-    buf_appendmap(dst, src->s, src->len);
-}
-
-EXPORTED void buf_appendcstr(struct buf *buf, const char *str)
-{
-    buf_appendmap(buf, str, strlen(str));
-}
-
-/* Append str to buf, omitting any byte sequence at the start
- * of str that matches the exact same byte sequence at the
- * end of buf. E.g. if buf="fooxyz" and str="xyzbar" then the
- * result is "fooxyzbar". */
-EXPORTED void buf_appendoverlap(struct buf *buf, const char *str)
-{
-    const char *t = buf_cstring(buf);
-    size_t matchlen = strlen(str);
-    if (matchlen < buf_len(buf)) {
-        t += buf_len(buf) - matchlen;
-    } else {
-        matchlen = buf_len(buf);
-    }
-
-    while (*t && matchlen && strncasecmp(t, str, matchlen)) {
-        t++; matchlen--;
-    }
-
-    if (*t && matchlen) {
-        buf_truncate(buf, buf_len(buf) - matchlen);
-    }
-    buf_appendcstr(buf, str);
-}
-
-EXPORTED void buf_appendbit32(struct buf *buf, bit32 num)
-{
-    bit32 item = htonl(num);
-    buf_appendmap(buf, (char *)&item, 4);
-}
-
-EXPORTED void buf_appendbit64(struct buf *buf, bit64 num)
-{
-    bit64 item = htonll(num);
-    buf_appendmap(buf, (char *)&item, 8);
-}
-
-EXPORTED void buf_appendmap(struct buf *buf, const char *base, size_t len)
-{
-    if (len) {
-        buf_ensure(buf, len);
-        memcpy(buf->s + buf->len, base, len);
-        buf->len += len;
-    }
-}
-
-/* This is like buf_appendmap() but attempts an optimisation where the
- * first append to an empty buf results in a read-only pointer to the
- * data at 'base' instead of a writable copy. */
-EXPORTED void buf_cowappendmap(struct buf *buf, const char *base, unsigned int len)
-{
-    if (!buf->s)
-        buf_init_ro(buf, base, len);
-    else
-        buf_appendmap(buf, base, len);
-}
-
-/* This is like buf_cowappendmap() but takes over the given map 'base',
- * which is a malloc()ed C string buffer of at least 'len' bytes. */
-EXPORTED void buf_cowappendfree(struct buf *buf, char *base, unsigned int len)
-{
-    if (!buf->s)
-        buf_initm(buf, base, len);
-    else {
-        buf_appendmap(buf, base, len);
-        free(base);
-    }
-}
-
-EXPORTED void buf_vprintf(struct buf *buf, const char *fmt, va_list args)
-{
-    va_list ap;
-    int room;
-    int n;
-
-    /* Add some more room to the buffer.  We just guess a
-     * size and rely on vsnprintf() to tell us if it
-     * needs to overrun the size. */
-    buf_ensure(buf, 1024);
-
-    /* Copy args in case we guess wrong on the size */
-    va_copy(ap, args);
-
-    room = buf->alloc - buf->len;
-    n = vsnprintf(buf->s + buf->len, room, fmt, args);
-
-    if (n >= room) {
-        /* woops, we guessed wrong...retry with enough space */
-        buf_ensure(buf, n+1);
-        n = vsnprintf(buf->s + buf->len, n+1, fmt, ap);
-    }
-    va_end(ap);
-
-    buf->len += n;
-}
-
-EXPORTED void buf_printf(struct buf *buf, const char *fmt, ...)
-{
-    va_list args;
-
-    va_start(args, fmt);
-    buf_vprintf(buf, fmt, args);
-    va_end(args);
-}
-
-EXPORTED void buf_replace_buf(struct buf *buf,
-                              size_t offset,
-                              size_t length,
-                              const struct buf *replace)
-{
-    if (offset > buf->len) return;
-    if (offset + length > buf->len)
-        length = buf->len - offset;
-
-    /* we need buf to be a writable C string now please */
-    buf_cstring(buf);
-
-    if (replace->len > length) {
-        /* string will need to expand */
-        buf_ensure(buf, replace->len - length + 1);
-    }
-    if (length != replace->len) {
-        /* +1 to copy the NULL to keep cstring semantics */
-        memmove(buf->s + offset + replace->len,
-                buf->s + offset + length,
-                buf->len - offset - length + 1);
-        buf->len += (replace->len - length);
-    }
-    if (replace->len)
-        memcpy(buf->s + offset, replace->s, replace->len);
-}
-
-/**
- * Replace all instances of the string literal @match in @buf
- * with the string @replace, which may be NULL to just remove
- * instances of @match.
- * Returns: the number of substitutions made.
- */
-EXPORTED int buf_replace_all(struct buf *buf, const char *match,
-                             const char *replace)
-{
-    int n = 0;
-    int matchlen = strlen(match);
-    struct buf replace_buf = BUF_INITIALIZER;
-    size_t off;
-    char *p;
-
-    buf_init_ro_cstr(&replace_buf, replace);
-
-    /* we need buf to be a nul terminated string now please */
-    buf_cstring(buf);
-
-    off = 0;
-    while ((p = strstr(buf->s + off, match))) {
-        off = (p - buf->s);
-        buf_replace_buf(buf, off, matchlen, &replace_buf);
-        n++;
-        off += replace_buf.len;
-    }
-
-    return n;
-}
-
-EXPORTED int buf_replace_char(struct buf *buf, char match, char replace)
-{
-    int n = 0;
-    size_t i;
-
-    /* we need writable, so may as well cstring it */
-    buf_cstring(buf);
-
-    for (i = 0; i < buf->len; i++) {
-        if (buf->s[i] == match) {
-            buf->s[i] = replace;
-            n++;
-        }
-    }
-
-    return n;
-}
-
-#ifdef ENABLE_REGEX
-/**
- * Replace the first instance of the compiled regexp @preg
- * in @buf with the string @replace, which may be NULL to just
- * remove an instance of @preg.  Does not support capture references
- * in the replace text.
- * Returns: the number of substitutions made (0 or 1)
- */
-EXPORTED int buf_replace_one_re(struct buf *buf, const regex_t *preg,
-                                const char *replace)
-{
-    struct buf replace_buf = BUF_INITIALIZER;
-    regmatch_t rm;
-
-    buf_init_ro_cstr(&replace_buf, replace);
-
-    /* we need buf to be a nul terminated string now please */
-    buf_cstring(buf);
-
-    if (!regexec(preg, buf->s, 1, &rm, 0)) {
-        buf_replace_buf(buf, rm.rm_so, rm.rm_eo - rm.rm_so, &replace_buf);
-        return 1;
-    }
-
-    return 0;
-}
-
-/**
- * Replace all instances of the compiled regexp @preg in @buf
- * with the string @replace, which may be NULL to just remove
- * instances of @preg.  Does not support capture references
- * in the replace text.
- * Returns: the number of substitutions made.
- */
-EXPORTED int buf_replace_all_re(struct buf *buf, const regex_t *preg,
-                                const char *replace)
-{
-    int n = 0;
-    struct buf replace_buf = BUF_INITIALIZER;
-    regmatch_t rm;
-    size_t off;
-
-    buf_init_ro_cstr(&replace_buf, replace);
-
-    /* we need buf to be a nul terminated string now please */
-    buf_cstring(buf);
-
-    off = 0;
-    while (!regexec(preg, buf->s + off, 1, &rm, (off ? REG_NOTBOL : 0))) {
-        buf_replace_buf(buf, off + rm.rm_so, rm.rm_eo - rm.rm_so, &replace_buf);
-        off += rm.rm_so + replace_buf.len;
-        n++;
-    }
-
-    return n;
-}
-#endif
-
-EXPORTED void buf_insert(struct buf *dst, unsigned int off, const struct buf *src)
-{
-    buf_replace_buf(dst, off, 0, src);
-}
-
-EXPORTED void buf_insertcstr(struct buf *dst, unsigned int off, const char *str)
-{
-    struct buf str_buf = BUF_INITIALIZER;
-    buf_init_ro_cstr(&str_buf, str);
-    buf_replace_buf(dst, off, 0, &str_buf);
-    buf_free(&str_buf);
-}
-
-EXPORTED void buf_insertmap(struct buf *dst, unsigned int off,
-                            const char *base, int len)
-{
-    struct buf map_buf = BUF_INITIALIZER;
-    buf_init_ro(&map_buf, base, len);
-    buf_replace_buf(dst, off, 0, &map_buf);
-    buf_free(&map_buf);
-}
-
-EXPORTED void buf_remove(struct buf *dst, unsigned int off, unsigned int len)
-{
-    struct buf empty_buf = BUF_INITIALIZER;
-    buf_replace_buf(dst, off, len, &empty_buf);
-    buf_free(&empty_buf);
-}
-
-/*
- * Compare two struct bufs bytewise.  Returns a number
- * like strcmp(), suitable for sorting e.g. with qsort(),
- */
-EXPORTED int buf_cmp(const struct buf *a, const struct buf *b)
-{
-    size_t len = MIN(a->len, b->len);
-    int r = 0;
-
-    if (len)
-        r = memcmp(a->s, b->s, len);
-
-    if (!r) {
-        if (a->len < b->len)
-            r = -1;
-        else if (a->len > b->len)
-            r = 1;
-    }
-
-    return r;
-}
-
-/*
- * Initialise a struct buf to point to read-only data.  The key here is
- * setting buf->alloc=0 which indicates CoW is in effect, i.e. the data
- * pointed to needs to be copied should it ever be modified.
- */
-EXPORTED void buf_init_ro(struct buf *buf, const char *base, size_t len)
-{
-    buf_free(buf);
-    buf->s = (char *)base;
-    buf->len = len;
-}
-
-/*
- * Initialise a struct buf to point to writable data at 'base', which
- * must be a malloc()ed allocation at least 'len' bytes long and is
- * taken over by the struct buf.
- */
-EXPORTED void buf_initm(struct buf *buf, char *base, int len)
-{
-    buf_free(buf);
-    buf->s = base;
-    buf->alloc = buf->len = len;
-}
-
-/*
- * Initialise a struct buf to point to writable c string str.
- */
-EXPORTED void buf_initmcstr(struct buf *buf, char *str)
-{
-    buf_initm(buf, str, strlen(str));
-}
-
-/*
- * Initialise a struct buf to point to a read-only C string.
- */
-EXPORTED void buf_init_ro_cstr(struct buf *buf, const char *str)
-{
-    buf_free(buf);
-    buf->s = (char *)str;
-    buf->len = (str ? strlen(str) : 0);
-}
-
-/*
- * Initialise a struct buf to point to a read-only mmap()ing.
- * This buf is CoW, and if written to the data will be freed
- * using map_free().
- */
-EXPORTED void buf_refresh_mmap(struct buf *buf, int onceonly, int fd,
-                            const char *fname, size_t size, const char *mboxname)
-{
-    assert(!buf->alloc);
-    buf->flags = BUF_MMAP;
-    map_refresh(fd, onceonly, (const char **)&buf->s, &buf->len,
-                size, fname, mboxname);
-}
-
-EXPORTED void buf_free(struct buf *buf)
-{
-    if (!buf) return;
-
-    if (buf->alloc)
-        free(buf->s);
-    else if (buf->flags & BUF_MMAP)
-        map_free((const char **)&buf->s, &buf->len);
-    buf->alloc = 0;
-    buf->s = NULL;
-    buf->len = 0;
-    buf->flags = 0;
-}
-
-EXPORTED void buf_move(struct buf *dst, struct buf *src)
-{
-    buf_free(dst);
-    *dst = *src;
-    memset(src, 0, sizeof(struct buf));
-}
-
-EXPORTED int buf_findchar(const struct buf *buf, unsigned int off, int c)
-{
-    const char *p;
-
-    if (off < buf->len && (p = memchr(buf->s + off, c, buf->len - off)))
-        return (p - buf->s);
-    return -1;
-}
-
-/*
- * Find (the first line in) 'line' in the buffer 'buf'.  The found text
- * will be a complete line, i.e. bounded by either \n newlines or by the
- * edges of 'buf'.  Returns the byte index into 'buf' of the found text,
- * or -1 if not found.
- */
-EXPORTED int buf_findline(const struct buf *buf, const char *line)
-{
-    int linelen;
-    const char *p;
-    const char *end = buf->s + buf->len;
-
-    if (!line) return -1;
-
-    /* find the length of the first line in the text at 'line' */
-    p = strchr(line, '\n');
-    linelen = (p ? (size_t)(p - line) : strlen(line));
-    if (linelen == 0) return -1;
-
-    for (p = buf->s ;
-         (p = (const char *)memmem(p, end-p, line, linelen)) != NULL ;
-         p++) {
-
-        /* check the found string is at line boundaries */
-        if (p > buf->s && p[-1] != '\n')
-            continue;
-        if ((p+linelen) < end && p[linelen] != '\n')
-            continue;
-
-        return (p - buf->s);
-    }
-
-    return -1;
-}
-
 EXPORTED char *strconcat(const char *s1, ...)
 {
     int sz = 1; /* 1 byte for the trailing NUL */
@@ -1708,65 +1004,6 @@ EXPORTED char *strconcat(const char *s1, ...)
     return buf;
 }
 
-EXPORTED const char *buf_lcase(struct buf *buf)
-{
-    buf_cstring(buf);
-    lcase(buf->s);
-    return buf->s;
-}
-
-EXPORTED const char *buf_ucase(struct buf *buf)
-{
-    buf_cstring(buf);
-    ucase(buf->s);
-    return buf->s;
-}
-
-EXPORTED const char *buf_tocrlf(struct buf *buf)
-{
-    size_t i;
-
-    buf_cstring(buf);
-
-    for (i = 0; i < buf->len; i++) {
-        if (buf->s[i] == '\r' && buf->s[i+1] != '\n') {
-            /* bare \r: add a \n after it */
-            buf_insertcstr(buf, i+1, "\n");
-        }
-        else if (buf->s[i] == '\n') {
-            if (i == 0 || buf->s[i-1] != '\r') {
-                buf_insertcstr(buf, i, "\r");
-            }
-        }
-    }
-
-    return buf->s;
-}
-
-EXPORTED void buf_trim(struct buf *buf)
-{
-    size_t i;
-    for (i = 0; i < buf->len; i++) {
-        if (buf->s[i] == ' ') continue;
-        if (buf->s[i] == '\t') continue;
-        if (buf->s[i] == '\r') continue;
-        if (buf->s[i] == '\n') continue;
-        break;
-    }
-    if (i) buf_remove(buf, 0, i);
-
-    for (i = buf->len; i > 1; i--) {
-        if (buf->s[i-1] == ' ') continue;
-        if (buf->s[i-1] == '\t') continue;
-        if (buf->s[i-1] == '\r') continue;
-        if (buf->s[i-1] == '\n') continue;
-        break;
-    }
-    if (i != buf->len) {
-        buf_truncate(buf, i);
-    }
-}
-
 EXPORTED int bin_to_hex(const void *bin, size_t binlen, char *hex, int flags)
 {
     const unsigned char *v = bin;
@@ -1792,27 +1029,6 @@ EXPORTED int buf_bin_to_hex(struct buf *hex, const void *bin, size_t binlen, int
     size_t newlen = hex->len + binlen * 2 + seplen;
     buf_ensure(hex, newlen - hex->len + 1);
     int r = bin_to_hex(bin, binlen, hex->s + hex->len, flags);
-    buf_truncate(hex, newlen);
-    buf_cstring(hex);
-    return r;
-}
-
-EXPORTED int bin_to_lchex(const void *bin, size_t binlen, char *hex)
-{
-    uint16_t *p = (void *)hex;
-    const unsigned char *v = bin;
-    size_t i;
-    for (i = 0; i < binlen; i++)
-        *p++ = lchexchars[*v++];
-    hex[binlen*2] = '\0';
-    return 2 * binlen;
-}
-
-EXPORTED int buf_bin_to_lchex(struct buf *hex, const void *bin, size_t binlen)
-{
-    size_t newlen = hex->len + 2 * binlen;
-    buf_ensure(hex, newlen - hex->len + 1);
-    int r = bin_to_lchex(bin, binlen, hex->s + hex->len);
     buf_truncate(hex, newlen);
     buf_cstring(hex);
     return r;
@@ -2015,8 +1231,10 @@ EXPORTED int warmup_file(const char *filename,
     int fd;
     int r;
 
+    if (!filename) return 0;
+
     fd = open(filename, O_RDONLY, 0);
-    if (fd < 0) return errno;
+    if (fd < 0) return 0;
 
     /* Note, posix_fadvise() returns its error code rather than
      * setting errno.  Unlike every other system call including
@@ -2152,16 +1370,27 @@ EXPORTED void tcp_disable_nagle(int fd)
 }
 
 EXPORTED void xsyslog_fn(int priority, const char *description,
-                         const char *func, const char *extra_fmt, ...)
+                         const char *file, int line, const char *func,
+                         const char *extra_fmt, ...)
 {
-    static struct buf buf = BUF_INITIALIZER;
+    struct buf buf = BUF_INITIALIZER;
+    const char *traceid = trace_id();
     int saved_errno = errno;
     int want_diag = (LOG_PRI(priority) != LOG_NOTICE
                      && LOG_PRI(priority) != LOG_INFO);
 
-    buf_reset(&buf);
     buf_appendcstr(&buf, description);
     buf_appendmap(&buf, ": ", 2);
+    if (session_have_id()) {
+        buf_appendmap(&buf, "sessionid=<", 11);
+        buf_appendcstr(&buf, session_id());
+        buf_appendmap(&buf, "> ", 2);
+    }
+    if (traceid) {
+        buf_appendmap(&buf, "r.tid=<", 7);
+        buf_appendcstr(&buf, traceid);
+        buf_appendmap(&buf, "> ", 2);
+    }
     if (extra_fmt && *extra_fmt) {
         va_list args;
 
@@ -2177,9 +1406,14 @@ EXPORTED void xsyslog_fn(int priority, const char *description,
             buf_appendcstr(&buf, strerror(saved_errno));
             buf_appendmap(&buf, "> ", 2);
         }
-        buf_appendmap(&buf, "func=<", 6);
-        if (func) buf_appendcstr(&buf, func);
-        buf_putc(&buf, '>');
+        if (file && line) {
+            buf_printf(&buf, "source=<%s:%d> ", file, line);
+        }
+        if (func) {
+            buf_appendmap(&buf, "func=<", 6);
+            buf_appendcstr(&buf, func);
+            buf_putc(&buf, '>');
+        }
     }
 
     syslog(priority, "%s", buf_cstring(&buf));
@@ -2194,147 +1428,60 @@ EXPORTED char *modseqtoa(modseq_t modseq)
     return buf_release(&buf);
 }
 
-static char *_xsyslog_ev_escape(const char *val)
-{
-    struct buf buf = BUF_INITIALIZER;
-    int needs_escaping = 0;
-    size_t orig_len, escaped_len;
-    const char *p;
-
-    buf_setcstr(&buf, val);
-
-    escaped_len = orig_len = buf_len(&buf);
-
-    // Make sure the empty string is visible
-    if (orig_len == 0) {
-        buf_setcstr(&buf, "\"\"");
-        return buf_release(&buf);
-    }
-
-    for (p = buf_cstring(&buf); *p; p++) {
-        switch ((unsigned char) *p) {
-        case '\\':
-        case '\"':
-        case '\n':
-        case '\r':
-            ++escaped_len;  // add 1 for the backslash
-
-        // FALL THROUGH
-        case 0x00 ... 0x09:
-        case 0x11 ... 0x12:
-        case 0x14 ... 0x20:
-        case 0x3D:
-        case 0x7F ... 0xFF:
-            needs_escaping = 1;
-            break;
-        }
-    }
-
-    if (needs_escaping) {
-        char *q;
-
-        escaped_len += 2;  // add 2 for surrounding DQUOTEs
-
-        buf_truncate(&buf, escaped_len);  // grow the buffer to escaped length
-
-        // we can now build the escaped value in place, tail to head
-        q = (char *) buf_base(&buf) + escaped_len - 1;
-        *q-- = '\"';  // closing DQUOTE
-
-        for (p = buf_base(&buf) + orig_len - 1; p >= buf_base(&buf); p--) {
-            char c = *p;
-
-            switch (c) {
-            case '\\':
-            case '\"':
-                needs_escaping = 1;
-                break;
-
-            case '\n':
-                needs_escaping = 1;
-                c = 'n';
-                break;
-
-            case '\r':
-                needs_escaping = 1;
-                c = 'r';
-                break;
-
-            default:
-                needs_escaping = 0;
-                break;
-            }
-
-            *q-- = c;
-
-            if (needs_escaping) *q-- = '\\';
-        }
-
-        assert(q == buf_base(&buf));
-        *q = '\"';  // opening DQUOTE
-    }
-
-    return buf_release(&buf);
-}
-
 EXPORTED void _xsyslog_ev(int saved_errno, int priority, const char *event,
-                          logfmt_arg_list *arg)
+                          const char *file, int line, const char *func,
+                          xsyslog_ev_arg_list *arg)
 {
-    static struct buf buf = BUF_INITIALIZER;
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    struct buf errbuf = BUF_INITIALIZER;
+    bool want_diag = (LOG_PRI(priority) != LOG_NOTICE
+                      && LOG_PRI(priority) != LOG_INFO);
 
-    char *escaped = _xsyslog_ev_escape(event);
-    buf_setcstr(&buf, "event=");
-    buf_appendcstr(&buf, escaped);
-    free(escaped);
+    logfmt_init(&lf, event);
+    logfmt_push_session(&lf);
 
     for (size_t i = 0; i < arg->nmemb; i++) {
-        buf_appendcstr(&buf, " ");
-        buf_appendcstr(&buf, arg->data[i].name);
-        buf_appendcstr(&buf, "=");
+        const char *name = arg->data[i].name;
 
         switch(arg->data[i].type) {
-        case LF_C:   buf_printf(&buf, "%c",   arg->data[i].c);   break;
-        case LF_D:   buf_printf(&buf, "%d",   arg->data[i].d);   break;
-        case LF_LD:  buf_printf(&buf, "%ld",  arg->data[i].ld);  break;
-        case LF_LLD: buf_printf(&buf, "%lld", arg->data[i].lld); break;
-        case LF_U:   buf_printf(&buf, "%u",   arg->data[i].u);   break;
-        case LF_LU:  buf_printf(&buf, "%lu",  arg->data[i].lu);  break;
-        case LF_LLU: buf_printf(&buf, "%llu", arg->data[i].llu); break;
-        case LF_ZD:  buf_printf(&buf, "%zd",  arg->data[i].zd);  break;
-        case LF_ZU:  buf_printf(&buf, "%zu",  arg->data[i].zu);  break;
-        case LF_LLX: buf_printf(&buf, "%llx", arg->data[i].llu); break;
-        case LF_F:   buf_printf(&buf, "%f",   arg->data[i].f);   break;
-        case LF_M: {
-            char *escaped_errno = _xsyslog_ev_escape(strerror(saved_errno));
-            buf_appendcstr(&buf, escaped_errno);
-            free(escaped_errno);
-            break;
-        }
+        case LF_C:   logfmt_pushf(&lf, name, "%c", arg->data[i].c);     break;
+        case LF_D:   logfmt_pushf(&lf, name, "%d", arg->data[i].d);     break;
+        case LF_LD:  logfmt_pushf(&lf, name, "%ld", arg->data[i].ld);   break;
+        case LF_LLD: logfmt_pushf(&lf, name, "%lld", arg->data[i].lld); break;
+        case LF_U:   logfmt_pushf(&lf, name, "%u", arg->data[i].u);     break;
+        case LF_LU:  logfmt_pushf(&lf, name, "%lu", arg->data[i].lu);   break;
+        case LF_LLU: logfmt_pushf(&lf, name, "%llu", arg->data[i].llu); break;
+        case LF_ZD:  logfmt_pushf(&lf, name, "%zd", arg->data[i].zd);   break;
+        case LF_ZU:  logfmt_pushf(&lf, name, "%zu", arg->data[i].zu);   break;
+        case LF_LLX: logfmt_pushf(&lf, name, "%llx", arg->data[i].llu); break;
+        case LF_F:   logfmt_pushf(&lf, name, "%f", arg->data[i].f);     break;
 
-        case LF_S: {
-            char *escaped_s = _xsyslog_ev_escape(arg->data[i].s);
-            buf_appendcstr(&buf, escaped_s);
-            free(escaped_s);
+        case LF_S:
+            logfmt_push(&lf, name, arg->data[i].s);
             break;
-        }
-
-        case LF_RAW: {
-            char *escaped_raw = _xsyslog_ev_escape(arg->data[i].s);
-            buf_appendcstr(&buf, escaped_raw);
-            free(escaped_raw);
+        case LF_UTF8:
+            logfmt_push_utf8(&lf, name, arg->data[i].s);
+            break;
+        case LF_RAW:
+            logfmt_push(&lf, name, arg->data[i].s);
             free((char *)arg->data[i].s);
             break;
-        }
 
-        default: {
-            struct buf errbuf = BUF_INITIALIZER;
+        default:
             buf_printf(&errbuf, "Unknown lf type: %d", arg->data[i].type);
             fatal(buf_cstring(&errbuf), EX_SOFTWARE);
-        }
+            break;
         }
     }
 
-    syslog(priority, "%s", buf_cstring(&buf));
-    buf_free(&buf);
+    if (want_diag) {
+        if (saved_errno)
+            logfmt_push(&lf, "sys.error", strerror(saved_errno));
+        logfmt_push_caller(&lf, file, line, func);
+    }
+
+    syslog(priority, "%s", logfmt_cstring(&lf));
+    logfmt_fini(&lf);
+
     errno = saved_errno;
 }

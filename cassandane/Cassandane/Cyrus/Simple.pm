@@ -44,9 +44,9 @@ use Cwd qw(getcwd realpath);
 use Data::Dumper;
 use DateTime;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
+use Cassandane::Util::Slurp;
 
 $Data::Dumper::Sortkeys = 1;
 
@@ -230,9 +230,9 @@ sub test_toggleable_debug_logging
 
     # find our imapd pid from syslog
     my $loginpat = qr{
-        \bimap\[(\d+)\]:\slogin:
-        \s\S+\s\[[\d\.]+\]\scassandane\splaintext
-        \sUser\slogged\sin
+        \bimap\[(\d+)\]:\sevent=login\.good
+        .+
+        u\.username=cassandane
     }x;
     my @logins = $self->{instance}->getsyslog($loginpat);
     $self->assert_num_equals(1, scalar @logins);
@@ -389,6 +389,30 @@ sub test_fork_noexec
 
     # cwd better not have changed!
     $self->assert_str_equals($expect_cwd, getcwd());
+}
+
+sub test_sasl_ir
+{
+    my ($self) = @_;
+
+    my $svc = $self->{instance}->get_service('imap');
+    my $host = $svc->host();
+    my $port = $svc->port();
+
+    my $imtest = $self->{instance}->_find_binary('imtest');
+    my $out = $self->{instance}->get_basedir() . "/imtest.$$.out";
+
+    $self->{instance}->run_command(
+        { redirects => { stdin => \". logout\r\n", stdout => $out } },
+        $imtest, '-a', 'cassandane', '-w', 'password', '-m', 'plain',
+                 '-p', $port, $host
+    );
+
+    my $exchange = slurp_file($out);
+
+    # expect to have passed the hashed password in the authenticate line
+    my $re = qr{^C: A01 AUTHENTICATE PLAIN AGNhc3NhbmRhbmUAcGFzc3dvcmQ=\r$}m;
+    $self->assert_matches($re, $exchange);
 }
 
 1;

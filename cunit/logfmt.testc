@@ -1,0 +1,467 @@
+#include "cunit/unit.h"
+#include "lib/logfmt.h"
+
+#include "imap/mailbox.h"
+#include "imap/mboxlist.h"
+
+#include "lib/libconfig.h"
+#include "lib/sessionid.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#define DBDIR "test-logfmt-dbdir"
+
+static int set_up(void)
+{
+    config_read_string("configdirectory: "DBDIR"/conf\n");
+    session_clear_id();
+    trace_set_id(NULL, 0);
+    return 0;
+}
+
+static int tear_down(void)
+{
+    session_clear_id();
+    trace_set_id(NULL, 0);
+    config_reset();
+    return 0;
+}
+
+static void test_logfmt_escape_bytestring1(void)
+{
+    static const struct {
+        const char *value;
+        const char *expect;
+    } tests[] = {
+        { NULL,                 "~null~" },
+        { "~null~",             "~null~" }, /* n.b. ambiguity! */
+        { "",                   "\"\"" }, /* empty string is quoted */
+        { "basic",              "basic" }, /* basic string isn't quoted */
+        { "equals=equals",      "\"equals=equals\"" },
+        { "back\\slash",        "\"back\\\\slash\"" },
+        { "new\nline",          "\"new\\nline\"" },
+        { "carriage\rreturn",   "\"carriage\\rreturn\"" },
+        { "double\"quote",      "\"double\\\"quote\"" },
+        { " ",                  "\" \"" },
+        { "space space",        "\"space space\"" },
+        { "tab\ttab",           "\"tab\\ttab\"" },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        struct buf actual = BUF_INITIALIZER;
+
+        logfmt_escape_bytestring(&actual, tests[i].value);
+        if (tests[i].expect) {
+            CU_ASSERT_STRING_EQUAL(buf_cstring(&actual), tests[i].expect);
+        }
+        else {
+            CU_ASSERT_EQUAL(buf_len(&actual), 0);
+        }
+
+        buf_free(&actual);
+    }
+}
+
+#define ASSERT_STRING_QUOTED(actual) do {                               \
+    const char *_a = (actual);                                          \
+    size_t len = strlen(_a);                                            \
+    bool is_quoted = len > 0 && _a[0] == '"' && _a[len - 1] == '"';     \
+    CU_assertFormatImplementation(is_quoted, __LINE__, __FILE__,        \
+        "", CU_FALSE, "CU_ASSERT_STRING_QUOTED(%s=%s)",                 \
+        #actual, _a);                                                   \
+} while (0)
+
+#define ASSERT_CHAR_BACKSLASHED(actual, expect) do {                    \
+    const char *_a = (actual);                                          \
+    int _e = (expect);                                                  \
+    bool has_backslash = (_a[0] == '\\');                               \
+    bool is_right_char = (_a[1] == _e);                                 \
+    CU_assertFormatImplementation(has_backslash && is_right_char,       \
+        __LINE__, __FILE__, "", CU_FALSE,                               \
+        "CU_ASSERT_CHAR_ESCAPED(%s=\"%.2s\", %s=%x)",                   \
+        #actual, _a, #expect, _e);                                      \
+} while (0)
+
+static void test_logfmt_escape_bytestring2(void)
+{
+    #define EXPECT_DQUOTES   (UINT8_C(1) << 0)
+    #define EXPECT_BACKSLASH (UINT8_C(1) << 1)
+    #define EXPECT_HEX       (UINT8_C(1) << 2)
+    #define OK               UINT8_C(0)
+    #define QQ               (EXPECT_DQUOTES)
+    #define BS               (EXPECT_DQUOTES | EXPECT_BACKSLASH)
+    #define HX               (EXPECT_DQUOTES | EXPECT_HEX)
+    static const uint8_t lookup[256] = {
+    /*  _0  _1  _2  _3  _4  _5  _6  _7  _8  _9  _a  _b  _c  _d  _e  _f       */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, BS, BS, HX, HX, BS, HX, HX, /* 0 */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* 1 */
+        QQ, OK, BS, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, /* 2 */
+        OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, QQ, OK, OK, /* 3 */
+        OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, /* 4 */
+        OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, BS, OK, OK, OK, /* 5 */
+        OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, /* 6 */
+        OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, OK, HX, /* 7 */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* 8 */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* 9 */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* a */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* b */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* c */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* d */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* e */
+        HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, HX, /* f */
+    };
+    int n_tests = sizeof(lookup) / sizeof(lookup[0]);
+    int i;
+
+    for (i = 1; i < n_tests; i++) {
+        const bool expect_dquotes = (lookup[i] & EXPECT_DQUOTES);
+        const bool expect_backslash = (lookup[i] & EXPECT_BACKSLASH);
+        const bool expect_hex = (lookup[i] & EXPECT_HEX);
+        char value[32];
+        struct buf actual = BUF_INITIALIZER;
+
+        snprintf(value, sizeof(value), "Q%cE", i);
+        logfmt_escape_bytestring(&actual, value);
+
+        if (expect_dquotes) {
+            ASSERT_STRING_QUOTED(buf_cstring(&actual));
+        }
+        else {
+            CU_ASSERT_NOT_EQUAL(actual.s[0], '"');
+        }
+
+        CU_ASSERT_EQUAL(actual.s[0 + expect_dquotes], 'Q');
+
+        if (expect_backslash) {
+            switch (i) {
+            case '\n':
+                ASSERT_CHAR_BACKSLASHED(actual.s + 1 + expect_dquotes, 'n');
+                break;
+            case '\r':
+                ASSERT_CHAR_BACKSLASHED(actual.s + 1 + expect_dquotes, 'r');
+                break;
+            case '\t':
+                ASSERT_CHAR_BACKSLASHED(actual.s + 1 + expect_dquotes, 't');
+                break;
+            default:
+                ASSERT_CHAR_BACKSLASHED(actual.s + 1 + expect_dquotes, i);
+                break;
+            }
+        }
+        else if (expect_hex) {
+            char match[32];
+            snprintf(match, sizeof(match), "%sQ\\x{%2.2x}E%s",
+                     expect_dquotes ? "\"" : "",
+                     i,
+                     expect_dquotes ? "\"" : "");
+
+            CU_ASSERT_STRING_EQUAL(buf_cstring(&actual), match);
+        }
+        else {
+            CU_ASSERT_NOT_EQUAL(actual.s[1 + expect_dquotes], '\\');
+        }
+
+        CU_ASSERT_EQUAL(actual.s[expect_dquotes
+                                 + 1 /* Q */
+                                 + expect_backslash
+                                 + 5 * expect_hex
+                                 + 1],
+                        'E');
+        buf_free(&actual);
+    }
+}
+
+static void test_logfmt_escape_utf8(void)
+{
+    static const struct {
+        const char *value;
+        const char *expect;
+    } tests[] = {
+        { NULL,                 "~null~" },
+        { "~null~",             "~null~" }, /* n.b. ambiguity! */
+        { "",                   "\"\"" }, /* empty string is quoted */
+        { "basic",              "basic" }, /* basic string isn't quoted */
+        { "equals=equals",      "\"equals=equals\"" },
+        { "back\\slash",        "\"back\\\\slash\"" },
+        { "new\nline",          "\"new\\nline\"" },
+        { "carriage\rreturn",   "\"carriage\\rreturn\"" },
+        { "double\"quote",      "\"double\\\"quote\"" },
+        { " ",                  "\" \"" },
+        { "space space",        "\"space space\"" },
+        { "tab\ttab",           "\"tab\\ttab\"" },
+        { "snow☃man",           "\"snow☃man\"" },
+        { "vertical\vtab",      "\"vertical\\x{0b}tab\"" },
+        { "form\ffeed",         "\"form\\x{0c}feed\"" },
+        { "next\xc2\x85line",   "\"next\\x{c2}\\x{85}line\"" },
+        { "line\u2028sep",      "\"line\\x{e2}\\x{80}\\x{a8}sep\"" },
+        { "para\u2029sep",      "\"para\\x{e2}\\x{80}\\x{a9}sep\"" },
+        { "repl\ufffdchar",     "\"repl�char\"" },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        struct buf actual = BUF_INITIALIZER;
+
+        logfmt_escape_utf8(&actual, tests[i].value);
+        if (tests[i].expect) {
+            CU_ASSERT_STRING_EQUAL(buf_cstring(&actual), tests[i].expect);
+        }
+        else {
+            CU_ASSERT_EQUAL(buf_len(&actual), 0);
+        }
+
+        buf_free(&actual);
+    }
+}
+
+static void test_logfmt_push(void)
+{
+    static const struct {
+        const char *event;
+        const char *value;
+        const char *expect;
+    } tests[] = {
+        { NULL,    NULL,    "event=~null~ k=~null~"   },
+        { NULL,    "",      "event=~null~ k=\"\""     },
+        { "",      NULL,    "event=\"\" k=~null~"     },
+        { "",      "",      "event=\"\" k=\"\""       },
+        { "a",     "b",     "event=a k=b"             },
+        { "a",     "\"b\"", "event=a k=\"\\\"b\\\"\"" },
+        { "\"a\"", "b",     "event=\"\\\"a\\\"\" k=b" },
+        { "a",     "☃",     "event=a k=\"\\x{e2}\\x{98}\\x{83}\"" },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        logfmt_init(&lf, tests[i].event);
+        logfmt_push(&lf, "k", tests[i].value);
+        CU_ASSERT_STRING_EQUAL(logfmt_cstring(&lf), tests[i].expect);
+    }
+
+    logfmt_fini(&lf);
+}
+
+static void test_logfmt_push_utf8(void)
+{
+    static const struct {
+        const char *event;
+        const char *value;
+        const char *expect;
+    } tests[] = {
+        { NULL,    NULL,    "event=~null~ k=~null~"   },
+        { NULL,    "",      "event=~null~ k=\"\""     },
+        { "",      NULL,    "event=\"\" k=~null~"     },
+        { "",      "",      "event=\"\" k=\"\""       },
+        { "a",     "b",     "event=a k=b"             },
+        { "a",     "\"b\"", "event=a k=\"\\\"b\\\"\"" },
+        { "\"a\"", "b",     "event=\"\\\"a\\\"\" k=b" },
+        { "a",     "☃",     "event=a k=\"☃\"" },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        logfmt_init(&lf, tests[i].event);
+        logfmt_push_utf8(&lf, "k", tests[i].value);
+        CU_ASSERT_STRING_EQUAL(logfmt_cstring(&lf), tests[i].expect);
+    }
+
+    logfmt_fini(&lf);
+}
+
+static void test_logfmt_pushf(void)
+{
+    static const struct {
+        const char *event;
+        const char *value;
+        const char *expect;
+    } tests[] = {
+        { NULL,    "",      "event=~null~ k=\"\""     },
+        { "",      "",      "event=\"\" k=\"\""       },
+        { "a",     "b",     "event=a k=b"             },
+        { "a",     "\"b\"", "event=a k=\"\\\"b\\\"\"" },
+        { "\"a\"", "b",     "event=\"\\\"a\\\"\" k=b" },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        logfmt_init(&lf, tests[i].event);
+        logfmt_pushf(&lf, "k", "%s", tests[i].value);
+        CU_ASSERT_STRING_EQUAL(logfmt_cstring(&lf), tests[i].expect);
+    }
+
+    logfmt_fini(&lf);
+}
+
+static void test_logfmt_push_session(void)
+{
+    static const struct {
+        bool with_session_id;
+        bool with_trace_id;
+    } tests[] = {
+        { false, false },
+        { false, true  },
+        { true,  false },
+        { true,  true },
+    };
+    const size_t n_tests = sizeof(tests) / sizeof(tests[0]);
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    unsigned i;
+
+    for (i = 0; i < n_tests; i++) {
+        char match[32 + MAX_SESSIONID_SIZE] = {0};
+
+        if (tests[i].with_session_id) {
+            session_new_id();
+            snprintf(match, sizeof(match), " r.sessionid=%s ", session_id());
+        }
+
+        if (tests[i].with_trace_id) {
+            trace_set_id("sometraceid", 0);
+        }
+
+        logfmt_init(&lf, "test_logfmt_push_session");
+        logfmt_push_session(&lf);
+        logfmt_push(&lf, "key", "value");
+
+        if (tests[i].with_session_id)
+            CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), match));
+        else
+            CU_ASSERT_PTR_NULL(strstr(logfmt_cstring(&lf), " r.sessionid="));
+
+        if (tests[i].with_trace_id)
+            CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf),
+                                          " r.tid=sometraceid "));
+        else
+            CU_ASSERT_PTR_NULL(strstr(logfmt_cstring(&lf), " r.tid="));
+
+        logfmt_fini(&lf);
+        session_clear_id();
+        trace_set_id(NULL, 0);
+    }
+}
+
+static void test_logfmt_push_caller(void)
+{
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    char expect_file[1024], expect_line[1024], expect_func[1024];
+    const char *actual_file, *actual_line, *actual_func;
+    int line;
+
+    logfmt_init(&lf, "test_logfmt_push_caller");
+
+    // clang-format off
+    line = __LINE__, logfmt_push_caller(&lf, __FILE__, __LINE__, __func__);
+    // clang-format on
+
+    snprintf(expect_file, sizeof(expect_file), "caller.file=%s", __FILE__);
+    snprintf(expect_line, sizeof(expect_line), "caller.line=%d", line);
+    snprintf(expect_func, sizeof(expect_func), "caller.func=%s", __func__);
+
+    actual_file = strstr(logfmt_cstring(&lf), "caller.file");
+    CU_ASSERT_SUBSTR_EQUAL(actual_file, expect_file, strlen(expect_file));
+
+    actual_line = strstr(logfmt_cstring(&lf), "caller.line");
+    CU_ASSERT_SUBSTR_EQUAL(actual_line, expect_line, strlen(expect_line));
+
+    actual_func = strstr(logfmt_cstring(&lf), "caller.func");
+    CU_ASSERT_SUBSTR_EQUAL(actual_func, expect_func, strlen(expect_func));
+
+    logfmt_fini(&lf);
+}
+
+static void test_logfmt_push_mailbox(void)
+{
+    #define INTNAME  "user.sentinel.name"
+    #define EXTNAME  "user/sentinel/name" /* admin namespace */
+    #define UNIQUEID "sentinel_uniqueid"
+    #define JMAPID   "sentinel_mboxid"
+    struct mailbox test_mailbox = {
+        .mbentry = &(struct mboxlist_entry){
+            .name = xstrdup(INTNAME),
+            .uniqueid = xstrdup(UNIQUEID),
+            .jmapid = xstrdup(JMAPID),
+        },
+    };
+    struct logfmt lf = LOGFMT_INITIALIZER;
+
+    logfmt_init(&lf, "test_logfmt_push_mailbox");
+
+    logfmt_push_mailbox(&lf, &test_mailbox);
+
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "mbox.name=" EXTNAME));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "mbox.uniqueid=" UNIQUEID));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "mbox.mailboxid=" JMAPID));
+
+    free(test_mailbox.mbentry->name);
+    free(test_mailbox.mbentry->uniqueid);
+    free(test_mailbox.mbentry->jmapid);
+    logfmt_fini(&lf);
+    #undef INTNAME
+    #undef EXTNAME
+    #undef UNIQUEID
+    #undef JMAPID
+}
+
+static void test_logfmt_push_mbname(void)
+{
+    #define INTNAME "user.sentinel.name"
+    #define EXTNAME "user/sentinel/name" /* admin namespace */
+    struct logfmt lf = LOGFMT_INITIALIZER;
+    mbname_t *mbname = NULL;
+
+    logfmt_init(&lf, "test_logfmt_push_mbname");
+
+    mbname = mbname_from_intname(INTNAME);
+    logfmt_push_mbname(&lf, NULL, mbname);
+
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "mbox.name=" EXTNAME));
+
+    mbname_free(&mbname);
+    logfmt_fini(&lf);
+}
+
+static void test_logfmt_push_record(void)
+{
+    static const char msg[] = "banana";
+    struct index_record test_record = {
+        .uid = UINT32_C(123),
+        .modseq = UINT64_C(234),
+        .system_flags = FLAG_DELETED | FLAG_SEEN,
+        .guid = MESSAGE_GUID_INITIALIZER,
+        .size = strlen(msg),
+    };
+    char expect_guid[32];
+    char expect_size[32];
+    struct logfmt lf = LOGFMT_INITIALIZER;
+
+    message_guid_generate(&test_record.guid, msg, sizeof(msg));
+    snprintf(expect_guid, sizeof(expect_guid), "msg.guid=%s",
+             message_guid_encode(&test_record.guid));
+    snprintf(expect_size, sizeof(expect_size), "msg.size=" SIZE_T_FMT,
+             strlen(msg));
+
+    logfmt_init(&lf, "test_logfmt_push_record");
+
+    logfmt_push_record(&lf, &test_record);
+
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "msg.imapuid=123"));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "msg.modseq=234"));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), "msg.sysflags=DE|SE"));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), expect_guid));
+    CU_ASSERT_PTR_NOT_NULL(strstr(logfmt_cstring(&lf), expect_size));
+
+    logfmt_fini(&lf);
+}
+
+/* vim: set ft=c: */

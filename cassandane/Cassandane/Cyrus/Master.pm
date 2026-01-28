@@ -44,7 +44,6 @@ use File::stat;
 use POSIX qw(getcwd);
 use DateTime;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Wait;
@@ -889,6 +888,97 @@ sub test_periodic_event_slow
                               }, $self->lemming_census());
 }
 
+sub test_at_event_bad
+{
+    my ($self) = @_;
+
+    my $srv = $self->lemming_service(tag => 'A');
+
+    # schedule an event with a bad at=hhmm specification
+    $self->lemming_event(tag => 'B',
+                         mode => 'success',
+                         at => '2401');
+    eval {
+        $self->start();
+    };
+    my $e = $@;
+    # The exception thrown depends on how cassandane and master race
+    # against one another.  If master wins, cassandane gets stuck waiting
+    # for the PID file to be valid, and eventually throws a timeout
+    # exception.  If cassandane wins, it correctly detects that master is
+    # no longer running, and throws that.
+    $self->assert_not_null($e);
+#     $self->assert_matches(qr{the master PID file to exist}, $e);
+#     $self->assert_matches(qr{Master no longer running}, $e);
+
+    $self->assert_num_equals(0, $self->{instance}->is_running());
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{invalid at=hhmm specification});
+}
+
+sub test_at_event_slow
+{
+    my ($self) = @_;
+
+    my $srv = $self->lemming_service(tag => 'A');
+
+    # schedule some events to run a little after the current time, and check
+    # that they do
+    my @offsets = (1, 3, 20);
+
+    my $now = time;
+    my $localtz = DateTime::TimeZone->new(name => 'local');
+    foreach my $offset (@offsets) {
+        my $dt = DateTime->from_epoch(epoch => $now, time_zone => $localtz);
+        $dt->add(minutes => $offset);
+        my $hhmm = $dt->strftime('%H%M');
+        $self->lemming_event(tag => $offset,
+                             mode => 'success',
+                             at => $hhmm);
+    }
+    $self->start();
+
+    xlog $self, "waiting 5 mins for events to fire, plus some slop";
+    sleep(5 * 60 + 5);
+
+    $self->assert_deep_equals({
+        '1'  => { live => 0, dead => 1 },
+        '3'  => { live => 0, dead => 1 },
+        # 20 shouldn't run
+    }, $self->lemming_census());
+}
+
+sub test_cron_event_slow
+{
+    my ($self) = @_;
+
+    my $srv = $self->lemming_service(tag => 'A');
+
+    # schedule an event to run a few times a little after the current time,
+    # and check that it does
+    my @offsets = (1, 3, 20);
+
+    my $now = time;
+    my $localtz = DateTime::TimeZone->new(name => 'local');
+    my @minutes;
+    foreach my $offset (@offsets) {
+        my $dt = DateTime->from_epoch(epoch => $now, time_zone => $localtz);
+        $dt->add(minutes => $offset);
+        push @minutes, $dt->minute;
+    }
+    $self->lemming_event(tag => 'B',
+                         mode => 'success',
+                         cron => join(',', @minutes) . " * * * *");
+    $self->start();
+
+    xlog $self, "waiting 5 mins for events to fire, plus some slop";
+    sleep(5 * 60 + 5);
+
+    $self->assert_deep_equals({
+        'B'  => { live => 0, dead => 2 },
+    }, $self->lemming_census());
+}
+
 sub test_service_bad_name
 {
     my ($self) = @_;
@@ -1341,12 +1431,85 @@ sub test_sighup_reloading_proto
         $self->lemming_census());
 }
 
+sub test_pidfile_symlink
+{
+    my ($self) = @_;
+
+    $self->{instance}->_init_basedir_and_name();
+
+    # XXX it would be nice to put the symlink in the basedir, but anything
+    # XXX we put in there before start will be blown away by _build_skeleton.
+    # XXX instead, set stuff up in /tmp where it won't get trampled before use
+    my $tmp = "/tmp/cassandane-$self->{instance}->{name}";
+    my $symlink_target = "$tmp/rogue_master_pidfile";
+    my $pidfile = "$tmp/master.pid";
+
+    mkdir $tmp or die "mkdir $tmp: $!";
+    symlink $symlink_target, $pidfile
+        or die "symlink $symlink_target $pidfile: $!";
+
+    $self->{instance}->{config}->set('master_pid_file', $pidfile);
+
+    eval {
+        $self->start();
+    };
+    my $e = $@;
+    $self->assert_matches(qr{exited with code 71}, $e->text());
+
+    $self->assert_num_equals(0, $self->{instance}->is_running());
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{can't open pidfile: Too many levels});
+
+    unlink $pidfile;
+    unlink $symlink_target;
+    rmdir $tmp;
+}
+
+sub test_pidfile_lock_symlink
+{
+    my ($self) = @_;
+
+    $self->{instance}->_init_basedir_and_name();
+
+    # XXX it would be nice to put the symlink in the basedir, but anything
+    # XXX we put in there before start will be blown away by _build_skeleton.
+    # XXX instead, set stuff up in /tmp where it won't get trampled before use
+    my $tmp = "/tmp/cassandane-$self->{instance}->{name}";
+    my $symlink_target = "$tmp/rogue_master_pidfile_lock";
+    my $pidfile = "$tmp/master.pid";
+    my $pidfile_lock = "$pidfile.lock";
+
+    mkdir $tmp or die "mkdir $tmp: $!";
+    symlink $symlink_target, $pidfile_lock
+        or die "symlink $symlink_target $pidfile_lock: $!";
+
+    $self->{instance}->{config}->set('master_pid_file', $pidfile);
+
+    eval {
+        $self->start();
+    };
+    my $e = $@;
+    $self->assert_matches(qr{exited with code 71}, $e->text());
+
+    $self->assert_num_equals(0, $self->{instance}->is_running());
+    $self->assert_syslog_matches(
+        $self->{instance},
+        qr{can't open pidfile lock: \S+ \(Too many levels}
+    );
+
+    unlink $pidfile_lock;
+    unlink $symlink_target;
+    rmdir $tmp;
+}
+
 sub test_ready_file
 {
     my ($self) = @_;
 
+    # config isn't fully initialised until start() is called, so we can't
+    # just read these the sensible way. instead, predict the defaults.
     my $ready_file = $self->{instance}->get_basedir() . '/master.ready';
-    my $pid_file = $self->{instance}->_pid_file();
+    my $pid_file = $self->{instance}->get_basedir() . '/run/master.pid';
 
     # pid file should not already exist
     my $pid_sb = stat($pid_file);
@@ -1425,14 +1588,14 @@ sub test_babysit
     for (1..20) {
       $killed++ if $self->lemming_cull();
 
-      last if $killed >= 5;
-
       sleep(.5);
+
+      last if $killed >= 5;
     };
 
     # make sure it said it's going to wait
-    my @lines = $self->{instance}->getsyslog(qr/ERROR: too many failures .*disabling/);
-    $self->assert_num_equals(1, scalar @lines);
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{ERROR: too many failures .*disabling});
 
     # master should not have restarted after 5 deaths
     $self->assert_deep_equals({ A => { live => 0, dead => 5 } },

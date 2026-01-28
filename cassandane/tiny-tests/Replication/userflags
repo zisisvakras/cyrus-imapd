@@ -5,9 +5,9 @@ use Cassandane::Tiny;
 # Test replication of user-defined flags
 #
 sub test_userflags
+    :NoReplicaOnly
+    ($self)
 {
-    my ($self) = @_;
-
     my $master_store = $self->{master_store};
     my $replica_store = $self->{replica_store};
     $master_store->set_fetch_attributes(qw(uid flags));

@@ -3,10 +3,11 @@ use Cassandane::Tiny;
 
 sub test_email_copy
     :min_version_3_1 :needs_component_sieve
+    ($self)
 {
-    my ($self) = @_;
-    my $jmap = $self->{jmap};
-    my $imaptalk = $self->{store}->get_client();
+    my $user = $self->default_user;
+    my $jmap = $user->jmap;
+    my $imaptalk = $user->imap;
     my $admintalk = $self->{adminstore}->get_client();
 
     xlog $self, "Create user and share mailbox read-only";
@@ -106,7 +107,7 @@ sub test_email_copy
     ]);
 
     my $copiedEmailId = $res->[0][1]->{created}{1}{id};
-    $self->assert_not_null($copiedEmailId);
+    $self->assert_str_equals($emailId, $copiedEmailId);
     $self->assert_str_equals('Email/set', $res->[1][0]);
     $self->assert_str_equals($emailId, $res->[1][1]{destroyed}[0]);
 
@@ -143,13 +144,15 @@ sub test_email_copy
         }, 'R1'],
     ]);
 
-    $self->assert_str_equals($copiedEmailId, $res->[0][1]->{created}{1}{id});
+    my $copiedEmailId2 = $res->[0][1]->{created}{1}{id};
+    $self->assert_not_null($copiedEmailId2);
+    $self->assert_str_not_equals($copiedEmailId, $copiedEmailId2);
 
     xlog $self, "get copied email";
     $res = $jmap->CallMethods([
         ['Email/get', {
             accountId => 'cassandane',
-            ids => [$copiedEmailId],
+            ids => [$copiedEmailId2],
             properties => ['keywords', 'receivedAt'],
         }, 'R1']
     ]);
@@ -158,7 +161,7 @@ sub test_email_copy
     $self->assert_deep_equals($wantKeywords, $res->[0][1]{list}[0]{keywords});
     $self->assert_str_equals($receivedAt, $res->[0][1]{list}[0]{receivedAt});
 
-    xlog $self, "copy email back (again)";
+    xlog $self, "attempt to copy email back (again)";
     $res = $jmap->CallMethods([
         ['Email/copy', {
             accountId => 'cassandane',
@@ -177,6 +180,107 @@ sub test_email_copy
         }, 'R1'],
     ]);
 
-   $self->assert_str_equals('alreadyExists', $res->[0][1]->{notCreated}{1}{type});
-   $self->assert_not_null($res->[0][1]->{notCreated}{1}{existingId});
+    $self->assert_str_equals('alreadyExists', $res->[0][1]->{notCreated}{1}{type});
+    $self->assert_str_equals($copiedEmailId2, $res->[0][1]->{notCreated}{1}{existingId});
+
+    xlog $self, "delete email from cassandane account";
+    $res = $jmap->CallMethods([
+        ['Email/set', {
+            destroy => [ $copiedEmailId2 ]
+         }, 'R1'],
+    ]);
+
+    xlog $self, "share other user mailbox read-only";
+    $admintalk->setacl("user.other", "cassandane", "lrs") or die;
+
+    xlog $self, "attempt to move email; copy will succeed, destroy will fail";
+    $res = $jmap->CallMethods([
+        ['Email/copy', {
+            accountId => 'cassandane',
+            fromAccountId => 'other',
+            create => {
+                1 => {
+                    id => $copiedEmailId,
+                    mailboxIds => {
+                        $srcInboxId => JSON::true,
+                    },
+                    keywords => {
+                        'bar' => JSON::true,
+                    },
+                },
+            },
+            onSuccessDestroyOriginal => JSON::true,
+        }, 'R1'],
+    ]);
+
+    $self->assert_str_equals($copiedEmailId,
+                             $res->[0][1]->{created}{1}{id});
+    $self->assert_str_equals('forbidden',
+                             $res->[1][1]{notDestroyed}->{$copiedEmailId}->{type});
+
+    xlog $self, "share other user mailbox read-only";
+    $admintalk->setacl("user.other", "cassandane", "lrsiwntex") or die;
+
+    # make sure we can copy another message in even if the mailbox already
+    # has some messages
+    xlog $self, "create another email";
+    $res = $jmap->CallMethods([
+        ['Email/set', {
+            create => {
+                1 => {
+                    mailboxIds => {
+                        $srcInboxId => JSON::true,
+                    },
+                    subject => 'hi',
+                    bodyStructure => {
+                        type => 'text/plain',
+                        partId => 'part1',
+                    },
+                    bodyValues => {
+                        part1 => {
+                            value => 'world',
+                        }
+                    },
+                },
+            },
+        }, 'R1'],
+    ]);
+
+    my $secondEmailId = $res->[0][1]->{created}{1}{id};
+    $self->assert_not_null($secondEmailId);
+
+    xlog $self, "move email";
+    $res = $jmap->CallMethods([
+        ['Email/copy', {
+            fromAccountId => 'cassandane',
+            accountId => 'other',
+            create => {
+                1 => {
+                    id => $secondEmailId,
+                    mailboxIds => {
+                        $dstInboxId => JSON::true,
+                    },
+                    keywords => {
+                        'bar' => JSON::true,
+                    },
+                },
+            },
+            onSuccessDestroyOriginal => JSON::true,
+        }, 'R1'],
+    ]);
+
+    my $copiedsecondEmailId = $res->[0][1]->{created}{1}{id};
+    $self->assert_not_null($copiedsecondEmailId);
+    $self->assert_str_equals('Email/set', $res->[1][0]);
+    $self->assert_str_equals($secondEmailId, $res->[1][1]{destroyed}[0]);
+
+    xlog $self, "get copied email";
+    $res = $jmap->CallMethods([
+        ['Email/get', {
+            accountId => 'other',
+            ids => [$copiedsecondEmailId],
+            properties => ['subject'],
+        }, 'R1']
+    ]);
+    $self->assert_str_equals('hi', $res->[0][1]{list}[0]{subject});
 }

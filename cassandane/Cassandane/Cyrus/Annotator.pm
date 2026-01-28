@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use Cwd qw(abs_path);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
@@ -504,9 +503,13 @@ sub test_log_missing_acl
         $self->{store}->set_folder('Other Users.other');
         $self->make_message("Email", body => "set_flag $_->{flag}\r\n",
             store => $self->{store}) or die;
-        my $wantLog = "could not write flag due missing ACL: "
-                    . "flag=<\\$_->{flag}> need_rights=<$_->{need_rights}>";
-        $self->assert_syslog_matches($self->{instance}, qr{$wantLog});
+        my $wantLog = qr{
+            could\snot\swrite\sflag\sdue\smissing\sACL:
+            (?:\s[^=]+=<[^>]*>)*
+            \sflag=<\Q$_->{flag}\E>
+            \sneed_rights=<$_->{need_rights}>
+        }x;
+        $self->assert_syslog_matches($self->{instance}, $wantLog);
     }
 }
 

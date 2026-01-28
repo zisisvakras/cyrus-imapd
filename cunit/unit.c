@@ -1,43 +1,6 @@
-/*
- * Copyright (c) 1994-2010 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* unit.c */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <stdio.h>
@@ -51,17 +14,16 @@
 #include <valgrind/valgrind.h>
 #endif
 #include <setjmp.h>
-#include "timeout.h"
-#include "cyrunit.h"
-#include "util.h"
-#include "xmalloc.h"
 
-#include "lib/retry.h"
+#include "cunit/unit.h"
+#include "cunit/unit-registry.h"
+#include "cunit/unit-timeout.h"
+
 #include "lib/libconfig.h"
+#include "lib/retry.h"
+#include "lib/util.h"
+#include "lib/xmalloc.h"
 #include "lib/xunlink.h"
-
-/* generated headers are not necessarily in current directory */
-#include "cunit/registers.h"
 
 int verbose = 0;
 int num_testspecs = 0;
@@ -80,6 +42,11 @@ int timeouts_flag = 1;
     else fprintf(stderr, "\nunit: "fmt"\n", (a1), (a2));                    \
 } while (0)
 #else
+/* no valgrind header? assume we're NOT running on valgrind. might
+ * lead to test failures if we are running on valgrind after all,
+ * but without the header there's no way to tell
+ */
+#define RUNNING_ON_VALGRIND (0)
 #define log1(fmt, a1) do {                                                  \
     fprintf(stderr, "\nunit: "fmt"\n", (a1));                               \
 } while (0)
@@ -96,7 +63,7 @@ int fatal_code;
 EXPORTED void fatal(const char *s, int code)
 {
     if (fatal_expected) {
-        if (verbose) {
+        if (verbose > 1) {
             log1("fatal(%s)", s);
         }
         fatal_expected = 0;
@@ -214,8 +181,9 @@ static void params_assign(struct cunit_param *params)
 {
     struct cunit_param *p;
 
-    for (p = params ; p->name ; p++)
+    for (p = params ; p->name ; p++) {
         *(p->variable) = p->values[p->idx];
+    }
 
     if (verbose) {
         char buf[1024];
@@ -250,8 +218,9 @@ void __cunit_params_begin(struct cunit_param *params)
             }
         }
     }
-    for (p = params ; p->name ; p++)
+    for (p = params ; p->name ; p++) {
         p->idx = 0;
+    }
     params_assign(params);
     current_params = params;
 }
@@ -311,13 +280,13 @@ CU_BOOL CU_assertFormatImplementation(
 
 EXPORTED void config_read_string(const char *s)
 {
-    char *fname = xstrdup("/tmp/cyrus-cunit-configXXXXXX");
+    char fname[] = "/tmp/cyrus-cunit-configXXXXXX";
     int fd = mkstemp(fname);
+
     retry_write(fd, s, strlen(s));
     config_reset();
     config_read(fname, 0);
     xunlink(fname);
-    free(fname);
     close(fd);
 }
 
@@ -477,6 +446,16 @@ int main(int argc, char **argv)
     CU_initialize_registry();
     register_cunit_suites();
     parse_args(argc, argv);
+
+    if (RUNNING_ON_VALGRIND) {
+        /* Tests that time out are killed without cleaning up properly, and
+         * this produces unhelpful valgrind noise.  This isn't helped by things
+         * generally running slower under valgrind to begin with.  So just
+         * don't enable timeouts when valgrind is detected.
+         */
+        timeouts_flag = 0;
+    }
+
     switch (mode) {
     case RUN:
         run_tests();

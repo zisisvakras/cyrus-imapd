@@ -1,51 +1,15 @@
-/*
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* charset.h */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_CHARSET_H
 #define INCLUDED_CHARSET_H
 
 #define ENCODING_NONE 0
-#define ENCODING_QP 1
-#define ENCODING_BASE64 2
-#define ENCODING_BASE64URL 3
+#define ENCODING_QP 1            // RFC 2045, Section 6.7
+#define ENCODING_BASE64 2        // RFC 4648, Section 4
+#define ENCODING_BASE64URL 3     // RFC 4648, Section 5
+#define ENCODING_BASE64JMAPID 4  // Base 64 using URL alphabet in ASCII order
 #define ENCODING_UNKNOWN 255
 
 #define CHARSET_SKIPDIACRIT (1<<0)
@@ -68,7 +32,7 @@
 #define MIME_MAX_HEADER_LENGTH 78
 #define MIME_MAX_LINE_LENGTH 998
 
-#include "util.h"
+#include "buf.h"
 #include "xsha1.h"
 
 #define charset_base64_len_unpadded(n) \
@@ -151,8 +115,29 @@ extern int charset_to_utf8(struct buf *dst, const char *src, size_t len, charset
 
 extern int charset_search_mimeheader(const char *substr, comp_pat *pat, const char *s, int flags);
 
+/* "Q" encode the header field body (per RFC 2047) of 'len' bytes
+ * located at 'header'.
+ * Returns a buffer which the caller must free.
+ */
 extern char *charset_encode_mimeheader(const char *header, size_t len, int force_quote);
-extern char *charset_encode_mimephrase(const char *header);
+
+/* "Q" encode the header field body (per RFC 2047) of 'len' bytes
+ * located at 'header'. The header is assumed to contain a list of
+ * addresses, such as in a From or Cc header. For such addresses,
+ * the display name is encoded but the address part left unencoded.
+ * If the header value is not a valid address-list (per RFC 5322,
+ * 3.4), then this is equivalent to calling charset_encode_mimeheader.
+ * Returns a buffer which the caller must free.
+ */
+extern char *charset_encode_addrheader(const char *header, size_t len, int force_quote);
+
+/* "Q" encode the header phrase (per RFC 2047) of 'len' bytes
+ * located at 'phrase'. Quoting RFC 2047, this acts as a replacement
+ * for a 'word' entity within a 'phrase', for example, one that
+ * precedes an address in a From, To, or Cc header.
+ * Returns a buffer which the caller must free.
+ */
+extern char *charset_encode_mimephrase(const char *phrase);
 
 extern char *charset_unfold(const char *s, size_t len, int flags);
 
@@ -181,7 +166,7 @@ extern int charset_extract(int (*cb)(const struct buf *text, void *rock),
 
 /* Extract plain text from HTML, converting <p> and <br>
  * to newlines and trimming space left by HTML-only lines. */
-EXPORTED char *charset_extract_plain(const char *html);
+extern char *charset_extract_plain(const char *html);
 
 struct char_counts {
     size_t total;

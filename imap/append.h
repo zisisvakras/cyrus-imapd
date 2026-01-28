@@ -1,47 +1,11 @@
-/* append.h -- Description of messages to be copied
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* append.h -- Description of messages to be copied */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_APPEND_H
 #define INCLUDED_APPEND_H
+
+#include <stdbool.h>
 
 #include "index.h"
 #include "mailbox.h"
@@ -59,7 +23,7 @@ struct appendstate {
     /* mailbox we're appending to */
     struct mailbox *mailbox;
     /* do we own it? */
-    unsigned int close_mailbox_when_done:1;
+    bool close_mailbox_when_done;
     int myrights;
     char userid[MAX_MAILBOX_BUFFER];
 
@@ -77,7 +41,8 @@ struct appendstate {
     /* for annotations */
     const struct namespace *namespace;
     const struct auth_state *auth_state;
-    int isadmin;
+    bool isadmin;
+    bool disable_annotator;
 
     /* one event notification to send per appended message */
     enum event_type event_type;
@@ -118,22 +83,33 @@ extern FILE *append_newstage_full(const char *mailboxname, time_t internaldate,
                                   const char *sourcefile);
 #define append_newstage(m, i, n, s) append_newstage_full((m), (i), (n), (s), NULL)
 
+struct append_metadata {
+    struct timespec *internaldate;
+    time_t savedate;
+    modseq_t createdmodseq;
+    const strarray_t *flags;
+    struct entryattlist **annotations;
+    unsigned nolink : 1;
+};
+
 /* adds a new mailbox to the stage initially created by append_newstage() */
 extern int append_fromstage_full(struct appendstate *mailbox, struct body **body,
-                                 struct stagemsg *stage,
-                                 time_t internaldate, time_t savedate,
-                                 modseq_t createdmodseq,
-                                 const strarray_t *flags, int nolink,
-                                 struct entryattlist **annotations);
-#define append_fromstage(m, b, s, i, c, f, n, a) \
-  append_fromstage_full((m), (b), (s), (i), 0, (c), (f), (n), (a))
+                              struct stagemsg *stage,
+                              struct append_metadata *meta);
+
+extern int append_fromstage(struct appendstate *mailbox, struct body **body,
+                            struct stagemsg *stage,
+                            struct timespec *internaldate,
+                            modseq_t createdmodseq,
+                            const strarray_t *flags, int nolink,
+                            struct entryattlist **annotations);
 
 /* removes the stage (frees memory, deletes the staging files) */
 extern int append_removestage(struct stagemsg *stage);
 
 extern int append_fromstream(struct appendstate *as, struct body **body,
                              struct protstream *messagefile,
-                             unsigned long size, time_t internaldate,
+                             unsigned long size, struct timespec *internaldate,
                              const strarray_t *flags);
 
 extern int append_copy(struct mailbox *mailbox,

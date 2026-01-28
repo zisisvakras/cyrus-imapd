@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_freebusy
     :min_version_3_0
+    ($self)
 {
-    my ($self) = @_;
-
     my $CalDAV = $self->{caldav};
 
     my $CalendarId = $CalDAV->NewCalendar({name => 'foo'});
@@ -25,7 +24,7 @@ sub test_freebusy
         summary => 'waterfall2',
     });
 
-    my ($data, $errors) = $CalDAV->GetFreeBusy($CalendarId);
+    my ($data, $errors) = $CalDAV->GetFreeBusy($CalendarId, AlwaysRange => 1);
 
     $self->assert_str_equals('2015-01-01T12:00:00', $data->[0]{start});
     $self->assert_str_equals('2015-02-01T17:00:00', $data->[1]{start});

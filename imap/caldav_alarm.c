@@ -1,45 +1,6 @@
-/* caldav_alarm.c -- implementation of global CalDAV alarm database
- *
- * Copyright (c) 1994-2012 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* caldav_alarm.c -- implementation of global CalDAV alarm database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -593,7 +554,7 @@ static int process_alarm_cb(icalcomponent *comp,
                 base = end;
             }
             base.is_date = 0; /* need an actual time for triggers */
-            alarmtime = icaltime_add(base, trigger.duration);
+            alarmtime = icalduration_extend(base, trigger.duration);
         }
         else {
             /* absolute */
@@ -828,7 +789,7 @@ static int is_supported_component(icalcomponent *ical)
 {
     icalcomponent *comp = icalcomponent_get_first_real_component(ical);
     icalcomponent_kind kind = icalcomponent_isa(comp);
-    int is_supported = 0;
+    uint64_t is_supported = 0;
 
     switch (kind) {
     case ICAL_VEVENT_COMPONENT:
@@ -846,7 +807,7 @@ static int is_supported_component(icalcomponent *ical)
 
     if (!is_supported) {
         xsyslog(LOG_DEBUG, "alarms are not supported for iCalendar component",
-                "kind=<%s>", icalenum_component_kind_to_string(kind));
+                "kind=<%s>", icalcomponent_kind_to_string(kind));
     }
 
     return is_supported;
@@ -1109,7 +1070,8 @@ HIDDEN int caldav_alarm_add_record(struct mailbox *mailbox,
 
     if (has_alarms(data, mailbox, record->uid, &num_rcpts)) {
         enum alarm_type atype = mbtype_to_alarm_type(mailbox_mbtype(mailbox));
-        update_alarmdb(mailbox_name(mailbox), record->uid, record->internaldate,
+        update_alarmdb(mailbox_name(mailbox), record->uid,
+                       record->internaldate.tv_sec,
                        atype, num_rcpts, 0, 0, NULL);
     }
 
@@ -1127,7 +1089,7 @@ EXPORTED int caldav_alarm_touch_record(struct mailbox *mailbox,
     if (force || has_alarms(NULL, mailbox, record->uid, &num_rcpts)) {
         enum alarm_type atype = mbtype_to_alarm_type(mailbox_mbtype(mailbox));
         return update_alarmdb(mailbox_name(mailbox), record->uid,
-                              record->last_updated, atype, num_rcpts, 0, 0, NULL);
+                              record->last_updated.tv_sec, atype, num_rcpts, 0, 0, NULL);
     }
 
     return 0;
@@ -1338,14 +1300,15 @@ static int process_valarms(struct mailbox *mailbox,
 
     /* don't process alarms in draft messages */
     if (record->system_flags & FLAG_DRAFT) {
-        syslog(LOG_NOTICE, "ignoring draft message in mailbox %s uid %u",
+        syslog(LOG_NOTICE, "removing lastalarm for draft message in mailbox %s uid %u",
                mailbox_name(mailbox), record->uid);
+        caldav_alarm_delete_record(mboxname, record->uid);
         goto done_item;
     }
 
     struct lastalarm_data data;
     if (read_lastalarm(mailbox, record, &data))
-        data.lastrun = record->internaldate;
+        data.lastrun = record->internaldate.tv_sec;
 
     /* Process VALARMs in iCalendar resource */
     char *userid = mboxname_to_userid(mboxname);
@@ -1421,6 +1384,10 @@ static int move_to_mailboxid(struct mailbox *srcmbox,
     syslog(LOG_DEBUG, "moving message %s:%u to mailboxid %s",
            mailbox_name(srcmbox), record->uid, destmboxid);
 
+    // make sure we pre-load the conversation state into the source
+    // mailbox first!
+    mailbox_get_cstate(srcmbox);
+
     mr = msgrecord_from_index_record(srcmbox, record);
     if (!mr) goto done;
 
@@ -1463,7 +1430,9 @@ static int move_to_mailboxid(struct mailbox *srcmbox,
     /* Determine destination mailbox of moved email */
     if (destmboxid) {
         mbentry_t *mbentry = NULL;
-        r = mboxlist_lookup_by_uniqueid(destmboxid, &mbentry, NULL);
+        r = (*destmboxid == JMAP_MAILBOXID_PREFIX) ?
+            mboxlist_lookup_by_jmapid(userid, destmboxid, &mbentry, NULL) :
+            mboxlist_lookup_by_uniqueid(destmboxid, &mbentry, NULL);
         if (!r && mbentry &&
             // MUST be an email mailbox
             (mbtype_isa(mbentry->mbtype) == MBTYPE_EMAIL) &&
@@ -1520,8 +1489,11 @@ static int move_to_mailboxid(struct mailbox *srcmbox,
     if (r) goto done;
 
     /* Append the message to the mailbox */
-    r = append_fromstage_full(&as, &body, stage, record->internaldate,
-                              savedate, 0, flags, 0, &annots);
+    struct append_metadata meta = {
+        &record->internaldate, savedate, /*cmodseq*/ 0,
+        flags, &annots, /*nolink*/ 0
+    };
+    r = append_fromstage_full(&as, &body, stage, &meta);
     if (r) {
         append_abort(&as);
         goto done;
@@ -1597,28 +1569,45 @@ static int find_sched_cb(const conv_guidrec_t *rec, void *rock)
 static int find_scheduled_email(const char *emailid,
                                 struct find_sched_rock *frock)
 {
-    struct conversations_state *cstate = NULL;
-    int r;
+    const char *guid = NULL;
 
-    if (emailid[0] != 'M' || strlen(emailid) != 25) {
-        return IMAP_NOTFOUND;
+    frock->mboxname = NULL;
+    frock->uid = 0;
+
+    if (emailid[0] == JMAP_EMAILID_PREFIX) {
+        if (strlen(emailid) != JMAP_EMAILID_SIZE - 1) return IMAP_INVALID_IDENTIFIER;
+    } else if (emailid[0] == JMAP_LEGACY_EMAILID_PREFIX) {
+        if (strlen(emailid) != JMAP_LEGACY_EMAILID_SIZE - 1) return IMAP_INVALID_IDENTIFIER;
+        guid = emailid + 1;
+    } else {
+        return IMAP_INVALID_IDENTIFIER;
     }
 
-    r = conversations_open_user(frock->userid, 1/*shared*/, &cstate);
+    struct conversations_state *cstate = NULL;
+    int r = conversations_open_user(frock->userid, 1/*shared*/, &cstate);
     if (r) {
         syslog(LOG_ERR, "IOERROR: failed to open conversations for user %s",
                frock->userid);
         return r;
     }
 
-    const char *guid = emailid + 1;
-    r = conversations_guid_foreach(cstate, guid, find_sched_cb, frock);
+    if (emailid[0] == JMAP_EMAILID_PREFIX) {
+        static char guidrep[2*MESSAGE_GUID_SIZE+1];
+        r = conversations_jmapid_guidrep_lookup(cstate, emailid + 1, guidrep);
+        if (!r) guid = guidrep;
+    }
+
+    if (guid) {
+        r = conversations_guid_foreach(cstate, guid, find_sched_cb, frock);
+        if (r == IMAP_OK_COMPLETED) r = 0;
+    }
+
     conversations_commit(&cstate);
 
-    if (r == IMAP_OK_COMPLETED) r = 0;
-    else if (!frock->mboxname) r = IMAP_NOTFOUND;
+    if (r) return r;
 
-    return r;
+    if (frock->mboxname && frock->uid) return 0;
+    return IMAP_NOTFOUND;
 }
 
 static int count_cb(sqlite3_stmt *stmt, void *rock)
@@ -1882,10 +1871,10 @@ static int process_futurerelease(struct caldav_alarm_data *data,
         /* Locate email in \Scheduled mailbox */
         r = find_scheduled_email(emailid, &frock);
 
-        if (r || !frock.mboxname) {
+        if (r || !frock.mboxname || !frock.uid) {
             syslog(LOG_ERR,
-                   "IOERROR: failed to find \\Scheduled mailbox for user %s (%s)",
-                   frock.userid, error_message(r));
+                   "IOERROR: failed to find scheduled email %s for user %s (%s)",
+                   emailid, userid, error_message(r));
         }
         else if ((r = mailbox_open_iwl(frock.mboxname, &sched_mbox))) {
             syslog(LOG_ERR, "IOERROR: failed to open %s: %s",
@@ -2062,8 +2051,8 @@ static void process_one_record(struct caldav_alarm_data *data, time_t runtime, i
     }
 #ifdef WITH_JMAP
     case ALARM_SEND:
-        if (record.internaldate > runtime || dryrun) {
-            caldav_alarm_bump_nextcheck(data, record.internaldate, 0, NULL);
+        if (record.internaldate.tv_sec > runtime || dryrun) {
+            caldav_alarm_bump_nextcheck(data, record.internaldate.tv_sec, 0, NULL);
             goto done;
         }
         r = process_futurerelease(data, mailbox, &record, runtime);
@@ -2142,7 +2131,7 @@ EXPORTED int caldav_alarm_process(time_t runtime, time_t *intervalp, int dryrun)
         int num_user_records = 0;
         int skip_user = 0;
         char *userid = NULL;
-        struct mboxlock *nslock = NULL;
+        user_nslock_t *user_nslock = NULL;
         for (i = 0; i < rock.list.count; i++) {
             struct caldav_alarm_data *data = ptrarray_nth(&rock.list, i);
 
@@ -2159,20 +2148,20 @@ EXPORTED int caldav_alarm_process(time_t runtime, time_t *intervalp, int dryrun)
                 num_user_records = 0;
                 skip_user = 0;
                 free(userid);
-                mboxname_release(&nslock);
+                user_nslock_release(&user_nslock);
                 userid = xstrdup(mbname_userid(mbname));
                 if (user_isreplicaonly(userid)) {
                     skip_user = 1;
                     continue;
                 }
-                nslock = user_namespacelock_full(userid, LOCK_NONBLOCKING);
+                user_nslock = user_nslock_lock(userid, LOCK_NONBLOCKING);
             }
             mbname_free(&mbname);
 
             if (skip_user) continue;
 
             // if we failed to lock the user, or have done too many for this user, skip
-            if (!nslock || ++num_user_records > MAX_CONSECUTIVE_ALARMS_PER_USER) {
+            if (!user_nslock || ++num_user_records > MAX_CONSECUTIVE_ALARMS_PER_USER) {
                 skipped_some++;
                 caldav_alarm_fini(data);
                 free(data);
@@ -2185,8 +2174,8 @@ EXPORTED int caldav_alarm_process(time_t runtime, time_t *intervalp, int dryrun)
             free(data);
         }
 
+        user_nslock_release(&user_nslock);
         free(userid);
-        mboxname_release(&nslock);
 
         // if we both made some progress AND skipped some, then retry again immediately
         if (did_some && skipped_some) *intervalp = 0;

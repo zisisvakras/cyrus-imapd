@@ -1,44 +1,6 @@
-/* annotate.h -- Annotation manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* annotate.h -- Annotation manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef ANNOTATE_H
 #define ANNOTATE_H
@@ -135,11 +97,12 @@ char *dumpentryatt(const struct entryattlist *l);
 void freeentryatts(struct entryattlist *l);
 
 /* initialize database structures */
-void annotate_init(
-                       int (*fetch_func)(const char *, const char *,
-                                         const strarray_t *, const strarray_t *),
-                       int (*store_func)(const char *, const char *,
-                                         struct entryattlist *));
+typedef int (annotate_fetch_func)(const char *, const char *,
+                                  const strarray_t *, const strarray_t *);
+typedef int (annotate_store_func)(const char *, const char *,
+                                  struct entryattlist *);
+void annotate_init(annotate_fetch_func *fetch_func,
+                   annotate_store_func *store_func);
 
 /* open the annotation db */
 void annotatemore_open(void);
@@ -161,6 +124,11 @@ typedef int (*annotatemore_find_proc_t)(const char *mailbox,
  * if 'mailbox' is NULL, then 'pattern' is a pattern for
  * mboxlist_findall and will return all matching entries.. */
 EXPORTED int annotatemore_findall_mailbox(const struct mailbox *mailbox,
+                         uint32_t uid, const char *entry,
+                         modseq_t since_modseq,
+                         annotatemore_find_proc_t proc, void *rock,
+                         int flags);
+EXPORTED int annotatemore_findall_mbentry(const mbentry_t *mbentry,
                          uint32_t uid, const char *entry,
                          modseq_t since_modseq,
                          annotatemore_find_proc_t proc, void *rock,
@@ -292,6 +260,10 @@ void annotate_done(void);
  * references internally. */
 int annotate_getdb(const struct mailbox *mailbox, annotate_db_t **dbp);
 void annotate_putdb(annotate_db_t **dbp);
+
+// An API to check if any annotation database is locked, for consistency
+// and safety checks
+int annotate_anydb_islocked();
 
 /* Maybe this isn't the right place - move later */
 int specialuse_validate(const char *mboxname, const char *userid,

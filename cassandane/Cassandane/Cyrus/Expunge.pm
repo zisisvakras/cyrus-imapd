@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use JSON::XS;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -143,10 +142,11 @@ sub test_auditlog_size
     $talk->expunge();
 
     if ($self->{instance}->{have_syslog_replacement}) {
-        my @auditlogs = $self->{instance}->getsyslog(qr/auditlog: expunge/);
+        my @auditlogs = $self->{instance}->getsyslog(
+            qr/\bevent=auditlog\.expunge\b/);
 
         my %actual_sizes = map {
-            m/ uid=<([0-9]+)>.* size=<([0-9]+)>/
+            m/\bmsg\.imapuid=(\d+)\b.*msg\.size=(\d+)\b/
         } @auditlogs;
 
         $self->assert_deep_equals(\%expected_sizes, \%actual_sizes);
@@ -154,7 +154,7 @@ sub test_auditlog_size
 }
 
 sub test_allowdeleted
-    :AllowDeleted :DelayedExpunge :min_version_3_1
+    :AllowDeleted :DelayedExpunge :Conversations
 {
     my ($self, $folder, %params) = @_;
 

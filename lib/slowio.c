@@ -1,44 +1,6 @@
-/* slowio -- artificially slow I/O ops
- *
- * Copyright (c) 1994-2024 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* slowio -- artificially slow I/O ops */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <errno.h>
 #include <math.h>
@@ -50,6 +12,7 @@
 
 static struct slowio slowio_read = { 0 };
 static struct slowio slowio_write = { 0 };
+static double slowio_min_elapsed = NAN;
 
 EXPORTED void slowio_reset_impl(void)
 {
@@ -76,8 +39,22 @@ EXPORTED void slowio_maybe_delay_impl(struct slowio *slowio, ssize_t n_bytes)
 
     if (n_bytes < 0) return; /* that wasn't a valid I/O op! */
 
-    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
-        xsyslog(LOG_DEBUG, "clock_gettime failed", NULL);
+    if (isnan(slowio_min_elapsed)) {
+        struct timespec res;
+
+        /* initialise slowio_min_elapsed to the resolution of the clock */
+        if (0 == clock_getres(CLOCK_PROCESS_CPUTIME_ID, &res)) {
+            slowio_min_elapsed = res.tv_sec + res.tv_nsec / 1000000000.0;
+        }
+        else {
+            xsyslog(LOG_DEBUG, "clock_getres failed", NULL);
+            errno = 0;
+            slowio_min_elapsed = 0.000001; /* XXX idk, 1μs */
+        }
+    }
+
+    if (cyrus_gettime(CLOCK_PROCESS_CPUTIME_ID, &now)) {
+        xsyslog(LOG_DEBUG, "cyrus_gettime failed", NULL);
         errno = 0;
         return;
     }
@@ -100,8 +77,12 @@ EXPORTED void slowio_maybe_delay_impl(struct slowio *slowio, ssize_t n_bytes)
                      + (double)(now.tv_nsec - slowio->last_delay.tv_nsec)
                        / 1000000000.0;
 
-    /* XXX skip out early if elapsed time is very short? */
-    if (elapsed <= 0.0 || slowio->bytes_since_last_delay == 0) return;
+    if (slowio->bytes_since_last_delay == 0) return;
+
+    /* can't divide by zero, but if bytes have arrived without any observable
+     * time having passed, we're running extremely fast and must delay!
+     */
+    if (elapsed <= 0.0) elapsed = slowio_min_elapsed;
 
     if (slowio->bytes_since_last_delay / elapsed > max_bytes_per_sec) {
         double delay = (slowio->bytes_since_last_delay / max_bytes_per_sec)
@@ -121,7 +102,7 @@ EXPORTED void slowio_maybe_delay_impl(struct slowio *slowio, ssize_t n_bytes)
             r = nanosleep(&sleeptime, &sleeptime);
         } while (r == -1 && errno == EINTR);
 
-        clock_gettime(CLOCK_MONOTONIC, &slowio->last_delay);
+        cyrus_gettime(CLOCK_PROCESS_CPUTIME_ID, &slowio->last_delay);
         slowio->bytes_since_last_delay = 0;
     }
 }

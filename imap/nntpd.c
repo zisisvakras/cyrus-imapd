@@ -1,44 +1,6 @@
-/* nntpd.c -- NNTP server
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* nntpd.c -- NNTP server */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 /*
  * TODO:
@@ -85,6 +47,7 @@
 #include "hash.h"
 #include "idle.h"
 #include "index.h"
+#include "loginlog.h"
 #include "mailbox.h"
 #include "map.h"
 #include "mboxlist.h"
@@ -130,9 +93,7 @@ static struct backend *backend_current = NULL;
 /* our cached connections */
 static ptrarray_t backend_cached = PTRARRAY_INITIALIZER;
 
-#ifdef HAVE_SSL
 static SSL *tls_conn;
-#endif /* HAVE_SSL */
 
 static sasl_conn_t *nntp_saslconn; /* the sasl connection context */
 
@@ -357,12 +318,10 @@ static void nntp_reset(void)
 
     if (protin) protgroup_reset(protin);
 
-#ifdef HAVE_SSL
     if (tls_conn) {
         tls_reset_servertls(&tls_conn);
         tls_conn = NULL;
     }
-#endif
 
     cyrus_reset_stdio();
 
@@ -623,9 +582,7 @@ void shut_down(int code)
 
     if (protin) protgroup_free(protin);
 
-#ifdef HAVE_SSL
     tls_shutdown_serverengine();
-#endif
 
     if (newsgroups) free_wildmats(newsgroups);
     auth_freestate(newsmaster_authstate);
@@ -1336,7 +1293,8 @@ static void cmdloop(void)
             break;
 
         case 'S':
-            if (!strcmp(cmd.s, "Starttls") && tls_enabled()) {
+            if (!strcmp(cmd.s, "Starttls")) {
+                if (!tls_starttls_enabled()) goto badcmd;
                 if (c == '\r') c = prot_getc(nntp_in);
                 if (c != '\n') goto extraargs;
 
@@ -1770,7 +1728,7 @@ static void cmd_capabilities(char *keyword __attribute__((unused)))
     }
 
     /* add STARTTLS */
-    if (tls_enabled() && !nntp_starttls_done && !nntp_authstate)
+    if (tls_starttls_enabled() && !nntp_starttls_done && !nntp_authstate)
         prot_printf(nntp_out, "STARTTLS\r\n");
 
     if (!nntp_tls_required) {
@@ -1964,9 +1922,7 @@ static void cmd_authinfo_user(char *user)
 
     if (!(p = canonify_userid(user, NULL, NULL))) {
         prot_printf(nntp_out, "481 Invalid user\r\n");
-        syslog(LOG_NOTICE,
-               "badlogin: %s plaintext %s invalid user",
-               nntp_clienthost, beautify_string(user));
+        loginlog_bad(nntp_clienthost, user, "plaintext", NULL, "invalid user");
     }
     else {
         nntp_userid = xstrdup(p);
@@ -2001,14 +1957,12 @@ static void cmd_authinfo_pass(char *pass)
 
     if (!strcmp(nntp_userid, "anonymous")) {
         if (allowanonymous) {
-            pass = beautify_string(pass);
-            if (strlen(pass) > 500) pass[500] = '\0';
-            syslog(LOG_NOTICE, "login: %s anonymous %s",
-                   nntp_clienthost, pass);
+            loginlog_anon(nntp_clienthost, "plaintext",
+                          nntp_starttls_done, pass);
         }
         else {
-            syslog(LOG_NOTICE, "badlogin: %s anonymous login refused",
-                   nntp_clienthost);
+            loginlog_bad(nntp_clienthost, nntp_userid, "plaintext", NULL,
+                         "anonymous login refused");
             prot_printf(nntp_out, "481 Invalid login\r\n");
             return;
         }
@@ -2018,8 +1972,8 @@ static void cmd_authinfo_pass(char *pass)
                             strlen(nntp_userid),
                             pass,
                             strlen(pass))!=SASL_OK) {
-        syslog(LOG_NOTICE, "badlogin: %s plaintext (%s) [%s]",
-               nntp_clienthost, nntp_userid, sasl_errdetail(nntp_saslconn));
+        loginlog_bad(nntp_clienthost, nntp_userid, "plaintext", NULL,
+                     sasl_errdetail(nntp_saslconn));
         failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
         if (failedloginpause != 0) {
             sleep(failedloginpause);
@@ -2031,9 +1985,8 @@ static void cmd_authinfo_pass(char *pass)
         return;
     }
     else {
-        syslog(LOG_NOTICE, "login: %s %s plaintext%s %s", nntp_clienthost,
-               nntp_userid, nntp_starttls_done ? "+TLS" : "",
-               "User logged in");
+        loginlog_good(nntp_clienthost, nntp_userid, "plaintext",
+                      nntp_starttls_done);
 
         prot_printf(nntp_out, "281 User logged in\r\n");
 
@@ -2125,7 +2078,7 @@ static void cmd_authinfo_sasl(char *cmd, char *mech, char *resp)
     if (r) {
         int code;
         const char *errorstring = NULL;
-        const char *userid = "-notset-";
+        const char *userid = NULL;
 
         switch (r) {
         case IMAP_SASL_CANCEL:
@@ -2159,8 +2112,8 @@ static void cmd_authinfo_sasl(char *cmd, char *mech, char *resp)
             if (sasl_result != SASL_NOUSER)
                 sasl_getprop(nntp_saslconn, SASL_USERNAME, (const void **) &userid);
 
-            syslog(LOG_NOTICE, "badlogin: %s %s (%s) [%s]",
-                   nntp_clienthost, mech, userid, sasl_errdetail(nntp_saslconn));
+            loginlog_bad(nntp_clienthost, userid, mech, NULL,
+                         sasl_errdetail(nntp_saslconn));
 
             failedloginpause = config_getduration(IMAPOPT_FAILEDLOGINPAUSE, 's');
             if (failedloginpause != 0) {
@@ -2247,8 +2200,7 @@ static void cmd_authinfo_sasl(char *cmd, char *mech, char *resp)
         return;
     }
 
-    syslog(LOG_NOTICE, "login: %s %s %s%s %s", nntp_clienthost, nntp_userid,
-           mech, nntp_starttls_done ? "+TLS" : "", "User logged in");
+    loginlog_good(nntp_clienthost, nntp_userid, mech, nntp_starttls_done);
 
     if (success_data) {
         prot_printf(nntp_out, "283 %s\r\n", success_data);
@@ -2417,7 +2369,7 @@ static void cmd_help(void)
 
     prot_printf(nntp_out, "\tQUIT\r\n"
                 "\t\tTerminate the session.\r\n");
-    if (tls_enabled() && !nntp_starttls_done && !nntp_authstate) {
+    if (tls_starttls_enabled() && !nntp_starttls_done && !nntp_authstate) {
         prot_printf(nntp_out, "\tSTARTTLS\r\n"
                     "\t\tStart a TLS negotiation.\r\n");
     }
@@ -2594,7 +2546,7 @@ static void cmd_list(char *arg1, char *arg2)
         /* split the list of wildmats */
         lrock.wild = split_wildmats(arg2, config_getstring(IMAPOPT_NEWSPREFIX));
 
-        /* xxx better way to determine a size for this table? */
+        /* XXX better way to determine a size for this table? */
         construct_hash_table(&lrock.server_table, 10, 1);
 
         prot_printf(nntp_out, "215 List of newsgroups follows:\r\n");
@@ -2651,7 +2603,7 @@ static void cmd_list(char *arg1, char *arg2)
         /* split the list of wildmats */
         lrock.wild = split_wildmats(arg2, config_getstring(IMAPOPT_NEWSPREFIX));
 
-        /* xxx better way to determine a size for this table? */
+        /* XXX better way to determine a size for this table? */
         construct_hash_table(&lrock.server_table, 10, 1);
 
         prot_printf(nntp_out, "215 List of newsgroups follows:\r\n");
@@ -3097,7 +3049,7 @@ static int savemsg(message_data_t *m, FILE *f)
             }
             if (!r) {
                 const char *newspostuser = config_getstring(IMAPOPT_NEWSPOSTUSER);
-                unsigned long newsaddheaders =
+                uint64_t newsaddheaders =
                     config_getbitfield(IMAPOPT_NEWSADDHEADERS);
                 const char **to = NULL, **replyto = NULL;
 
@@ -3186,8 +3138,7 @@ static int savemsg(message_data_t *m, FILE *f)
 
     if (r) return r;
 
-    fflush(f);
-    if (ferror(f)) {
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
         return IMAP_IOERROR;
     }
 
@@ -3291,7 +3242,7 @@ static int deliver(message_data_t *msg)
             if (msg->id &&
                 duplicate_check(&dkey)) {
                 /* duplicate message */
-                duplicate_log(&dkey, "nntp delivery");
+                duplicate_log(&dkey, "nntp-delivery");
                 continue;
             }
 
@@ -3314,7 +3265,7 @@ static int deliver(message_data_t *msg)
 
                     if (!r) {
                         /* duplicate message */
-                        duplicate_log(&dkey, "nntp delivery");
+                        duplicate_log(&dkey, "nntp-delivery");
                         continue;
                     }
                 }
@@ -4003,7 +3954,6 @@ static void cmd_post(char *msgid, int mode)
     prot_flush(nntp_out);
 }
 
-#ifdef HAVE_SSL
 static void cmd_starttls(int nntps)
 {
     int result;
@@ -4071,9 +4021,7 @@ static void cmd_starttls(int nntps)
     nntp_starttls_done = 1;
     nntp_tls_required = 0;
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     nntp_tls_comp = (void *) SSL_get_current_compression(tls_conn);
-#endif
 
     /* close any selected group */
     if (group_state)
@@ -4083,13 +4031,6 @@ static void cmd_starttls(int nntps)
         backend_current = NULL;
     }
 }
-#else
-static void cmd_starttls(int nntps __attribute__((unused)))
-{
-    /* XXX should never get here */
-    fatal("cmd_starttls() called, but no OpenSSL", EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */
 
 #ifdef HAVE_ZLIB
 static void cmd_compress(char *alg)
@@ -4098,13 +4039,11 @@ static void cmd_compress(char *alg)
         prot_printf(nntp_out,
                     "502 DEFLATE compression already active via COMPRESS\r\n");
     }
-#if defined(HAVE_SSL) && (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     else if (nntp_tls_comp) {
         prot_printf(nntp_out,
                     "502 %s compression already active via TLS\r\n",
                     SSL_COMP_get_name(nntp_tls_comp));
     }
-#endif // defined(HAVE_SSL) && (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     else if (strcasecmp(alg, "DEFLATE")) {
         prot_printf(nntp_out,
                     "502 Unknown COMPRESS algorithm: %s\r\n", alg);

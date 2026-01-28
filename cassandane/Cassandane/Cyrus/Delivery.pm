@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use IO::File;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 
@@ -378,6 +377,60 @@ sub test_plus_address_shared
     $self->check_messages(\%msgs, check_guid => 0, keyed_on => 'uid');
 }
 
+sub test_plus_address_inbox_inbox
+    :FuzzyMatch :NoAltNameSpace :MailboxLegacyDirs
+{
+    my ($self) = @_;
+
+    xlog $self, "Testing behaviour of plus addressing where INBOX.INBOX* is targetted";
+
+    xlog $self, "Create folders";
+    my $imaptalk = $self->{store}->get_client();
+    my $folder = "INBOX.INBOX";
+    $imaptalk->create($folder)
+        or die "Cannot create $folder: $@";
+
+    $imaptalk->setacl($folder, 'anyone' => 'p');
+    $self->assert_str_equals('ok', $imaptalk->get_last_completion_response());
+
+    $folder = "INBOX.INBOX.exists";
+    $imaptalk->create($folder)
+        or die "Cannot create $folder: $@";
+    $self->{store}->set_fetch_attributes('uid');
+
+    xlog $self, "Deliver a message";
+    my %msgs;
+    $msgs{1} = $self->{gen}->generate(subject => "Message 1");
+    $msgs{1}->set_attribute(uid => 1);
+    $msgs{2} = $self->{gen}->generate(subject => "Message 2");
+    $msgs{2}->set_attribute(uid => 2);
+    $msgs{3} = $self->{gen}->generate(subject => "Message 3");
+    $msgs{3}->set_attribute(uid => 3);
+
+    $self->{instance}->deliver($msgs{1}, user => "cassandane+inbox");
+    $self->{instance}->deliver($msgs{2}, user => "cassandane+inbox.DNE");
+    $self->{instance}->deliver($msgs{3}, user => "cassandane+DNE");
+
+    xlog $self, "Check that the messages made it to INBOX";
+    $self->{store}->set_folder('INBOX');
+    $self->check_messages(\%msgs, check_guid => 0, keyed_on => 'uid');
+
+    $msgs{1} = $self->{gen}->generate(subject => "Message 4");
+    $msgs{1}->set_attribute(uid => 1);
+    $msgs{2} = $self->{gen}->generate(subject => "Message 5");
+    $msgs{2}->set_attribute(uid => 2);
+    $msgs{3} = $self->{gen}->generate(subject => "Message 6");
+    $msgs{3}->set_attribute(uid => 3);
+
+    $self->{instance}->deliver($msgs{1}, user => "cassandane+inbox.exists");
+    $self->{instance}->deliver($msgs{2}, user => "cassandane+inbox.exists.DNE");
+    $self->{instance}->deliver($msgs{3}, user => "cassandane+inbox.exists.DNE.sub");
+
+    xlog $self, "Check that the message made it to INBOX.INBOX.exists";
+    $self->{store}->set_folder($folder);
+    $self->check_messages(\%msgs, check_guid => 0, keyed_on => 'uid');
+}
+
 sub test_duplicate_suppression_off
     :DuplicateSuppressionOff :NoAltNameSpace
 {
@@ -569,14 +622,48 @@ sub test_auditlog_size
     xlog $self, "Check the correct size was auditlogged";
     if ($self->{instance}->{have_syslog_replacement}) {
         my @appends = $self->{instance}->getsyslog(
-            qr/auditlog: append .* uid=<1>/);
+            qr/\bevent=auditlog\.append .* msg\.imapuid=1\b/);
         $self->assert_num_equals(1, scalar @appends);
 
         # delivery will add some headers, so it will be larger
         my $expected_size = $msgs{1}->size();
-        my ($actual_size) = $appends[0] =~ m/ size=<([0-9]+)>/;
+        my ($actual_size) = $appends[0] =~ m/\bmsg\.size=(\d+)\b/;
         $self->assert_num_gte($expected_size, $actual_size);
     }
+}
+
+sub test_traceid
+{
+    my ($self) = @_;
+
+    my $good_traceid = "01234567890abcdefghijklmnopqrstuvwxyz";
+    my $bad_traceid = "spaces and quotes aren't valid";
+
+    my %msgs;
+    $msgs{1} = $self->{gen}->generate(subject => "Message 1", uid => 1);
+
+    # deliver with invalid traceid should fail
+    my $ret = $self->{instance}->deliver($msgs{1},
+                                         user => "cassandane",
+                                         trace_id => $bad_traceid);
+    $self->assert_num_not_equals(0, $ret);
+
+    # discard syslogs from setup
+    $self->{instance}->getsyslog();
+
+    # deliver with valid traceid should succeed
+    $ret = $self->{instance}->deliver($msgs{1},
+                                      user => "cassandane",
+                                      trace_id => $good_traceid);
+    $self->assert_num_equals(0, $ret);
+
+    # trace id should have been logged during delivery
+    $self->assert_syslog_matches($self->{instance},
+                                 qr{\br\.tid=\<$good_traceid\>});
+
+    # message better have been delivered!
+    $self->{store}->set_folder('INBOX');
+    $self->check_messages(\%msgs, check_guid => 0, keyed_on => 'uid');
 }
 
 1;

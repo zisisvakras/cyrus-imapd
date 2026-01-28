@@ -3,9 +3,8 @@ use Cassandane::Tiny;
 
 sub test_require_conversations
     :min_version_3_1 :NoStartInstances
+    ($self)
 {
-    my ($self) = @_;
-
     my $instance = $self->{instance};
     $instance->{config}->set(conversations => 'no');
 
@@ -19,8 +18,8 @@ sub test_require_conversations
     };
 
     # request should fail
-    my ($response, undef) = $jmap->Request($JMAPRequest);
-    $self->assert(not $response->{success});
+    my ($response, undef) = $jmap->request($JMAPRequest);
+    $self->assert(not $response->is_success);
 
     # httpd should syslog an error
     $self->assert_syslog_matches(

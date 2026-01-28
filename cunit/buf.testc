@@ -1,12 +1,16 @@
-#include "config.h"
-#include "cunit/cyrunit.h"
-#include "prot.h"
-#include "xmalloc.h"
-#include "util.h"
-#include "retry.h"
+#include "buf.h"
+#include "cunit/unit.h"
+
 #include "map.h"
+#include "prot.h"
+#include "retry.h"
 #include "util.h"
+#include "xmalloc.h"
+
 #include <sys/mman.h>
+
+#define CU_ASSERT_MEM_EQUAL(actual, expected, sz) \
+    CU_ASSERT_EQUAL(memcmp(actual, expected, sz), 0)
 
 static void test_simple(void)
 {
@@ -192,6 +196,14 @@ static void test_setmap(void)
     CU_ASSERT(b.alloc >= b.len);
     CU_ASSERT_PTR_NOT_NULL(b.s);
     CU_ASSERT_STRING_EQUAL(b.s, WORD1);
+
+    /* zero length clears contents (base is ignored, can be NULL) */
+    buf_setmap(&b, NULL, 0);
+    buf_cstring(&b);
+    CU_ASSERT_EQUAL(b.len, 0);
+    CU_ASSERT_EQUAL(buf_len(&b), b.len);
+
+    /* NULL base with non-zero length throws an assertion */
 
     buf_free(&b);
 #undef WORD1
@@ -1260,6 +1272,75 @@ static void test_cow2(void)
     CU_ASSERT_PTR_NOT_EQUAL(b.s, (char *)DATA0);
 
     buf_free(&b);
+}
+
+static void test_cow_truncate(void)
+{
+    static const char DATA0[] = "LoRem";
+    struct buf b = BUF_INITIALIZER;
+
+    CU_ASSERT_EQUAL(b.len, 0);
+    CU_ASSERT(b.alloc >= b.len);
+    CU_ASSERT_EQUAL(buf_len(&b), b.len);
+    CU_ASSERT_PTR_NULL(b.s);
+
+    buf_init_ro_cstr(&b, DATA0);
+    CU_ASSERT_EQUAL(b.len, strlen(DATA0));
+    CU_ASSERT_EQUAL(b.alloc, 0);
+    CU_ASSERT_EQUAL(buf_len(&b), b.len);
+    CU_ASSERT_PTR_EQUAL(b.s, (char *)DATA0);
+
+    buf_truncate(&b, 3);
+    CU_ASSERT_EQUAL(b.len, 3);
+    CU_ASSERT_EQUAL(buf_len(&b), b.len);
+    CU_ASSERT(b.alloc >= b.len);
+    CU_ASSERT_PTR_NOT_EQUAL(b.s, (char *)DATA0);
+    CU_ASSERT_MEM_EQUAL(b.s, "LoR", b.len);
+    CU_ASSERT_STRING_EQUAL(buf_cstring(&b), "LoR");
+
+    buf_free(&b);
+}
+
+static void test_cow_trim(void)
+{
+#define TESTCASE(input, want) \
+    { \
+        struct buf b = BUF_INITIALIZER; \
+        \
+        CU_ASSERT_EQUAL(b.len, 0); \
+        CU_ASSERT(b.alloc >= b.len); \
+        CU_ASSERT_EQUAL(buf_len(&b), b.len); \
+        CU_ASSERT_PTR_NULL(b.s); \
+        \
+        buf_init_ro_cstr(&b, input); \
+        CU_ASSERT_EQUAL(b.len, strlen(input)); \
+        CU_ASSERT_EQUAL(b.alloc, 0); \
+        CU_ASSERT_EQUAL(buf_len(&b), b.len); \
+        CU_ASSERT_PTR_EQUAL(b.s, (char *)input); \
+        \
+        buf_trim(&b); \
+        CU_ASSERT_EQUAL(b.len, strlen(want)); \
+        CU_ASSERT_EQUAL(buf_len(&b), b.len); \
+        if (strlen(input) != strlen(want)) { \
+            CU_ASSERT(b.alloc >= b.len); \
+            CU_ASSERT_PTR_NOT_EQUAL(b.s, (char *)input); \
+        } \
+        else { \
+            CU_ASSERT_EQUAL(b.alloc, 0); \
+            CU_ASSERT_PTR_EQUAL(b.s, (char *)input); \
+        } \
+        CU_ASSERT_MEM_EQUAL(b.s, want, b.len); \
+        CU_ASSERT_STRING_EQUAL(buf_cstring(&b), want); \
+        \
+        buf_free(&b); \
+    }
+
+    TESTCASE("foo", "foo");
+    TESTCASE("foo \n", "foo");
+    TESTCASE("\t foo", "foo");
+    TESTCASE("  foo ", "foo");
+
+#undef TESTCASE
 }
 
 static void test_findchar(void)

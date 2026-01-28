@@ -1,47 +1,6 @@
-/* sync_reset.c -- Remove a user account from a replica system
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- * Original version written by David Carter <dpc22@cam.ac.uk>
- * Rewritten and integrated into Cyrus by Ken Murchison <ken@oceana.com>
- */
+/* sync_reset.c -- Remove a user account from a replica system */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -128,7 +87,7 @@ static int reset_single(const char *userid)
 {
     int r = 0;
     int i;
-    struct mboxlock *namespacelock = user_namespacelock(userid);
+    user_nslock_t *user_nslock = user_nslock_lock_w(userid);
 
     /* XXX: adding an entry to userdeny_db here would avoid the need to
      * protect against new logins with external proxy rules - Cyrus could
@@ -152,13 +111,14 @@ static int reset_single(const char *userid)
     free(inbox);
     if (r) goto fail;
 
-    r = mboxlist_usermboxtree(userid, NULL, addmbox_cb, mblist, MBOXTREE_DELETED);
+    r = mboxlist_usermboxtree(userid, NULL, addmbox_cb, mblist, MBOXTREE_INTERMEDIATES|MBOXTREE_DELETED);
     if (r) goto fail;
 
+    // delete in reverse order so we delete the INBOX last
     for (i = mblist->count; i; i--) {
         const char *name = strarray_nth(mblist, i-1);
-	int delflags = MBOXLIST_DELETE_FORCE | MBOXLIST_DELETE_SILENT |
-		       MBOXLIST_DELETE_LOCALONLY | MBOXLIST_DELETE_ENTIRELY;
+        int delflags = MBOXLIST_DELETE_FORCE | MBOXLIST_DELETE_SILENT |
+                       MBOXLIST_DELETE_LOCALONLY | MBOXLIST_DELETE_ENTIRELY;
         r = mboxlist_deletemailbox(name, 1, sync_userid, sync_authstate,
                                    NULL, delflags);
         if (r == IMAP_MAILBOX_NONEXISTENT) {
@@ -170,7 +130,7 @@ static int reset_single(const char *userid)
     if (mbentry) r = user_deletedata(mbentry, 1);
 
  fail:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mboxlist_entry_free(&mbentry);
     strarray_free(mblist);
     strarray_free(sublist);

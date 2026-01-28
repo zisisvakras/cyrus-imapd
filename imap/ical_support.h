@@ -1,45 +1,6 @@
-/* ical_support.h -- Helper functions for libical
- *
- * Copyright (c) 1994-2015 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* ical_support.h -- Helper functions for libical */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef ICAL_SUPPORT_H
 #define ICAL_SUPPORT_H
@@ -49,12 +10,15 @@
 #ifdef HAVE_ICAL
 
 #include <libical/ical.h>
+#include <libical/vcard.h>
+
 #undef icalerror_warn
 #define icalerror_warn(message) \
 {syslog(LOG_WARNING, "icalerror: %s(), %s:%d: %s", __FUNCTION__, __FILE__, __LINE__, message);}
 
 #include "dav_util.h"
 #include "mailbox.h"
+
 
 #define ICALENDAR_CONTENT_TYPE "text/calendar; charset=utf-8"
 
@@ -71,7 +35,6 @@ extern icalrecurrencetype_t *icalvalue_get_recurrence(const icalvalue *val);
 #define icalproperty_set_recurrence(prop, rt)                   \
     icalproperty_set_value(prop, icalvalue_new_recurrence(rt))
 
-#ifdef HAVE_RECUR_BY_REF
 #define ICAL_RECURRENCE_ARRAY_MAX            0x7f7f
 #define icalrecurrence_iterator_new(rt, tt)  icalrecur_iterator_new(rt, tt)
 #define icalvalue_new_recurrence(rt)         icalvalue_new_recur(rt)
@@ -79,51 +42,8 @@ extern icalrecurrencetype_t *icalvalue_get_recurrence(const icalvalue *val);
 #define icalrecur_byrule_size(rt, rule)      (rt->by[rule].size)
 #define icalrecur_byrule_data(rt, rule)      (rt->by[rule].data)
 
-#else /* !HAVE_RECUR_BY_REF */
-typedef enum icalrecurrencetype_byrule
-{
-    ICAL_BY_MONTH = 0,
-    ICAL_BY_WEEK_NO,
-    ICAL_BY_YEAR_DAY,
-    ICAL_BY_MONTH_DAY,
-    ICAL_BY_DAY,
-    ICAL_BY_HOUR,
-    ICAL_BY_MINUTE,
-    ICAL_BY_SECOND,
-    ICAL_BY_SET_POS,
-
-    ICAL_BY_NUM_PARTS
-} icalrecurrencetype_byrule;
-
-#define icalrecurrence_iterator_new(rt, tt)  icalrecur_iterator_new(*(rt), tt)
-#define icalvalue_new_recurrence(rt)         icalvalue_new_recur(*(rt))
-#define icalvalue_set_recurrence(val, rt)    icalvalue_set_recur(val, *(rt))
-
-extern icalrecurrencetype_t *icalrecurrencetype_new(void);
-extern icalrecurrencetype_t *icalrecurrencetype_clone(icalrecurrencetype_t *rt);
-extern icalrecurrencetype_t *icalrecurrencetype_new_from_string(const char *str);
-extern void icalrecurrencetype_unref(icalrecurrencetype_t *rt);
-extern short *icalrecur_byrule_data(icalrecurrencetype_t *rt,
-                                    icalrecurrencetype_byrule rule);
-extern short icalrecur_byrule_size(icalrecurrencetype_t *rt,
-                                   icalrecurrencetype_byrule rule);
-#endif /* HAVE_RECUR_BY_REF */
-
 #ifdef HAVE_PARTTYPE_VOTER
 #define HAVE_VPOLL_SUPPORT
-#endif
-
-#ifndef HAVE_NEW_CLONE_API
-/* Allow us to compile without #ifdef HAVE_NEW_CLONE_API everywhere */
-#define icalcomponent_clone           icalcomponent_new_clone
-#define icalproperty_clone            icalproperty_new_clone
-#define icalparameter_clone           icalparameter_new_clone
-#endif
-
-#ifndef HAVE_GET_COMPONENT_NAME
-/* This should never match anything in the wild
-   which means that we can't patch X- components */
-#define icalcomponent_get_component_name(comp)  "X-CYR-"
 #endif
 
 /* Initialize libical timezones. */
@@ -296,23 +216,12 @@ extern void icalcomponent_set_jmapid(icalcomponent *comp, const char *id);
 #endif
 
 /* Functions that should be declared in libical */
-#define icaltimezone_set_zone_directory set_zone_directory
 
 #define icalcomponent_get_tzuntil_property(comp) \
     icalcomponent_get_first_property(comp, ICAL_TZUNTIL_PROPERTY)
 
 #define icalcomponent_get_acknowledged_property(comp) \
     icalcomponent_get_first_property(comp, ICAL_ACKNOWLEDGED_PROPERTY)
-
-#ifndef HAVE_RSCALE
-
-/* Functions to replace those not available in libical < v1.0 */
-
-#define icalrecurrencetype_month_is_leap(month) 0
-#define icalrecurrencetype_month_month(month) month
-
-#endif /* HAVE_RSCALE */
-
 
 /* Wrappers to fetch managed attachment parameters by kind */
 
@@ -338,4 +247,17 @@ extern void icalcomponent_set_jmapid(icalcomponent *comp, const char *id);
 
 #endif /* HAVE_ICAL */
 
+/**
+ * Looks up a property parameter by name.
+ *
+ * @param prop   The vCard property.
+ * @param name   The name of the parameter to look up.
+ *
+ * This function looks up and returns the first property parameter
+ * having the same name as @p name. The name is compared case-insensitively.
+ *
+ * @return The parameter, or NULL otherwise.
+ */
+extern vcardparameter *vcardproperty_get_parameter_by_name(vcardproperty *prop,
+                                                           const char *name);
 #endif /* ICAL_SUPPORT_H */

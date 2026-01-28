@@ -1,48 +1,7 @@
-/* tls.c - STARTTLS helper functions for imapd
- * Tim Martin
- * 9/21/99
- *
- * Based upon Lutz Jaenicke's TLS patches for postfix
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* tls.c - STARTTLS helper functions for imapd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
+/* Based upon Lutz Jaenicke's TLS patches for postfix */
 
 /*
 * NAME
@@ -84,7 +43,7 @@
 *       The last two values may be different when talking to a crippled
 *       - ahem - export controled peer (e.g. 40/128).
 *
-* xxx we need to offer a callback to do peer issuer certification.
+* XXX we need to offer a callback to do peer issuer certification.
 *     data that should be available for inspection:
 *       If the peer offered a certificate _and_ the certificate could be
 *       verified successfully, part of the certificate data are available as:
@@ -97,8 +56,6 @@
 */
 
 #include <config.h>
-
-#ifdef HAVE_SSL
 
 /* System library. */
 
@@ -124,7 +81,6 @@
 #include "util.h"
 #include "xmalloc.h"
 #include "tls.h"
-#include "tls_th-lock.h"
 
 /* Session caching/reuse stuff */
 #include "global.h"
@@ -149,10 +105,6 @@ static SSL_CTX *s_ctx = NULL, *c_ctx = NULL;
 static int tls_serverengine = 0; /* server engine initialized? */
 static int tls_clientengine = 0; /* client engine initialized? */
 static int do_dump = 0;         /* actively dumping protocol? */
-
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL) && (OPENSSL_VERSION_NUMBER < 0x30000000L)
-static DH *dh_params = NULL;
-#endif
 
 
 EXPORTED int tls_enabled(void)
@@ -212,91 +164,6 @@ static void apps_ssl_info_callback(const SSL * s, int where, int ret)
     }
 }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-/* taken from OpenSSL apps/s_cb.c
-   not thread safe! */
-static RSA *tmp_rsa_cb(SSL * s __attribute__((unused)),
-                       int export __attribute__((unused)),
-                       int keylength)
-{
-    static RSA *rsa_tmp = NULL;
-
-    if (rsa_tmp == NULL) {
-        rsa_tmp = RSA_generate_key(keylength, RSA_F4, NULL, NULL);
-    }
-    return (rsa_tmp);
-}
-#endif
-
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x20700000L)
-/* replacements for new 1.1 API accessors */
-/* XXX probably put these somewhere central */
-static int DH_set0_pqg(DH *dh, BIGNUM *p, BIGNUM *q, BIGNUM *g)
-{
-    if (p == NULL || g == NULL) return 0;
-    dh->p = p;
-    dh->q = q; /* optional */
-    dh->g = g;
-    return 1;
-}
-#endif
-
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL) && (OPENSSL_VERSION_NUMBER < 0x30000000L)
-/* Logic copied from OpenSSL apps/s_server.c: give the TLS context
- * DH params to work with DHE-* cipher suites. Hardcoded fallback
- * in case no DH params in server_key or server_cert.
- * Modified quite a bit for openssl 1.1.0 compatibility.
- * XXX we might be able to just replace this with DH_get_1024_160?
- * XXX the apps/s_server.c example doesn't use this anymore at all.
- */
-static DH *get_dh1024(void)
-{
-    /* Second Oakley group 1024-bits MODP group from RFC 2409 */
-    DH *dh;
-    BIGNUM *p = NULL, *g = NULL;
-
-    dh = DH_new();
-    if (!dh) return NULL;
-
-    p = get_rfc2409_prime_1024(NULL);
-    BN_dec2bn(&g, "2");
-
-    if (DH_set0_pqg(dh, p, NULL, g))
-        return dh;
-
-    if (g) BN_free(g);
-    if (p) BN_free(p);
-    DH_free(dh);
-
-    return NULL;
-}
-
-static DH *load_dh_param(const char *dhfile, const char *keyfile, const char *certfile)
-{
-    DH *ret=NULL;
-    BIO *bio = NULL;
-
-    if (dhfile) bio = BIO_new_file(dhfile, "r");
-
-    if ((bio == NULL) && keyfile) bio = BIO_new_file(keyfile, "r");
-
-    if ((bio == NULL) && certfile) bio = BIO_new_file(certfile,"r");
-
-    if (bio) ret=PEM_read_bio_DHparams(bio,NULL,NULL,NULL);
-
-    if (ret == NULL) {
-        ret = get_dh1024();
-        syslog(LOG_NOTICE, "inittls: Loading hard-coded DH parameters");
-    } else {
-        syslog(LOG_NOTICE, "inittls: Loading DH parameters from file");
-    }
-
-    if (bio != NULL) BIO_free(bio);
-
-    return(ret);
-}
-#endif /* OPENSSL_VERSION_NUMBER >= 0x009080fL */
-
 /* taken from OpenSSL apps/s_cb.c */
 
 static int verify_callback(int ok, X509_STORE_CTX * ctx)
@@ -347,7 +214,6 @@ static int verify_callback(int ok, X509_STORE_CTX * ctx)
 }
 
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090806fL)
 static int servername_callback(SSL *ssl, int *ad __attribute__((unused)),
                                void *arg __attribute__((unused)))
 {
@@ -360,7 +226,6 @@ static int servername_callback(SSL *ssl, int *ad __attribute__((unused)),
 
     return SSL_TLSEXT_ERR_OK;
 }
-#endif
 
 
 /*
@@ -563,7 +428,12 @@ static int new_session_cb(SSL *ssl __attribute__((unused)),
     if (!len) syslog(LOG_ERR, "i2d_SSL_SESSION failed");
 
     /* set the expire time for the external cache, and prepend it to data */
-    expire = SSL_SESSION_get_time(sess) + SSL_SESSION_get_timeout(sess);
+#if OPENSSL_VERSION_NUMBER >= 0x30300000L
+    expire = SSL_SESSION_get_time_ex(sess);
+#else
+    expire = SSL_SESSION_get_time(sess);
+#endif
+    expire += SSL_SESSION_get_timeout(sess);
     memcpy(data, &expire, sizeof(time_t));
 
     if (len) {
@@ -592,7 +462,7 @@ static int new_session_cb(SSL *ssl __attribute__((unused)),
                idstr, ctime(&expire), ret ? "failed" : "ok");
     }
 
-    return (ret == 0);
+    return 0;
 }
 
 /*
@@ -646,13 +516,8 @@ static void remove_session_cb(SSL_CTX *ctx __attribute__((unused)),
  * called, also when session caching was disabled.  We lookup the
  * session in our database in case it was stored by another process.
  */
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
 static SSL_SESSION *get_session_cb(SSL *ssl __attribute__((unused)),
                                    const unsigned char *id, int idlen, int *copy)
-#else
-static SSL_SESSION *get_session_cb(SSL *ssl __attribute__((unused)),
-                                   unsigned char *id, int idlen, int *copy)
-#endif
 {
     int ret;
     const char *data = NULL;
@@ -841,11 +706,7 @@ EXPORTED int     tls_init_serverengine(const char *ident,
         return -1;
     }
 
-#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
     s_ctx = SSL_CTX_new(TLS_server_method());
-#else
-    s_ctx = SSL_CTX_new(SSLv23_server_method());
-#endif
 
     if (s_ctx == NULL) {
         return (-1);
@@ -859,30 +720,18 @@ EXPORTED int     tls_init_serverengine(const char *ident,
     const char *tls_versions = config_getstring(IMAPOPT_TLS_VERSIONS);
 
     if (strstr(tls_versions, "tls1_3") == NULL) {
-#if (OPENSSL_VERSION_NUMBER >= 0x1010100fL)
         //syslog(LOG_DEBUG, "TLS server engine: Disabled TLSv1.3");
         off |= SSL_OP_NO_TLSv1_3;
-#else
-        syslog(LOG_ERR, "ERROR: TLSv1.3 configured, OpenSSL < 1.1.1 insufficient");
-#endif // (OPENSSL_VERSION_NUMBER >= 0x1010100fL)
     }
 
     if (strstr(tls_versions, "tls1_2") == NULL) {
-#if (OPENSSL_VERSION_NUMBER >= 0x1000105fL)
         //syslog(LOG_DEBUG, "TLS server engine: Disabled TLSv1.2");
         off |= SSL_OP_NO_TLSv1_2;
-#else
-        syslog(LOG_ERR, "ERROR: TLSv1.2 configured, OpenSSL < 1.0.1e insufficient");
-#endif // (OPENSSL_VERSION_NUMBER >= 0x1000105fL)
     }
 
     if (strstr(tls_versions, "tls1_1") == NULL) {
-#if (OPENSSL_VERSION_NUMBER >= 0x1000000fL)
         //syslog(LOG_DEBUG, "TLS server engine: Disabled TLSv1.1");
         off |= SSL_OP_NO_TLSv1_1;
-#else
-        syslog(LOG_ERR, "ERROR: TLSv1.1 configured, OpenSSL < 1.0.0 insufficient");
-#endif // (OPENSSL_VERSION_NUMBER >= 0x1000000fL)
     }
 
     if (strstr(tls_versions, "tls1_0") == NULL) {
@@ -1016,35 +865,13 @@ EXPORTED int     tls_init_serverengine(const char *ident,
         return (-1);
     }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    SSL_CTX_set_tmp_rsa_callback(s_ctx, tmp_rsa_cb);
-#endif
-
-#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
     SSL_CTX_set_dh_auto(s_ctx, 1);
-#elif (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
-    /* Load DH params for DHE-* key exchanges */
-    const char *server_dhparam_file = config_getstring(IMAPOPT_TLS_SERVER_DHPARAM);
-    dh_params = load_dh_param(server_dhparam_file, server_key_file, server_cert_file);
-    SSL_CTX_set_tmp_dh(s_ctx, dh_params);
-#endif
 
-#if (OPENSSL_VERSION_NUMBER >= 0x1000103fL)
     const char *ec = config_getstring(IMAPOPT_TLS_ECCURVE);
     int openssl_nid = OBJ_sn2nid(ec);
     if (openssl_nid != 0) {
-#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
         SSL_CTX_set1_curves(s_ctx, &openssl_nid, 1);
-#else
-        EC_KEY *ecdh;
-        ecdh = EC_KEY_new_by_curve_name(openssl_nid);
-        if (ecdh != NULL) {
-            SSL_CTX_set_tmp_ecdh(s_ctx, ecdh);
-            EC_KEY_free(ecdh);
-        }
-#endif
     }
-#endif
 
     verify_depth = verifydepth;
 
@@ -1104,15 +931,13 @@ EXPORTED int     tls_init_serverengine(const char *ident,
 
     SSL_CTX_set_verify(s_ctx, verify_flags, verify_callback);
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090806fL)
     SSL_CTX_set_tlsext_servername_callback(s_ctx, servername_callback);
-#endif
 
     /* Don't use an internal session cache */
     SSL_CTX_sess_set_cache_size(s_ctx, 1);  /* 0 is unlimited, so use 1 */
     SSL_CTX_set_session_cache_mode(s_ctx, SSL_SESS_CACHE_SERVER |
                                    SSL_SESS_CACHE_NO_AUTO_CLEAR |
-                                   SSL_SESS_CACHE_NO_INTERNAL_LOOKUP);
+                                   SSL_SESS_CACHE_NO_INTERNAL);
 
     /* Get the session timeout from the config file */
     timeout = config_getduration(IMAPOPT_TLS_SESSION_TIMEOUT, 'm');
@@ -1226,12 +1051,10 @@ EXPORTED int tls_start_servertls(int readfd, int writefd, int timeout,
 
     saslprops_reset(saslprops);
 
-#ifdef HAVE_TLS_ALPN
     if (alpn_map && alpn_map->id[0])
         SSL_CTX_set_alpn_select_cb(s_ctx, alpn_select_cb, (void *) alpn_map);
     else
         SSL_CTX_set_alpn_select_cb(s_ctx, NULL, NULL);
-#endif
 
     tls_conn = (SSL *) SSL_new(s_ctx);
     if (tls_conn == NULL) {
@@ -1379,7 +1202,7 @@ EXPORTED int tls_start_servertls(int readfd, int writefd, int timeout,
             syslog(LOG_DEBUG, "subject_CN=%s, issuer_CN=%s",
                    peer_CN, issuer_CN);
 
-        /* xxx verify that we like the peer_issuer/issuer_CN */
+        /* XXX verify that we like the peer_issuer/issuer_CN */
 
         if (peer_CN[0]) {
             /* save the peer id for our caller */
@@ -1394,7 +1217,6 @@ EXPORTED int tls_start_servertls(int readfd, int writefd, int timeout,
 
     saslprops->ssf = (sasl_ssf_t) tls_cipher_usebits;
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     if (SSL_session_reused(tls_conn)) {
         saslprops->cbinding.len = SSL_get_finished(tls_conn,
                                                    saslprops->tls_finished,
@@ -1408,11 +1230,8 @@ EXPORTED int tls_start_servertls(int readfd, int writefd, int timeout,
 
     saslprops->cbinding.name = "tls-unique";
     saslprops->cbinding.data = saslprops->tls_finished;
-#endif /* (OPENSSL_VERSION_NUMBER >= 0x0090800fL) */
 
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L
     SSL_get0_alpn_selected(tls_conn, &alpn, &alpn_len);
-#endif
 
     buf_printf(&log, "starttls: %s with cipher %s (%d/%d bits %s) ",
                tls_protocol, tls_cipher_name,
@@ -1456,14 +1275,12 @@ EXPORTED char *tls_get_alpn_protocol(const SSL *conn)
 {
     char *proto = NULL;
 
-#ifdef HAVE_TLS_ALPN
     const unsigned char *data = NULL;
     unsigned int len = 0;
 
     SSL_get0_alpn_selected(conn, &data, &len);
     if (data && len)
         proto = xstrndup((const char *) data, len);
-#endif
 
     return proto;
 }
@@ -1509,10 +1326,6 @@ EXPORTED int tls_shutdown_serverengine(void)
             sessdb = NULL;
             sess_dbopen = 0;
         }
-
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL) && (OPENSSL_VERSION_NUMBER < 0x30000000L)
-        if (dh_params) DH_free(dh_params);
-#endif
     }
 
     return 0;
@@ -1611,7 +1424,7 @@ EXPORTED int tls_prune_sessions(void)
     }
 
     if (tofree)
-	free(tofree);
+        free(tofree);
 
     return ret;
 }
@@ -1680,11 +1493,7 @@ HIDDEN int tls_init_clientengine(int verifydepth,
         return -1;
     }
 
-#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
     c_ctx = SSL_CTX_new(TLS_client_method());
-#else
-    c_ctx = SSL_CTX_new(SSLv23_client_method());
-#endif
     if (c_ctx == NULL) {
         return (-1);
     };
@@ -1732,10 +1541,6 @@ HIDDEN int tls_init_clientengine(int verifydepth,
         }
     }
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    SSL_CTX_set_tmp_rsa_callback(c_ctx, tmp_rsa_cb);
-#endif
-
     verify_depth = verifydepth;
     SSL_CTX_set_verify(c_ctx, verify_flags, verify_callback);
 
@@ -1764,7 +1569,6 @@ HIDDEN int tls_start_clienttls(int readfd, int writefd,
 
     if (authid) *authid = NULL;
 
-#ifdef HAVE_TLS_ALPN
     if (alpn_map && alpn_map->id[0]) {
         unsigned char *protos = NULL;
         unsigned int protos_len;
@@ -1780,7 +1584,6 @@ HIDDEN int tls_start_clienttls(int readfd, int writefd,
     else {
         SSL_CTX_set_alpn_protos(c_ctx, NULL, 0);
     }
-#endif
 
     tls_conn = (SSL *) SSL_new(c_ctx);
     if (tls_conn == NULL) {
@@ -1862,7 +1665,7 @@ HIDDEN int tls_start_clienttls(int readfd, int writefd,
             syslog(LOG_DEBUG, "subject_CN=%s, issuer_CN=%s",
                    peer_CN, issuer_CN);
 
-        /* xxx verify that we like the peer_issuer/issuer_CN */
+        /* XXX verify that we like the peer_issuer/issuer_CN */
 
         if (authid != NULL) {
             /* save the peer id for our caller */
@@ -1895,11 +1698,7 @@ HIDDEN int tls_start_clienttls(int readfd, int writefd,
     return r;
 }
 
-#else
-
-EXPORTED int tls_enabled(void)
+EXPORTED int tls_starttls_enabled(void)
 {
-    return 0;
+    return config_getswitch(IMAPOPT_ALLOWSTARTTLS) && tls_enabled();
 }
-
-#endif /* HAVE_SSL */

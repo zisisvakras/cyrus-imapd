@@ -1,48 +1,10 @@
-/* jmap_mail_query.c -- Helper routines for JMAP Email/query
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_mail_query.c -- Helper routines for JMAP Email/query */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
+#include <stdbool.h>
 #include <string.h>
 #include <syslog.h>
 #include <errno.h>
@@ -62,6 +24,12 @@
 #endif
 #ifndef JMAP_MAIL_EXTENSION
 #define JMAP_MAIL_EXTENSION          "https://cyrusimap.org/ns/jmap/mail"
+#endif
+#ifndef JMAP_URN_CONTACTS
+#define JMAP_URN_CONTACTS            "urn:ietf:params:jmap:contacts"
+#endif
+#ifndef JMAP_CONTACTS_EXTENSION
+#define JMAP_CONTACTS_EXTENSION      "https://cyrusimap.org/ns/jmap/contacts"
 #endif
 
 static int _email_threadkeyword_is_valid(const char *keyword)
@@ -109,89 +77,174 @@ static int _email_threadkeyword_is_valid(const char *keyword)
 HIDDEN void jmap_email_contactfilter_init(const char *accountid,
                                           const struct auth_state *authstate,
                                           const struct namespace *namespace,
-                                          const char *addressbookid,
                                           struct email_contactfilter *cfilter)
 {
     memset(cfilter, 0, sizeof(struct email_contactfilter));
     cfilter->accountid = accountid;
     cfilter->authstate = authstate;
     cfilter->namespace = namespace;
-    if (addressbookid) {
-        cfilter->addrbook = carddav_mboxname(accountid, addressbookid);
-    }
 }
 
 HIDDEN void jmap_email_contactfilter_fini(struct email_contactfilter *cfilter)
 {
-    if (cfilter->carddavdb) {
-        carddav_close(cfilter->carddavdb);
-    }
-    free(cfilter->addrbook);
     free_hash_table(&cfilter->contactgroups, (void(*)(void*))strarray_free);
 }
 
-
-static int _get_sharedaddressbook_cb(struct findall_data *data, void *rock)
+static int _get_sharedaddressbooks_cb(struct findall_data *data, void *rock)
 {
-    mbentry_t **mbentryp = rock;
+    ptrarray_t *abook_sets = rock;
+
     if (!data || !data->mbentry) return 0;
-    *mbentryp = mboxlist_entry_copy(data->mbentry);
-    return CYRUSDB_DONE;
+
+    char *userid = mboxname_to_userid(data->mbentry->name);
+    struct abook_set *set = ptrarray_tail(abook_sets);
+
+    if (strcmp(userid, set->userid)) {
+        set = xzmalloc(sizeof(struct abook_set));
+        set->userid = userid;
+        set->carddavdb = carddav_open_userid(userid);
+        ptrarray_append(abook_sets, set);
+    }
+    else {
+        free(userid);
+    }
+    ptrarray_append(&set->mbentrys, mboxlist_entry_copy(data->mbentry));
+
+    return 0;
 }
 
-static mbentry_t *_get_sharedaddressbook(const char *userid,
-                                         const struct auth_state *authstate,
-                                         const struct namespace *namespace)
+static void _get_sharedaddressbooks(const char *accountid,
+                                    const struct auth_state *authstate,
+                                    const struct namespace *namespace,
+                                    ptrarray_t *abook_sets)
 {
-    mbentry_t *res = NULL;
-
     strarray_t patterns = STRARRAY_INITIALIZER;
     struct buf pattern = BUF_INITIALIZER;
-    buf_setcstr(&pattern, "user");
-    buf_putc(&pattern, namespace->hier_sep);
+
+    assert(namespace->hier_sep && namespace->prefix[NAMESPACE_USER][0]);
+
+    buf_setcstr(&pattern, namespace->prefix[NAMESPACE_USER]);
     buf_putc(&pattern, '*');
     buf_putc(&pattern, namespace->hier_sep);
     buf_appendcstr(&pattern, config_getstring(IMAPOPT_ADDRESSBOOKPREFIX));
     buf_putc(&pattern, namespace->hier_sep);
-    buf_appendcstr(&pattern, "Shared");
+    buf_appendcstr(&pattern, "*");
     buf_cstring(&pattern);
     strarray_appendm(&patterns, buf_release(&pattern));
-    mboxlist_findallmulti((struct namespace*)namespace, &patterns, 0, userid,
-            authstate, _get_sharedaddressbook_cb, &res);
+    mboxlist_findallmulti((struct namespace*)namespace, &patterns, 0,
+                          accountid, authstate,
+                          _get_sharedaddressbooks_cb, abook_sets);
     strarray_fini(&patterns);
-
-    return res;
 }
+
+HIDDEN ptrarray_t *jmap_get_accessible_addressbooks(const char *accountid,
+                                                    const struct auth_state *authstate,
+                                                    const struct namespace *namespace,
+                                                    struct carddav_db *carddavdb)
+
+{
+    ptrarray_t *abook_sets = ptrarray_new();
+    struct abook_set *set = xzmalloc(sizeof(struct abook_set));
+
+    /* Add accountid as the first abook set */
+    set->userid = xstrdup(accountid);
+    set->carddavdb = carddavdb;
+    ptrarray_append(&set->mbentrys, NULL); // ALL accountid addressbooks
+    ptrarray_append(abook_sets, set);
+
+    /* Fetch any shared addressbook sets */
+    _get_sharedaddressbooks(accountid, authstate, namespace, abook_sets);
+
+    return abook_sets;
+}
+
+HIDDEN void jmap_free_abook_sets(ptrarray_t *abook_sets)
+{
+    struct abook_set *set;
+
+    while ((set = ptrarray_pop(abook_sets))) {
+        mbentry_t *mbentry;
+
+        while ((mbentry = ptrarray_pop(&set->mbentrys)))
+            mboxlist_entry_free(&mbentry);
+        ptrarray_fini(&set->mbentrys);
+
+        carddav_close(set->carddavdb);
+        free(set->userid);
+        free(set);
+    }
+    ptrarray_free(abook_sets);
+}
+
+HIDDEN void jmap_get_card_emails(strarray_t *card_uids, unsigned card_kind,
+                                 ptrarray_t *abook_sets,
+                                 strarray_t *emails, strarray_t **member_uids)
+    
+{
+    int i, j, k;
+
+    // search for each card by UID
+    for (i = 0; i < strarray_size(card_uids); i++) {
+        const char *uid = strarray_nth(card_uids, i);
+        int found = 0;
+
+        /* search each addressbook in each set */
+        /* XXX  we quit on first matching UID -- remove found for ALL matches */
+        for (j = 0; !found && j < ptrarray_size(abook_sets); j++) {
+            struct abook_set *set = ptrarray_nth(abook_sets, j);
+
+            if (set->carddavdb) {
+                for (k = 0; !found && k < ptrarray_size(&set->mbentrys); k++) {
+                    mbentry_t *mbentry = ptrarray_nth(&set->mbentrys, k);
+
+                    found = carddav_getemails(set->carddavdb, mbentry,
+                                              uid, card_kind, emails);
+
+                    if (member_uids &&
+                        found && (card_kind != CARDDAV_KIND_CONTACT)) {
+                        carddav_getmembers(set->carddavdb, mbentry,
+                                           uid, member_uids);
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum { CF_GROUP = 0, CF_ANY, CF_CARD };
 
 static const struct contactfilters_t {
     const char *field;
-    int isany;
+    unsigned type;
 } contactfilters[] = {
-  { "fromContactGroupId", 0 },
-  { "toContactGroupId", 0 },
-  { "ccContactGroupId", 0 },
-  { "bccContactGroupId", 0 },
-  { "fromAnyContact", 1 },
-  { "toAnyContact", 1 },
-  { "ccAnyContact", 1 },
-  { "bccAnyContact", 1 },
+  { "fromContactCardUid", CF_CARD  },
+  { "toContactCardUid",   CF_CARD  },
+  { "ccContactCardUid",   CF_CARD  },
+  { "bccContactCardUid",  CF_CARD  },
+  { "fromContactGroupId", CF_GROUP },
+  { "toContactGroupId",   CF_GROUP },
+  { "ccContactGroupId",   CF_GROUP },
+  { "bccContactGroupId",  CF_GROUP },
+  { "fromAnyContact",     CF_ANY   },
+  { "toAnyContact",       CF_ANY   },
+  { "ccAnyContact",       CF_ANY   },
+  { "bccAnyContact",      CF_ANY   },
   { NULL, 0 }
 };
 
-HIDDEN int jmap_email_contactfilter_from_filtercondition(struct jmap_parser *parser,
-                                                         json_t *filter,
+HIDDEN int jmap_email_contactfilter_from_filtercondition(json_t *filter,
                                                          struct email_contactfilter *cfilter)
 {
     int havefield = 0;
     const struct contactfilters_t *c;
-    mbentry_t *othermb = NULL;
     int r = 0;
 
     /* prefilter to see if there are any fields that we will need to look up */
     for (c = contactfilters; c->field; c++) {
         json_t *arg = json_object_get(filter, c->field);
         if (!arg) continue;
-        const char *groupid = c->isany ? (json_is_true(arg) ? "" : NULL) : json_string_value(arg);
+        const char *groupid = (c->type == CF_ANY) ?
+            (json_is_true(arg) ? "" : NULL) : json_string_value(arg);
         if (!groupid) continue; // avoid looking up if invalid!
         havefield = 1;
         break;
@@ -204,53 +257,61 @@ HIDDEN int jmap_email_contactfilter_from_filtercondition(struct jmap_parser *par
         construct_hash_table(&cfilter->contactgroups, 32, 0);
     }
 
-    if (!cfilter->carddavdb) {
-        /* Open CardDAV db first time we need it */
-        cfilter->carddavdb = carddav_open_userid(cfilter->accountid);
-        if (!cfilter->carddavdb) {
-            syslog(LOG_ERR, "jmap: carddav_open_userid(%s) failed",
-                   cfilter->accountid);
-            r = CYRUSDB_INTERNAL;
-            goto done;
-        }
+    /* Open CardDAV db for accountid */
+    struct carddav_db *carddavdb = carddav_open_userid(cfilter->accountid);
+    if (!carddavdb) {
+        syslog(LOG_ERR, "jmap: carddav_open_userid(%s) failed",
+               cfilter->accountid);
+        r = CYRUSDB_INTERNAL;
+        goto done;
     }
 
-    othermb = _get_sharedaddressbook(cfilter->accountid, cfilter->authstate, cfilter->namespace);
-    if (othermb) {
-        mbname_t *mbname = mbname_from_intname(othermb->name);
-        int r2 = carddav_set_otheruser(cfilter->carddavdb, mbname_userid(mbname));
-        if (r2) syslog(LOG_NOTICE, "DBNOTICE: failed to open otheruser %s contacts for %s",
-                 mbname_userid(mbname), cfilter->accountid);
-        mbname_free(&mbname);
-    }
+    ptrarray_t *abook_sets =
+        jmap_get_accessible_addressbooks(cfilter->accountid, cfilter->authstate,
+                                         cfilter->namespace, carddavdb);
 
     /* fetch members for each filter referenced */
 
     for (c = contactfilters; c->field; c++) {
         json_t *arg = json_object_get(filter, c->field);
         if (!arg) continue;
-        const char *groupid = c->isany ? (json_is_true(arg) ? "" : NULL) : json_string_value(arg);
+        const char *groupid = (c->type == CF_ANY) ?
+            (json_is_true(arg) ? "" : NULL) : json_string_value(arg);
         if (!groupid) continue;
         if (hash_lookup(groupid, &cfilter->contactgroups)) continue;
 
-        /* Lookup group member email addresses */
-        mbentry_t *mbentry = NULL;
-        strarray_t *members = NULL;
-        if (!cfilter->addrbook ||
-            !mboxlist_lookup(cfilter->addrbook, &mbentry, NULL)) {
-            members = carddav_getgroup(cfilter->carddavdb, mbentry, groupid, othermb);
-        }
-        mboxlist_entry_free(&mbentry);
-        if (!members) {
-            jmap_parser_invalid(parser, c->field);
+        /* Lookup card email addresses and any group members */
+        unsigned card_kind =
+            (c->type == CF_GROUP) ? CARDDAV_KIND_GROUP : CARDDAV_KIND_ANY;
+        strarray_t card_uids = STRARRAY_INITIALIZER;
+        strarray_t *emails = strarray_new();
+
+        strarray_append(&card_uids, groupid);
+        if (!*groupid) {
+            /* Lookup emails in ALL cards */
+            jmap_get_card_emails(&card_uids, card_kind, abook_sets,
+                                 emails, NULL);
         }
         else {
-            hash_insert(groupid, members, &cfilter->contactgroups);
+            /* Lookup emails in the given card and any group members */
+            strarray_t *member_uids = NULL;
+
+            jmap_get_card_emails(&card_uids, card_kind, abook_sets,
+                                 emails, &member_uids);
+            /* Lookup group member email addresses (ignore subgroup members) */
+            jmap_get_card_emails(member_uids, CARDDAV_KIND_ANY, abook_sets,
+                                 emails, NULL);
+            strarray_free(member_uids);
         }
+        strarray_fini(&card_uids);
+
+        hash_insert(groupid, emails, &cfilter->contactgroups);
     }
 
-done:
-    mboxlist_entry_free(&othermb);
+    /* cleanup */
+    jmap_free_abook_sets(abook_sets);
+    
+ done:
     return r;
 }
 
@@ -259,7 +320,7 @@ HIDDEN int jmap_email_hasattachment(const struct body *part,
 {
     if (!part) return 0;
 
-    if (!strcmp(part->type, "MULTIPART")) {
+    if (!strcmpsafe(part->type, "MULTIPART")) {
         int i;
         for (i = 0; i < part->numparts; i++) {
             if (jmap_email_hasattachment(part->subpart + i, imagesize_by_partid)) {
@@ -269,7 +330,7 @@ HIDDEN int jmap_email_hasattachment(const struct body *part,
         return 0;
     }
 
-    if (!strcmp(part->type, "IMAGE")) {
+    if (!strcmpsafe(part->type, "IMAGE")) {
         if (!strcmpsafe(part->disposition, "ATTACHMENT")) {
             return 1;
         }
@@ -306,35 +367,35 @@ HIDDEN int jmap_email_hasattachment(const struct body *part,
     if (filename) return 1;
 
     /* Signatures are no attachments */
-    if (!strcmp(part->type, "APPLICATION") &&
-            (!strcmp(part->subtype, "PGP-KEYS") ||
-             !strcmp(part->subtype, "PGP-SIGNATURE") ||
-             !strcmp(part->subtype, "PKCS7-SIGNATURE") ||
-             !strcmp(part->subtype, "X-PKCS7-SIGNATURE"))) {
+    if (!strcmpsafe(part->type, "APPLICATION") &&
+            (!strcmpsafe(part->subtype, "PGP-KEYS") ||
+             !strcmpsafe(part->subtype, "PGP-SIGNATURE") ||
+             !strcmpsafe(part->subtype, "PKCS7-SIGNATURE") ||
+             !strcmpsafe(part->subtype, "X-PKCS7-SIGNATURE"))) {
         return 0;
     }
 
     /* Unnamed octet streams are no attachments */
-    if (!strcmp(part->type, "APPLICATION") &&
-            !strcmp(part->subtype, "OCTET-STREAM")) {
+    if (!strcmpsafe(part->type, "APPLICATION") &&
+            !strcmpsafe(part->subtype, "OCTET-STREAM")) {
         return 0;
     }
 
     /* All of the following are attachments */
-    if ((!strcmp(part->type, "APPLICATION") &&
-                !strcmp(part->subtype, "PDF"))) {
+    if ((!strcmpsafe(part->type, "APPLICATION") &&
+                !strcmpsafe(part->subtype, "PDF"))) {
         return 1;
     }
-    else if (!strcmp(part->type, "MESSAGE")) {
+    else if (!strcmpsafe(part->type, "MESSAGE")) {
         // any message/* is an attachment
         return 1;
     }
-    else if ((!strcmp(part->type, "TEXT") &&
-                !strcmp(part->subtype, "RFC822"))) {
+    else if ((!strcmpsafe(part->type, "TEXT") &&
+                !strcmpsafe(part->subtype, "RFC822"))) {
         return 1;
     }
-    else if ((!strcmp(part->type, "TEXT") &&
-                !strcmp(part->subtype, "CALENDAR"))) {
+    else if ((!strcmpsafe(part->type, "TEXT") &&
+                !strcmpsafe(part->subtype, "CALENDAR"))) {
         return 1;
     }
 
@@ -368,17 +429,17 @@ static int _email_extract_bodies_internal(const struct body *parts,
 
         /* Determine part type */
         enum parttype parttype = OTHER;
-        if (!strcmp(part->type, "TEXT") && !strcmp(part->subtype, "PLAIN"))
+        if (!strcmpsafe(part->type, "TEXT") && !strcmpsafe(part->subtype, "PLAIN"))
             parttype = PLAIN;
-        else if (!strcmp(part->type, "TEXT") && !strcmp(part->subtype, "RICHTEXT"))
+        else if (!strcmpsafe(part->type, "TEXT") && !strcmpsafe(part->subtype, "RICHTEXT"))
             parttype = PLAIN; // RFC 1341
-        else if (!strcmp(part->type, "TEXT") && !strcmp(part->subtype, "ENRICHED"))
+        else if (!strcmpsafe(part->type, "TEXT") && !strcmpsafe(part->subtype, "ENRICHED"))
             parttype = PLAIN; // RFC 1563
-        else if (!strcmp(part->type, "TEXT") && !strcmp(part->subtype, "HTML"))
+        else if (!strcmpsafe(part->type, "TEXT") && !strcmpsafe(part->subtype, "HTML"))
             parttype = HTML;
-        else if (!strcmp(part->type, "MULTIPART"))
+        else if (!strcmpsafe(part->type, "MULTIPART"))
             parttype = MULTIPART;
-        else if (!strcmp(part->type, "IMAGE") || !strcmp(part->type, "AUDIO") || !strcmp(part->type, "VIDEO"))
+        else if (!strcmpsafe(part->type, "IMAGE") || !strcmpsafe(part->type, "AUDIO") || !strcmpsafe(part->type, "VIDEO"))
             parttype = INLINE_MEDIA;
 
         /* Determine disposition name, if any. */
@@ -412,7 +473,7 @@ static int _email_extract_bodies_internal(const struct body *parts,
         if (parttype == MULTIPART) {
             _email_extract_bodies_internal(part->subpart, part->numparts,
                     part->subtype,
-                    in_alternative || !strcmp(part->subtype, "ALTERNATIVE"),
+                    in_alternative || !strcmpsafe(part->subtype, "ALTERNATIVE"),
                     textlist, htmllist, attslist);
         }
         else if (is_inline) {
@@ -601,17 +662,17 @@ static int _matchmime_tr_index_message_format(int format __attribute__((unused))
     return MESSAGE_SNIPPET;
 }
 
-static int _email_matchmime_evaluate_xcb(void *data __attribute__((unused)),
+static int _matchmime_eval_xcb(void *data __attribute__((unused)),
                                          size_t n, void *rock)
 {
-    int *matches = rock;
+    bool *matches = rock;
     /* There's just a single message in the in-memory database,
      * so no need to check the message guid in the search result. */
     *matches = n > 0;
     return 0;
 }
 
-static xapian_query_t *_email_matchmime_contactgroup(const char *groupid,
+static xapian_query_t *_matchmime_query_new_contactgroup(const char *groupid,
                                                      int part,
                                                      xapian_db_t *db,
                                                      struct email_contactfilter *cfilter)
@@ -717,11 +778,551 @@ static xapian_query_t *build_type_query(xapian_db_t *db, const char *type)
     return xq;
 }
 
-enum convmatch_op {
-    MATCHMIME_CONVKEYWORDS_ALL,
-    MATCHMIME_CONVKEYWORDS_SOME,
-    MATCHMIME_CONVKEYWORDS_NONE
+enum matchmime_op {
+    MATCHMIME_OP_AND = 1,
+    MATCHMIME_OP_OR,
+    MATCHMIME_OP_NOT,
+    MATCHMIME_OP_MATCHALL,
+    MATCHMIME_OP_MATCHNONE,
+
+    MATCHMIME_OP_XAPIAN = 32,
+    MATCHMIME_OP_MINSIZE,
+    MATCHMIME_OP_MAXSIZE,
+    MATCHMIME_OP_HASATTACH,
+    MATCHMIME_OP_HEADER,
+    MATCHMIME_OP_BEFORE,
+    MATCHMIME_OP_AFTER,
+    MATCHMIME_OP_CONVKEYWORD_ALL,
+    MATCHMIME_OP_CONVKEYWORD_SOME,
+    MATCHMIME_OP_CONVKEYWORD_NONE,
 };
+
+typedef struct matchmime_query {
+    enum matchmime_op op;
+    union {
+        ptrarray_t elems;
+        xapian_query_t *xq;
+        uint32_t u32;
+        struct jmap_headermatch *hm;
+        time_t time;
+        char *string;
+        bool boolean;
+    } v;
+} matchmime_query_t;
+
+static void _matchmime_query_free(matchmime_query_t **qptr)
+{
+    if (!qptr || !*qptr) return;
+
+    matchmime_query_t *q = *qptr;
+    switch (q->op) {
+    case MATCHMIME_OP_AND:
+    case MATCHMIME_OP_OR:
+    case MATCHMIME_OP_NOT: {
+        for (int i = 0; i < ptrarray_size(&q->v.elems); i++) {
+            matchmime_query_t *subq = ptrarray_nth(&q->v.elems, i);
+            _matchmime_query_free(&subq);
+        }
+        ptrarray_fini(&q->v.elems);
+        break;
+    }
+    case MATCHMIME_OP_XAPIAN:
+        xapian_query_free(q->v.xq);
+        break;
+    case MATCHMIME_OP_HEADER:
+        jmap_headermatch_free(&q->v.hm);
+        break;
+    case MATCHMIME_OP_CONVKEYWORD_ALL:
+    case MATCHMIME_OP_CONVKEYWORD_SOME:
+    case MATCHMIME_OP_CONVKEYWORD_NONE:
+        free(q->v.string);
+        break;
+    default:
+        ; // do nothing
+    }
+
+    free(q);
+    *qptr = NULL;
+}
+
+__attribute__((unused))
+static void _matchmime_query_serialize(matchmime_query_t *q, struct buf *buf)
+{
+    switch (q->op) {
+    case MATCHMIME_OP_AND:
+    case MATCHMIME_OP_OR:
+    case MATCHMIME_OP_NOT: {
+        if (q->op == MATCHMIME_OP_AND)
+            buf_appendcstr(buf, "AND");
+        else if (q->op == MATCHMIME_OP_OR)
+            buf_appendcstr(buf, "OR");
+        else if (q->op == MATCHMIME_OP_NOT)
+            buf_appendcstr(buf, "NOT");
+        buf_putc(buf, '(');
+        for (int i = 0; i < ptrarray_size(&q->v.elems); i++) {
+            if (i) buf_putc(buf, ',');
+            matchmime_query_t *subq = ptrarray_nth(&q->v.elems, i);
+            _matchmime_query_serialize(subq, buf);
+        }
+        buf_putc(buf, ')');
+        break;
+    }
+    case MATCHMIME_OP_MATCHALL:
+        buf_appendcstr(buf, "MATCHALL");
+        break;
+    case MATCHMIME_OP_MATCHNONE:
+        buf_appendcstr(buf, "MATCHNONE");
+        break;
+    case MATCHMIME_OP_XAPIAN:
+        buf_appendcstr(buf, "XAPIAN");
+        buf_putc(buf, '{');
+        xapian_query_serialize(q->v.xq, buf);
+        buf_putc(buf, '}');
+        break;
+    case MATCHMIME_OP_MINSIZE:
+    case MATCHMIME_OP_MAXSIZE: {
+        if (q->op == MATCHMIME_OP_MINSIZE)
+            buf_appendcstr(buf, "MINSIZE");
+        else if (q->op == MATCHMIME_OP_MAXSIZE)
+            buf_appendcstr(buf, "MAXSIZE");
+        buf_printf(buf, "{%u}", q->v.u32);
+        break;
+    }
+    case MATCHMIME_OP_HASATTACH: {
+        buf_appendcstr(buf, "HASATTACH");
+        buf_printf(buf, "{%s}", q->v.boolean ? "true" : "false");
+        break;
+    }
+    case MATCHMIME_OP_HEADER:
+        buf_appendcstr(buf, "HEADER");
+        buf_putc(buf, '{');
+        jmap_headermatch_serialize(q->v.hm, buf);
+        buf_putc(buf, '}');
+        break;
+    case MATCHMIME_OP_BEFORE:
+        buf_appendcstr(buf, "BEFORE");
+        buf_printf(buf, "{%ld}", q->v.time);
+        break;
+    case MATCHMIME_OP_AFTER:
+        buf_appendcstr(buf, "AFTER");
+        buf_printf(buf, "{%ld}", q->v.time);
+        break;
+    case MATCHMIME_OP_CONVKEYWORD_ALL:
+        buf_appendcstr(buf, "CONVKEYWORD_ALL");
+        buf_printf(buf, "{%s}", q->v.string);
+        break;
+    case MATCHMIME_OP_CONVKEYWORD_SOME:
+        buf_appendcstr(buf, "CONVKEYWORD_SOME");
+        buf_printf(buf, "{%s}", q->v.string);
+        break;
+    case MATCHMIME_OP_CONVKEYWORD_NONE:
+        buf_appendcstr(buf, "CONVKEYWORD_NONE");
+        buf_printf(buf, "{%s}", q->v.string);
+        break;
+    }
+}
+
+static matchmime_query_t *_matchmime_query_new_xq(xapian_query_t *xq)
+{
+    matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+    q->op = MATCHMIME_OP_XAPIAN;
+    q->v.xq = xq;
+    return q;
+}
+
+static matchmime_query_t *matchmime_query_new_u32(enum matchmime_op op, uint32_t u32)
+{
+    matchmime_query_t *expr = xzmalloc(sizeof(matchmime_query_t));
+    expr->op = op;
+    expr->v.u32 = u32;
+    return expr;
+}
+
+static matchmime_query_t *matchmime_query_new_time(enum matchmime_op op, time_t t)
+{
+    matchmime_query_t *expr = xzmalloc(sizeof(matchmime_query_t));
+    expr->op = op;
+    expr->v.time = t;
+    return expr;
+}
+
+static matchmime_query_t *matchmime_query_new_string(enum matchmime_op op, const char *s)
+{
+    matchmime_query_t *expr = xzmalloc(sizeof(matchmime_query_t));
+    expr->op = op;
+    expr->v.string = xstrdup(s);
+    return expr;
+}
+
+static matchmime_query_t *_matchmime_query_new_internal(json_t *filter,
+                                                        xapian_db_t *xdb,
+                                                        struct email_contactfilter *cfilter)
+{
+    if (!json_object_size(filter)) {
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = MATCHMIME_OP_MATCHALL;
+        return q;
+    }
+
+    json_t *conditions = json_object_get(filter, "conditions");
+    if (json_is_array(conditions)) {
+        // Build query for FilterOperator.
+        enum matchmime_op op;
+        const char *strop = json_string_value(json_object_get(filter, "operator"));
+        if (!strcasecmpsafe(strop, "AND"))
+            op = MATCHMIME_OP_AND;
+        else if (!strcasecmpsafe(strop, "OR"))
+            op = MATCHMIME_OP_OR;
+        else if (!strcasecmpsafe(strop, "NOT"))
+            op = MATCHMIME_OP_NOT;
+        else
+            return NULL;
+
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = op;
+
+        json_t *condition;
+        size_t i;
+        ptrarray_t xap_queries = PTRARRAY_INITIALIZER;
+        json_array_foreach(conditions, i, condition) {
+            matchmime_query_t *subq =
+                _matchmime_query_new_internal(condition, xdb, cfilter);
+            if (subq && subq->op == MATCHMIME_OP_XAPIAN)
+                ptrarray_append(&xap_queries, subq);
+            else if (subq)
+                ptrarray_append(&q->v.elems, subq);
+        }
+
+        if (q->op == MATCHMIME_OP_AND || q->op == MATCHMIME_OP_OR) {
+            bool is_or = q->op == MATCHMIME_OP_OR;
+
+            if (ptrarray_size(&xap_queries)) {
+                // Combine Xapian queries into a single Xapian query.
+                xapian_query_t **xqs = xmalloc(sizeof(xapian_query_t *)
+                                               * ptrarray_size(&xap_queries));
+                for (int i = 0; i < ptrarray_size(&xap_queries); i++) {
+                    matchmime_query_t *xap_query =
+                        ptrarray_nth(&xap_queries, i);
+                    xqs[i] = xap_query->v.xq; // move
+                    free(xap_query);
+                }
+
+                xapian_query_t *xq = xapian_query_new_compound(
+                    xdb, is_or, xqs, ptrarray_size(&xap_queries));
+
+                if (ptrarray_size(&q->v.elems)) {
+                    // AND/OR node consists of both Xapian queries and
+                    // non-Xapian queries. Add the compound Xapian query.
+                    matchmime_query_t *xap_query = _matchmime_query_new_xq(xq);
+                    ptrarray_unshift(&q->v.elems, xap_query);
+                }
+                else {
+                    // Replace AND/OR node with compound Xapian query.
+                    q->op = MATCHMIME_OP_XAPIAN;
+                    q->v.xq = xq;
+                }
+
+                free(xqs);
+            }
+            else if (!ptrarray_size(&q->v.elems)) {
+                // Empty AND/OR, this must be due the subterm
+                // of this query isn't supported by Xapian.
+                q->op = MATCHMIME_OP_XAPIAN;
+                q->v.xq = xapian_query_new_compound(
+                    xdb, q->op == MATCHMIME_OP_OR, NULL, 0);
+            }
+        }
+        else {
+            for (int i = 0; i < ptrarray_size(&xap_queries); i++) {
+                matchmime_query_t *xap_query = ptrarray_nth(&xap_queries, i);
+                ptrarray_append(&q->v.elems, xap_query);
+            }
+        }
+
+        ptrarray_fini(&xap_queries);
+        return q;
+    }
+
+    // Build query for FilterCondition.
+
+    ptrarray_t queries = PTRARRAY_INITIALIZER;
+    json_t *jval;
+
+    /* Xapian-backed criteria */
+    const char *match;
+    if ((match = json_string_value(json_object_get(filter, "text")))) {
+        ptrarray_t childqueries = PTRARRAY_INITIALIZER;
+        int i;
+        for (i = 0 ; i < SEARCH_NUM_PARTS ; i++) {
+            switch (i) {
+                case SEARCH_PART_ANY:
+                case SEARCH_PART_LISTID:
+                case SEARCH_PART_TYPE:
+                case SEARCH_PART_LANGUAGE:
+                case SEARCH_PART_PRIORITY:
+                    continue;
+            }
+            void *xq = xapian_query_new_match(xdb, i, match);
+            if (xq) ptrarray_push(&childqueries, xq);
+        }
+        xapian_query_t *xq = xapian_query_new_compound(xdb, /*is_or*/1,
+                                       (xapian_query_t **)childqueries.data,
+                                       childqueries.count);
+
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+        ptrarray_fini(&childqueries);
+    }
+
+    if ((match = json_string_value(json_object_get(filter, "from")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_FROM, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "to")))) {
+        xapian_query_t *xq = xapian_query_new_match(xdb, SEARCH_PART_TO, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "cc")))) {
+        xapian_query_t *xq = xapian_query_new_match(xdb, SEARCH_PART_CC, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "bcc")))) {
+        xapian_query_t *xq = xapian_query_new_match(xdb, SEARCH_PART_BCC, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "deliveredTo")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_DELIVEREDTO, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "subject")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_SUBJECT, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "body")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_BODY, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match =
+             json_string_value(json_object_get(filter, "fromContactCardUid"))) ||
+        (match =
+             json_string_value(json_object_get(filter, "fromContactGroupId")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            match, SEARCH_PART_FROM, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match =
+             json_string_value(json_object_get(filter, "toContactCardUid"))) ||
+        (match =
+             json_string_value(json_object_get(filter, "toContactGroupId")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            match, SEARCH_PART_TO, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match =
+             json_string_value(json_object_get(filter, "ccContactCardUid"))) ||
+        (match =
+             json_string_value(json_object_get(filter, "ccContactGroupId")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            match, SEARCH_PART_CC, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match =
+             json_string_value(json_object_get(filter, "bccContactCardUid"))) ||
+        (match =
+             json_string_value(json_object_get(filter, "bccContactGroupId")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            match, SEARCH_PART_BCC, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((json_is_true(json_object_get(filter, "fromAnyContact")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            "", SEARCH_PART_FROM, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((json_is_true(json_object_get(filter, "toAnyContact")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            "", SEARCH_PART_TO, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((json_is_true(json_object_get(filter, "ccAnyContact")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            "", SEARCH_PART_CC, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((json_is_true(json_object_get(filter, "bccAnyContact")))) {
+        xapian_query_t *xq = _matchmime_query_new_contactgroup(
+            "", SEARCH_PART_BCC, xdb, cfilter);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "attachmentName"))))
+    {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_ATTACHMENTNAME, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "attachmentType"))))
+    {
+        xapian_query_t *xq = build_type_query(xdb, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "attachmentBody"))))
+    {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_ATTACHMENTBODY, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "inReplyTo")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_INREPLYTO, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "listId")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_LISTID, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "messageId")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_MESSAGEID, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if ((match = json_string_value(json_object_get(filter, "references")))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_REFERENCES, match);
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    if (JNOTNULL(jval = json_object_get(filter, "isHighPriority"))) {
+        xapian_query_t *xq =
+            xapian_query_new_match(xdb, SEARCH_PART_PRIORITY, "1");
+        if (xq && !json_boolean_value(jval)) {
+            xq = xapian_query_new_not(xdb, xq);
+        }
+        if (xq) ptrarray_append(&queries, _matchmime_query_new_xq(xq));
+    }
+    // ignore attachmentBody
+
+    /* size */
+    if (JNOTNULL(jval = json_object_get(filter, "minSize"))) {
+        json_int_t val = json_integer_value(jval);
+        val = (val > UINT32_MAX) ? UINT32_MAX : val < 0 ? 0 : val;
+        ptrarray_append(&queries, matchmime_query_new_u32(MATCHMIME_OP_MINSIZE, val));
+    }
+    if (JNOTNULL(jval = json_object_get(filter, "maxSize"))) {
+        json_int_t val = json_integer_value(jval);
+        val = (val > UINT32_MAX) ? UINT32_MAX : val < 0 ? 0 : val;
+        ptrarray_append(&queries, matchmime_query_new_u32(MATCHMIME_OP_MAXSIZE, val));
+    }
+
+    /* hasAttachment */
+    if (JNOTNULL(jval = json_object_get(filter, "hasAttachment"))) {
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = MATCHMIME_OP_HASATTACH;
+        q->v.boolean = json_boolean_value(jval);
+        ptrarray_append(&queries, q);
+    }
+
+    /* header */
+    if (JNOTNULL((jval = json_object_get(filter, "header")))) {
+        const char *hdr = NULL, *val = "", *cmp = NULL;
+
+        switch (json_array_size(jval)) {
+            case 3:
+                cmp = json_string_value(json_array_get(jval, 2));
+                GCC_FALLTHROUGH
+            case 2:
+                val = json_string_value(json_array_get(jval, 1));
+                GCC_FALLTHROUGH
+            case 1:
+                hdr = json_string_value(json_array_get(jval, 0));
+                break;
+            default:
+                return 0;
+        }
+
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = MATCHMIME_OP_HEADER;
+        q->v.hm = jmap_headermatch_new(hdr, val, cmp);
+        ptrarray_append(&queries, q);
+    }
+
+    /* before */
+    if (JNOTNULL(jval = json_object_get(filter, "before"))) {
+        time_t t;
+        time_from_iso8601(json_string_value(jval), &t);
+        ptrarray_append(&queries, matchmime_query_new_time(MATCHMIME_OP_BEFORE, t));
+    }
+    /* after */
+    if (JNOTNULL(jval = json_object_get(filter, "after"))) {
+        time_t t;
+        time_from_iso8601(json_string_value(jval), &t);
+        ptrarray_append(&queries, matchmime_query_new_time(MATCHMIME_OP_AFTER, t));
+    }
+
+    /* allInThreadHaveKeyword */
+    if (JNOTNULL(jval = json_object_get(filter, "allInThreadHaveKeyword"))) {
+        const char *s = json_string_value(jval);
+        matchmime_query_t *q =
+            matchmime_query_new_string(MATCHMIME_OP_CONVKEYWORD_ALL, s);
+        ptrarray_append(&queries, q);
+    }
+
+    /* someInThreadHaveKeyword */
+    if (JNOTNULL(jval = json_object_get(filter, "someInThreadHaveKeyword"))) {
+        const char *s = json_string_value(jval);
+        matchmime_query_t *q =
+            matchmime_query_new_string(MATCHMIME_OP_CONVKEYWORD_SOME, s);
+        ptrarray_append(&queries, q);
+    }
+
+    /* noneInThreadHaveKeyword */
+    if (JNOTNULL(jval = json_object_get(filter, "noneInThreadHaveKeyword"))) {
+        const char *s = json_string_value(jval);
+        matchmime_query_t *q =
+            matchmime_query_new_string(MATCHMIME_OP_CONVKEYWORD_NONE, s);
+        ptrarray_append(&queries, q);
+    }
+
+    if (ptrarray_size(&queries) == 1) {
+        matchmime_query_t *q = ptrarray_pop(&queries);
+        ptrarray_fini(&queries);
+        return q;
+    }
+    else if (ptrarray_size(&queries)) {
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = MATCHMIME_OP_AND;
+        q->v.elems = queries; // move
+        return q;
+    }
+    else {
+        // The filter condition contains at least one query criteria
+        // but we could not convert any of them. This happens for
+        // text-search criteria, for which Xapian did not generate
+        // any query term for. For compatibility with Email/query,
+        // we neither return MatchAll or MatchNone, but rather let
+        // the parent expression ignore this unsupported search text.
+        return NULL;
+    }
+}
+
+static matchmime_query_t *_matchmime_buildquery(json_t *filter,
+                                                xapian_db_t *xdb,
+                                                struct email_contactfilter *cfilter)
+{
+    matchmime_query_t *q = _matchmime_query_new_internal(filter, xdb, cfilter);
+    if (!q) {
+        // This filter only contains criteria for which the Xapian
+        // backend does not include the required search terms. For
+        // compatibility with Email/query, this filter converts to
+        // MatchNone.
+        matchmime_query_t *q = xzmalloc(sizeof(matchmime_query_t));
+        q->op = MATCHMIME_OP_MATCHNONE;
+        return q;
+    }
+    return q;
+}
 
 struct convmatch {
     struct conversations_state *cstate;
@@ -748,12 +1349,15 @@ static void convmatch_reset(struct convmatch *convmatch,
     dynarray_init(&convmatch->convs, sizeof(conversation_t));
 }
 
-static int _email_matchmime_convkeyword(struct convmatch *convmatch,
-                                        message_t *m,
-                                        const char *keyword,
-                                        enum convmatch_op op)
+static bool _matchmime_eval_convkeyword(matchmime_query_t *q,
+                                           struct convmatch *convmatch,
+                                           message_t *m)
 {
-    const char *flag = jmap_keyword_to_imap(keyword);
+    assert(q->op == MATCHMIME_OP_CONVKEYWORD_ALL
+           || q->op == MATCHMIME_OP_CONVKEYWORD_SOME
+           || q->op == MATCHMIME_OP_CONVKEYWORD_NONE);
+
+    const char *flag = jmap_keyword_to_imap(q->v.string);
     int num;
     if (!strcasecmp(flag, "\\Seen")) {
         num = 0;
@@ -768,7 +1372,7 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
             num++;
     }
     if (num < 0)
-        return 0;
+        return false;
 
     if (convmatch->in_state == 0) {
         /* First conv keyword to match, initialize matcher */
@@ -777,7 +1381,7 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
             xsyslog(LOG_ERR, "message_extract_cids", "err=<%s>",
                     error_message(r));
             convmatch->in_state = -1;
-            return 0;
+            return false;
         }
         uint64_t i;
         for (i = 0; i < arrayu64_size(&convmatch->cids); i++) {
@@ -785,9 +1389,12 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
             conversation_t conv = CONVERSATION_INIT;
             r = conversation_load_advanced(convmatch->cstate, cid, &conv, 0);
             if (r) {
+                char threadid[JMAP_THREADID_SIZE];
+
+                jmap_set_threadid(convmatch->cstate, cid, threadid);
                 xsyslog(LOG_ERR, "conversation_load_advanced",
                         "cid=<%s> err=<%s>",
-                        conversation_id_encode(cid), error_message(r));
+                        threadid, error_message(r));
                 convmatch->in_state = -1;
                 return 0;
             }
@@ -797,10 +1404,10 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
     }
 
     if (!arrayu64_size(&convmatch->cids)) {
-        return op == MATCHMIME_CONVKEYWORDS_NONE ? 1 : 0;
+        return q->op == MATCHMIME_OP_CONVKEYWORD_NONE;
     }
 
-    int matches = op == MATCHMIME_CONVKEYWORDS_NONE ? 1 : 0;
+    bool matches = q->op == MATCHMIME_OP_CONVKEYWORD_NONE ? 1 : 0;;
     int i;
     for (i = 0; i < dynarray_size(&convmatch->convs); i++) {
         conversation_t *conv = dynarray_nth(&convmatch->convs, i);
@@ -815,21 +1422,21 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
         else if (num > 0 && conv->counts[num-1])
             flagmatch = conv->exists > conv->counts[num-1] ? 1 : 2;
 
-        if (flagmatch && op == MATCHMIME_CONVKEYWORDS_SOME) {
-            matches = 1;
+        if (flagmatch && q->op == MATCHMIME_OP_CONVKEYWORD_SOME) {
+            matches = true;
             break;
         }
-        if (flagmatch && op == MATCHMIME_CONVKEYWORDS_NONE) {
+        if (flagmatch && q->op == MATCHMIME_OP_CONVKEYWORD_NONE) {
             matches = 0;
             break;
         }
-        if (op == MATCHMIME_CONVKEYWORDS_ALL) {
+        if (q->op == MATCHMIME_OP_CONVKEYWORD_ALL) {
             if (flagmatch < 2) {
-                matches = 0;
+                matches = false;
                 break;
             }
             else {
-                matches = 1; // may get reset in next iteration
+                matches = true; // may get reset in next iteration
             }
         }
     }
@@ -838,311 +1445,79 @@ static int _email_matchmime_convkeyword(struct convmatch *convmatch,
 }
 
 
-
-static int _email_matchmime_evaluate(json_t *filter,
-                                     message_t *m,
-                                     xapian_db_t *db,
-                                     struct convmatch *convmatch,
-                                     struct email_contactfilter *cfilter,
-                                     time_t internaldate)
+static bool _matchmime_eval(matchmime_query_t *q,
+                            message_t *m,
+                            xapian_db_t *db,
+                            struct convmatch *convmatch,
+                            struct email_contactfilter *cfilter,
+                            time_t internaldate)
 {
-    if (!json_object_size(filter)) {
-        /* Match all */
-        return 1;
-    }
+    if (!q) return false;
 
-    json_t *conditions = json_object_get(filter, "conditions");
-    if (json_is_array(conditions)) {
+    bool matches = false;
 
-        /* Evaluate FilterOperator */
-
-        const char *strop = json_string_value(json_object_get(filter, "operator"));
-        enum search_op op = SEOP_UNKNOWN;
-        int matches;
-
-        if (!strcasecmpsafe(strop, "AND")) {
-            if (!json_array_size(conditions))
-                return 0;
-
-            op = SEOP_AND;
-            matches = 1;
+    switch (q->op) {
+    case MATCHMIME_OP_AND:
+    case MATCHMIME_OP_OR:
+    case MATCHMIME_OP_NOT: {
+        matches = q->op != MATCHMIME_OP_OR;
+        for (int i = 0; i < ptrarray_size(&q->v.elems); i++) {
+            matchmime_query_t *subq = ptrarray_nth(&q->v.elems, i);
+            int cond_matches = _matchmime_eval(
+                subq, m, db, convmatch, cfilter, internaldate);
+            if (q->op == MATCHMIME_OP_AND && !cond_matches)
+                return false;
+            else if (q->op == MATCHMIME_OP_OR && cond_matches)
+                return true;
+            else if (q->op == MATCHMIME_OP_NOT && cond_matches)
+                return false;
         }
-        else if (!strcasecmpsafe(strop, "OR")) {
-            if (!json_array_size(conditions))
-                return 0;
-
-            op = SEOP_OR;
-            matches = 0;
-        }
-        else if (!strcasecmpsafe(strop, "NOT")) {
-            if (!json_array_size(conditions))
-                return 1;
-
-            op = SEOP_NOT;
-            matches = 1;
-        }
-        else return 0;
-
-        json_t *condition;
-        size_t i;
-        json_array_foreach(conditions, i, condition) {
-            int cond_matches = _email_matchmime_evaluate(condition, m, db,
-                    convmatch, cfilter, internaldate);
-            if (op == SEOP_AND && !cond_matches) {
-                return 0;
-            }
-            if (op == SEOP_OR && cond_matches) {
-                return 1;
-            }
-            if (op == SEOP_NOT && cond_matches) {
-                return 0;
-            }
-        }
-
-        return matches;
+        break;
     }
-
-    /* Evaluate FilterCondition */
-
-    int need_matches = json_object_size(filter);
-    int have_matches = 0;
-    json_t *jval;
-
-#define MATCHMIME_XQ_OR_MATCHALL(_xq) \
-    ((_xq) ? _xq : xapian_query_new_matchall(db))
-
-    /* Xapian-backed criteria */
-    ptrarray_t xqs = PTRARRAY_INITIALIZER;
-    const char *match;
-    if ((match = json_string_value(json_object_get(filter, "text")))) {
-        ptrarray_t childqueries = PTRARRAY_INITIALIZER;
-        int i;
-        for (i = 0 ; i < SEARCH_NUM_PARTS ; i++) {
-            switch (i) {
-                case SEARCH_PART_ANY:
-                case SEARCH_PART_LISTID:
-                case SEARCH_PART_TYPE:
-                case SEARCH_PART_LANGUAGE:
-                case SEARCH_PART_PRIORITY:
-                    continue;
-            }
-            void *xq = xapian_query_new_match(db, i, match);
-            if (xq) ptrarray_push(&childqueries, xq);
-        }
-        xapian_query_t *xq = xapian_query_new_compound(db, /*is_or*/1,
-                                       (xapian_query_t **)childqueries.data,
-                                       childqueries.count);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-        ptrarray_fini(&childqueries);
-    }
-    if ((match = json_string_value(json_object_get(filter, "from")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_FROM, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "to")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_TO, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "cc")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_CC, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "bcc")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_BCC, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "deliveredTo")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_DELIVEREDTO, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "subject")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_SUBJECT, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "body")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_BODY, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "fromContactGroupId")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup(match, SEARCH_PART_FROM, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "toContactGroupId")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup(match, SEARCH_PART_TO, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "ccContactGroupId")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup(match, SEARCH_PART_CC, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "bccContactGroupId")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup(match, SEARCH_PART_BCC, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((json_is_true(json_object_get(filter, "fromAnyContact")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup("", SEARCH_PART_FROM, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((json_is_true(json_object_get(filter, "toAnyContact")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup("", SEARCH_PART_TO, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((json_is_true(json_object_get(filter, "ccAnyContact")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup("", SEARCH_PART_CC, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((json_is_true(json_object_get(filter, "bccAnyContact")))) {
-        xapian_query_t *xq = _email_matchmime_contactgroup("", SEARCH_PART_BCC, db, cfilter);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "attachmentName")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_ATTACHMENTNAME, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "attachmentType")))) {
-        xapian_query_t *xq = build_type_query(db, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "attachmentBody")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_ATTACHMENTBODY, match);
-        ptrarray_append(&xqs, MATCHMIME_XQ_OR_MATCHALL(xq));
-    }
-    if ((match = json_string_value(json_object_get(filter, "inReplyTo")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_INREPLYTO, match);
-        if (xq) ptrarray_append(&xqs, xq);
-    }
-    if ((match = json_string_value(json_object_get(filter, "listId")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_LISTID, match);
-        if (xq) ptrarray_append(&xqs, xq);
-    }
-    if ((match = json_string_value(json_object_get(filter, "messageId")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_MESSAGEID, match);
-        if (xq) ptrarray_append(&xqs, xq);
-    }
-    if ((match = json_string_value(json_object_get(filter, "references")))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_REFERENCES, match);
-        if (xq) ptrarray_append(&xqs, xq);
-    }
-    if (JNOTNULL(jval = json_object_get(filter, "isHighPriority"))) {
-        xapian_query_t *xq = xapian_query_new_match(db, SEARCH_PART_PRIORITY, "1");
-        if (xq && !json_boolean_value(jval)) {
-            xq = xapian_query_new_not(db, xq);
-        }
-        if (xq) ptrarray_append(&xqs, xq);
-    }
-    // ignore attachmentBody
-
-#undef MATCHMIME_XQ_OR_MATCHALL
-
-    if (xqs.count) {
-        int matches = 0;
-        xapian_query_t *xq = xapian_query_new_compound(db, /*is_or*/0,
-                (xapian_query_t **) xqs.data, xqs.count);
-        xapian_query_run(db, xq, _email_matchmime_evaluate_xcb, &matches);
-        xapian_query_free(xq);
-        size_t xqs_count = xqs.count;
-        ptrarray_fini(&xqs);
-        if (matches) {
-            have_matches += xqs_count; // assumes one xapian query per criteria
-        }
-        else return 0;
-    }
-
-    /* size */
-    if (json_object_get(filter, "minSize") || json_object_get(filter, "maxSize")) {
+    case MATCHMIME_OP_MATCHALL:
+        matches = true;
+        break;
+    case MATCHMIME_OP_MATCHNONE:
+        matches = false;
+        break;
+    case MATCHMIME_OP_XAPIAN:
+        xapian_query_run(db, q->v.xq, _matchmime_eval_xcb, &matches);
+        break;
+    case MATCHMIME_OP_MINSIZE:
+    case MATCHMIME_OP_MAXSIZE: {
         uint32_t size;
         if (message_get_size(m, &size) == 0) {
-            json_int_t jint;
-            if ((jint = json_integer_value(json_object_get(filter, "minSize"))) > 0) {
-                if (size >= jint) {
-                    have_matches++;
-                }
-                else return 0;
-            }
-            if ((jint = json_integer_value(json_object_get(filter, "maxSize"))) > 0) {
-                if (size < jint) {
-                    have_matches++;
-                }
-                else return 0;
-            }
+            if (q->op == MATCHMIME_OP_MINSIZE && size >= q->v.u32)
+                matches = true;
+            else if (q->op == MATCHMIME_OP_MAXSIZE && size < q->v.u32)
+                matches = true;
         }
+        break;
     }
-
-    /* hasAttachment */
-    if (JNOTNULL(jval = json_object_get(filter, "hasAttachment"))) {
+    case MATCHMIME_OP_HASATTACH: {
         const struct body *body;
         if (message_get_cachebody(m, &body) == 0) {
-            int has_att = jmap_email_hasattachment(body, NULL);
-            if (json_boolean(has_att) == jval) {
-                have_matches++;
-            }
-            else return 0;
+            bool has_att = jmap_email_hasattachment(body, NULL);
+            matches = has_att == q->v.boolean;
         }
+        break;
+    }
+    case MATCHMIME_OP_HEADER:
+        matches = jmap_headermatch_match(q->v.hm, m);
+        break;
+    case MATCHMIME_OP_BEFORE:
+        matches = internaldate < q->v.time;
+        break;
+    case MATCHMIME_OP_AFTER:
+        matches = internaldate >= q->v.time;
+        break;
+    case MATCHMIME_OP_CONVKEYWORD_ALL:
+    case MATCHMIME_OP_CONVKEYWORD_SOME:
+    case MATCHMIME_OP_CONVKEYWORD_NONE:
+        matches = _matchmime_eval_convkeyword(q, convmatch, m);
     }
 
-    /* header */
-    if (JNOTNULL((jval = json_object_get(filter, "header")))) {
-        const char *hdr = NULL, *val = "", *cmp = NULL;
-
-        switch (json_array_size(jval)) {
-            case 3:
-                cmp = json_string_value(json_array_get(jval, 2));
-                GCC_FALLTHROUGH
-            case 2:
-                val = json_string_value(json_array_get(jval, 1));
-                GCC_FALLTHROUGH
-            case 1:
-                hdr = json_string_value(json_array_get(jval, 0));
-                break;
-            default:
-                return 0;
-        }
-
-        struct jmap_headermatch *hm = jmap_headermatch_new(hdr, val, cmp);
-        int matches = jmap_headermatch_match(hm, m);
-        jmap_headermatch_free(&hm);
-
-        if (matches) {
-            have_matches++;
-        } else return 0;
-    }
-
-    /* before */
-    if (JNOTNULL(jval = json_object_get(filter, "before"))) {
-        time_t t;
-        time_from_iso8601(json_string_value(jval), &t);
-        if (internaldate < t) {
-            have_matches++;
-        } else return 0;
-    }
-    /* after */
-    if (JNOTNULL(jval = json_object_get(filter, "after"))) {
-        time_t t;
-        time_from_iso8601(json_string_value(jval), &t);
-        if (internaldate >= t) {
-            have_matches++;
-        } else return 0;
-    }
-
-    /* allInThreadHaveKeyword */
-    if (JNOTNULL(jval = json_object_get(filter, "allInThreadHaveKeyword"))) {
-        have_matches += _email_matchmime_convkeyword(convmatch, m,
-                json_string_value(jval), MATCHMIME_CONVKEYWORDS_ALL);
-    }
-
-    /* someInThreadHaveKeyword */
-    if (JNOTNULL(jval = json_object_get(filter, "someInThreadHaveKeyword"))) {
-        have_matches += _email_matchmime_convkeyword(convmatch, m,
-                json_string_value(jval), MATCHMIME_CONVKEYWORDS_SOME);
-    }
-
-    /* noneInThreadHaveKeyword */
-    if (JNOTNULL(jval = json_object_get(filter, "noneInThreadHaveKeyword"))) {
-        have_matches += _email_matchmime_convkeyword(convmatch, m,
-                json_string_value(jval), MATCHMIME_CONVKEYWORDS_NONE);
-    }
-
-    return need_matches == have_matches;
+    return matches;
 }
 
 HIDDEN void jmap_filter_parser_invalid(const char *field, void *rock)
@@ -1375,10 +1750,13 @@ HIDDEN int jmap_email_matchmime(matchmime_t *matchmime,
     /* Parse filter */
     strarray_append(&capabilities, JMAP_URN_MAIL);
     strarray_append(&capabilities, JMAP_MAIL_EXTENSION);
+    /* for matching email addresses in contacts */
+    strarray_append(&capabilities, JMAP_URN_CONTACTS);
+    strarray_append(&capabilities, JMAP_CONTACTS_EXTENSION);
     jmap_email_filter_parse(jfilter, &parse_ctx);
 
     /* Gather contactgroup ids */
-    jmap_email_contactfilter_init(accountid, authstate, namespace, NULL, &cfilter);
+    jmap_email_contactfilter_init(accountid, authstate, namespace, &cfilter);
     ptrarray_t work = PTRARRAY_INITIALIZER;
     ptrarray_push(&work, jfilter);
     json_t *jf;
@@ -1388,7 +1766,7 @@ HIDDEN int jmap_email_matchmime(matchmime_t *matchmime,
         json_array_foreach(json_object_get(jf, "conditions"), i, jval) {
             ptrarray_push(&work, jval);
         }
-        r = jmap_email_contactfilter_from_filtercondition(&parser, jf, &cfilter);
+        r = jmap_email_contactfilter_from_filtercondition(jf, &cfilter);
         if (r) break;
 
     }
@@ -1419,31 +1797,34 @@ HIDDEN int jmap_email_matchmime(matchmime_t *matchmime,
         goto done;
     }
 
-    /* Evaluate filter */
-    xapian_db_t *db = NULL;
-    r = xapian_db_opendbw(matchmime->dbw, &db);
+    /* Build filter */
+    xapian_db_t *xdb = NULL;
+    r = xapian_db_opendbw(matchmime->dbw, &xdb);
     if (r) {
         syslog(LOG_ERR, "jmap_matchmime: can't open query backend: %s",
                 error_message(r));
         *err = jmap_server_error(r);
         goto done;
     }
+    matchmime_query_t *q = _matchmime_buildquery(jfilter, xdb, &cfilter);
 
+    /* Evaluate filter */
     struct convmatch *convmatch = matchmime->convmatch;
     if (!convmatch->cstate || convmatch->cstate != cstate || convmatch->in_state < 0) {
         convmatch_reset(convmatch, cstate);
     }
-    matches = _email_matchmime_evaluate(jfilter, matchmime->m, db,
+    matches = _matchmime_eval(q, matchmime->m, xdb,
             convmatch, &cfilter, internaldate);
-    xapian_db_close(db);
 
+    _matchmime_query_free(&q);
+    xapian_db_close(xdb);
 
 done:
     jmap_email_contactfilter_fini(&cfilter);
     jmap_parser_fini(&parser);
     strarray_fini(&capabilities);
     json_decref(unsupported);
-    return matches;
+    return matches ? 1 : 0;
 }
 
 #endif /* WITH_DAV */
@@ -1613,4 +1994,26 @@ done:
     buf_reset(&hm->tmp[1]);
     buf_reset(&hm->tmp[2]);
     return match;
+}
+
+HIDDEN void jmap_headermatch_serialize(struct jmap_headermatch *hm, struct buf *buf)
+{
+    buf_appendcstr(buf, hm->header);
+    buf_putc(buf, ';');
+    buf_appendcstr(buf, hm->value);
+    buf_putc(buf, ';');
+    switch (hm->op) {
+    case HEADERMATCH_EQUALS:
+        buf_appendcstr(buf, "equals");
+        break;
+    case HEADERMATCH_STARTS:
+        buf_appendcstr(buf, "starts");
+        break;
+    case HEADERMATCH_ENDS:
+        buf_appendcstr(buf, "ends");
+        break;
+    case HEADERMATCH_CONTAINS:
+        buf_appendcstr(buf, "contains");
+        break;
+    }
 }

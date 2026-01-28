@@ -41,7 +41,6 @@ package Cassandane::MasterEvent;
 use strict;
 use warnings;
 
-use lib '.';
 use base qw(Cassandane::MasterEntry);
 
 sub new
@@ -52,7 +51,7 @@ sub new
 sub _otherparams
 {
     my ($self) = @_;
-    return ( qw(period at) );
+    return ( qw(period at cron) );
 }
 
 1;

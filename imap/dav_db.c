@@ -1,45 +1,6 @@
-/* dav_db.c -- implementation of per-user DAV database
- *
- * Copyright (c) 1994-2012 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* dav_db.c -- implementation of per-user DAV database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -140,7 +101,8 @@
     " ispref INTEGER NOT NULL DEFAULT 0,"                               \
     " ispinned INTEGER NOT NULL DEFAULT 0,"                             \
     " FOREIGN KEY (objid) REFERENCES vcard_objs (rowid) ON DELETE CASCADE );" \
-    "CREATE INDEX IF NOT EXISTS idx_vcard_email ON vcard_emails ( email COLLATE NOCASE );"
+    "CREATE INDEX IF NOT EXISTS idx_vcard_email ON vcard_emails ( email COLLATE NOCASE );" \
+    "CREATE INDEX IF NOT EXISTS idx_vcard_objs ON vcard_emails ( objid );"
 
 #define CMD_CREATE_GR                                                   \
     "CREATE TABLE IF NOT EXISTS vcard_groups ("                         \
@@ -289,6 +251,9 @@
     "DROP TABLE vcard_jmapcache;" \
     CMD_CREATE_JSCARDCACHE
 
+#define CMD_DBUPGRADEv17                                                \
+    "CREATE INDEX IF NOT EXISTS idx_vcard_objs ON vcard_emails ( objid );"
+
 static int sievedb_upgrade(sqldb_t *db);
 
 static const struct sqldb_upgrade davdb_upgrade[] = {
@@ -307,10 +272,11 @@ static const struct sqldb_upgrade davdb_upgrade[] = {
   { 14, CMD_DBUPGRADEv14, &sievedb_upgrade },
   { 15, CMD_DBUPGRADEv15, NULL },
   { 16, CMD_DBUPGRADEv16, NULL },
+  { 17, CMD_DBUPGRADEv17, NULL },
   { 0, NULL, NULL }
 };
 
-#define DB_VERSION 16
+#define DB_VERSION 17
 
 static sqldb_t *reconstruct_db;
 
@@ -389,6 +355,12 @@ EXPORTED int dav_close(sqldb_t **dbp)
 }
 
 
+struct recon_rock {
+    const char *userid;
+    uint32_t last_mbtype;
+    hashu64_table cmodseqs;
+};
+
 /*
  * mboxlist_usermboxtree() callback function to create DAV DB entries for a mailbox
  */
@@ -400,10 +372,10 @@ static int _dav_reconstruct_mb(const mbentry_t *mbentry,
                               )
 {
 #ifdef WITH_JMAP
-    const char *userid = (const char *) rock;
+    struct recon_rock *rrock = (struct recon_rock *) rock;
     struct buf attrib = BUF_INITIALIZER;
 #endif
-    int (*addproc)(struct mailbox *) = NULL;
+    int (*addproc)(struct mailbox *, hashu64_table *) = NULL;
     int writelock = 0;
     int r = 0;
 
@@ -414,6 +386,11 @@ static int _dav_reconstruct_mb(const mbentry_t *mbentry,
     case MBTYPE_CALENDAR:
     case MBTYPE_COLLECTION:
     case MBTYPE_ADDRESSBOOK:
+        if (mbentry->mbtype != rrock->last_mbtype) {
+            rrock->last_mbtype = mbentry->mbtype;
+            free_hashu64_table(&rrock->cmodseqs, NULL);
+            construct_hashu64_table(&rrock->cmodseqs, 10240, 0);
+        }
         addproc = &mailbox_add_dav;
         writelock = 1; // write lock so we can delete stale index records
         break;
@@ -429,7 +406,7 @@ static int _dav_reconstruct_mb(const mbentry_t *mbentry,
         break;
 
     case MBTYPE_EMAIL:
-        r = annotatemore_lookup(mbentry->name, "/specialuse", userid, &attrib);
+        r = annotatemore_lookup(mbentry->name, "/specialuse", rrock->userid, &attrib);
         if (!r && buf_len(&attrib)) {
             strarray_t *specialuse =
                 strarray_split(buf_cstring(&attrib), NULL, 0);
@@ -451,7 +428,7 @@ static int _dav_reconstruct_mb(const mbentry_t *mbentry,
             r = mailbox_open_iwl(mbentry->name, &mailbox);
         else
             r = mailbox_open_irl(mbentry->name, &mailbox);
-        if (!r) r = addproc(mailbox);
+        if (!r) r = addproc(mailbox, &rrock->cmodseqs);
         mailbox_close(&mailbox);
     }
 
@@ -476,6 +453,16 @@ static void run_audit_tool(const char *tool, const char *userid, const char *src
 
 EXPORTED int dav_reconstruct_user(const char *userid, const char *audit_tool)
 {
+    // check that the user exists
+    char *inboxname = mboxname_user_mbox(userid, NULL);
+    int r = mboxlist_lookup(inboxname, NULL, NULL);
+    free(inboxname);
+    if (r == IMAP_MAILBOX_NONEXISTENT) return 0;
+    else if (r) {
+        syslog(LOG_ERR, "dav_reconstruct_user: %s FAILED %s", userid, error_message(r));
+        return r;
+    }
+
     syslog(LOG_NOTICE, "dav_reconstruct_user: %s", userid);
 
     struct buf fname = BUF_INITIALIZER;
@@ -485,9 +472,9 @@ EXPORTED int dav_reconstruct_user(const char *userid, const char *audit_tool)
     dav_getpath_byuserid(&newfname, userid);
     buf_printf(&newfname, ".NEW");
 
-    struct mboxlock *namespacelock = user_namespacelock(userid);
+    user_nslock_t *user_nslock = user_nslock_lock_w(userid);
 
-    int r = IMAP_IOERROR;
+    r = IMAP_IOERROR;
     reconstruct_db = sqldb_open(buf_cstring(&newfname), CMD_CREATE, DB_VERSION, davdb_upgrade,
                                 config_getduration(IMAPOPT_DAV_LOCK_TIMEOUT, 's') * 1000);
     if (reconstruct_db) {
@@ -497,8 +484,15 @@ EXPORTED int dav_reconstruct_user(const char *userid, const char *audit_tool)
         if (!r) r = caldav_alarm_set_reconstruct(reconstruct_db);
 #endif
         // reconstruct everything
-        if (!r) r = mboxlist_usermboxtree(userid, NULL,
-                                          _dav_reconstruct_mb, (void *) userid, 0);
+        if (!r) {
+            struct recon_rock rrock =
+                { userid, MBTYPE_UNKNOWN, HASHU64_TABLE_INITIALIZER };
+
+            r = mboxlist_usermboxtree(userid, NULL,
+                                      _dav_reconstruct_mb, &rrock, 0);
+
+            free_hashu64_table(&rrock.cmodseqs, NULL);
+        }
 #ifdef WITH_DAV
         // make sure all the alarms are resolved
         if (!r) r = caldav_alarm_process(0, NULL, /*dryrun*/1);
@@ -527,11 +521,11 @@ EXPORTED int dav_reconstruct_user(const char *userid, const char *audit_tool)
             xunlink(buf_cstring(&newfname));
         }
         else {
-            rename(buf_cstring(&newfname), buf_cstring(&fname));
+            cyrus_rename(buf_cstring(&newfname), buf_cstring(&fname));
         }
     }
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     buf_free(&newfname);
     buf_free(&fname);

@@ -1,45 +1,6 @@
-/* sieve_db.c -- implementation of per-user Sieve database
- *
- * Copyright (c) 1994-2020 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* sieve_db.c -- implementation of per-user Sieve database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -592,7 +553,7 @@ static int store_script(struct mailbox *mailbox, struct sieve_data *sdata,
     else {
         buf_printf(&buf, "<%s@%s>", userid, config_servername);
     }
-    mimehdr = charset_encode_mimeheader(buf_cstring(&buf), buf_len(&buf), 0);
+    mimehdr = charset_encode_addrheader(buf_cstring(&buf), buf_len(&buf), 0);
     fprintf(f, "From: %s\r\n", mimehdr);
     free(mimehdr);
 
@@ -622,6 +583,13 @@ static int store_script(struct mailbox *mailbox, struct sieve_data *sdata,
     /* Write the script data to the file */
     fwrite(data, datalen, 1, f);
 
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
+        r = IMAP_IOERROR;
+        syslog(LOG_ERR, "IOERROR: append_setup(%s) failed: %s",
+               mailbox_name(mailbox), error_message(r));
+        fclose(f);
+        goto done;
+    }
     fclose(f);
 
     /* Treat this as the user taking action, since that's what it is. */
@@ -640,7 +608,7 @@ static int store_script(struct mailbox *mailbox, struct sieve_data *sdata,
     else {
         struct body *body = NULL;
 
-        r = append_fromstage(&as, &body, stage, now,
+        r = append_fromstage(&as, &body, stage, NULL,
                              sdata->createdmodseq, &flags, 0, NULL);
         if (body) {
             message_free_body(body);
@@ -665,6 +633,7 @@ static int store_script(struct mailbox *mailbox, struct sieve_data *sdata,
         }
     }
 
+done:
     append_removestage(stage);
     auth_freestate(authstate);
     strarray_fini(&flags);
@@ -882,17 +851,12 @@ EXPORTED int sieve_ensure_folder(const char *userid, struct mailbox **mailboxptr
     if (r) return IMAP_IOERROR;
 
 
-    struct mboxlock *namespacelock = NULL;
     char *mboxname = sieve_mboxname(userid);
     r = mboxlist_lookup(mboxname, NULL, NULL);
 
+    user_nslock_t *user_nslock = NULL;
     if (r == IMAP_MAILBOX_NONEXISTENT) {
-        namespacelock = user_namespacelock(userid);
-
-        if (!namespacelock) {
-            r = IMAP_MAILBOX_LOCKED;
-            goto done;
-        }
+        user_nslock = user_nslock_lock_w(userid);
 
         /* maybe we lost the race on this one */
         r = mboxlist_lookup(mboxname, NULL, NULL);
@@ -928,7 +892,8 @@ EXPORTED int sieve_ensure_folder(const char *userid, struct mailbox **mailboxptr
         mailbox_close(&mailbox);
     }
 
-    mboxname_release(&namespacelock);
+    // release before opening mailbox so mailbox takes and holds a lock
+    user_nslock_release(&user_nslock);
 
     if (!r && mailboxptr) {
         r = mailbox_open_iwl(mboxname, mailboxptr);
@@ -941,7 +906,7 @@ EXPORTED int sieve_ensure_folder(const char *userid, struct mailbox **mailboxptr
     }
 
   done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     free(mboxname);
     return r;
 }

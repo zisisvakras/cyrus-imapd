@@ -68,9 +68,16 @@ metric counter cyrus_imap_sort_total                    The total number of IMAP
 metric counter cyrus_imap_status_total                  The total number of IMAP STATUSs
 metric counter cyrus_imap_scan_total                    The total number of IMAP SCANs
 metric counter cyrus_imap_thread_total                  The total number of IMAP THREADs
+metric counter cyrus_imap_uidbatches_total              The total number of IMAP UIDBATCHES
 metric counter cyrus_imap_unauthenticate_total          The total number of IMAP UNAUTHENTICATEs
 metric counter cyrus_imap_unsubscribe_total             The total number of IMAP UNSUBSCRIBEs
 metric counter cyrus_imap_unselect_total                The total number of IMAP UNSELECTs
+
+metric counter cyrus_pop3_connections_total             The total number of POP3 connections
+metric gauge   cyrus_pop3_active_connections            The number of active POP3 connections
+metric gauge   cyrus_pop3_ready_listeners               The number of currently ready POP3 listeners
+metric counter cyrus_pop3_shutdown_total                The number of POP3 process shutdowns
+    label cyrus_pop3_shutdown_total status ok error
 
 metric counter cyrus_lmtp_connections_total             The total number of LMTP connections
 metric gauge   cyrus_lmtp_active_connections            The number of active LMTP connections

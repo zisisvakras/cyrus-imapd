@@ -1,0 +1,284 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_dblookup_expandcard
+    :NoAltNameSpace
+{
+    my ($self) = @_;
+    my $jmap = $self->{jmap};
+    my $imap = $self->{store}->get_client();
+    my $admin = $self->{adminstore}->get_client();
+
+    my $http = $self->{instance}->get_service("http");
+
+    xlog "Create shared addressbooks";
+    $admin->create("user.other");
+    my $other_user = $self->{instance}->create_user_without_setup('other');
+    my $otherJmap = $other_user->jmap;
+
+    $admin->create("user.other2");
+    my $other2_user = $self->{instance}->create_user_without_setup('other2');
+    my $otherJmap2 = $other2_user->jmap;
+
+    xlog $self, "Enable compactids";
+    $self->{instance}->run_command({ cyrus => 1 },
+                                   'ctl_conversationsdb', '-I', 'on', 'other');
+    $self->{instance}->run_command({ cyrus => 1 },
+                                   'ctl_conversationsdb', '-I', 'on', 'other2');
+
+    xlog $self, "Create addressbooks";
+    $admin->create("user.other.#addressbooks.Shared", ['TYPE', 'ADDRESSBOOK']);
+    $admin->setacl("user.other.#addressbooks.Shared", "cassandane", "lr") or die;
+    $imap->subscribe("user.other.#addressbooks.Shared");
+
+    $admin->create("user.other2.#addressbooks.Shared", ['TYPE', 'ADDRESSBOOK']);
+    $admin->setacl("user.other2.#addressbooks.Shared", "cassandane", "lr") or die;
+    $imap->subscribe("user.other2.#addressbooks.Shared");
+
+    $admin->create("user.other2.#addressbooks.Shared2", ['TYPE', 'ADDRESSBOOK']);
+    $admin->setacl("user.other2.#addressbooks.Shared2", "cassandane", "lr") or die;
+    $imap->subscribe("user.other2.#addressbooks.Shared2");
+
+    $admin->create("user.other2.#addressbooks.Unshared", ['TYPE', 'ADDRESSBOOK']);
+
+    my $using = [
+        'urn:ietf:params:jmap:core',
+        'urn:ietf:params:jmap:contacts',
+    ];
+
+    xlog "Get addressbook Ids";
+    my $res = $otherJmap->CallMethods([
+        ['AddressBook/get', {
+            properties => [ 'name' ]
+        }, 'R1'],
+    ], $using);
+    my %m = map { $_->{name} => $_ } @{$res->[0][1]{list}};
+    my $otherSharedAbookId = $m{"Shared"}{id};
+
+    $res = $otherJmap2->CallMethods([
+        ['AddressBook/get', {
+            properties => [ 'name' ]
+        }, 'R1'],
+    ], $using);
+    %m = map { $_->{name} => $_ } @{$res->[0][1]{list}};
+    my $other2SharedAbookId1 = $m{"Shared"}{id};
+    my $other2SharedAbookId2 = $m{"Shared2"}{id};
+    my $other2UnsharedAbookId = $m{"Unshared"}{id};
+
+    xlog "Create contacts in shared addressbooks";
+    $res = $otherJmap->CallMethods([
+        ['ContactCard/set', {
+            create => {
+                sharedContact => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    emails => {
+                        e1 => {
+                            address => 'sharedcontact@local'
+                        }
+                    },
+                    addressBookIds => { $otherSharedAbookId => JSON::true }
+                },
+            },
+        }, 'R1'],
+    ], $using);
+    my $otherSharedContactUid = $res->[0][1]{created}{sharedContact}{uid};
+    $self->assert_not_null($otherSharedContactUid);
+
+    $res = $otherJmap2->CallMethods([
+        ['ContactCard/set', {
+            create => {
+                sharedContact1 => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    emails => {
+                        e1 => {
+                            address => 'sharedcontact2Pref@local',
+                            pref => 1
+                        },
+                        e2 => {
+                            address => 'sharedcontact2@local'
+                        }
+                    },
+                    addressBookIds => { $other2SharedAbookId2 => JSON::true }
+                },
+                sharedContact2 => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    emails => {
+                    },
+                    addressBookIds => { $other2SharedAbookId2 => JSON::true }
+                },
+                unsharedContact => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    emails => {
+                        e1 => {
+                            address => 'unsharedcontact@local'
+                        }
+                    },
+                    addressBookIds => { $other2UnsharedAbookId => JSON::true }
+                },
+            },
+        }, 'R1'],
+    ], $using);
+    my $other2SharedContactUid1 = $res->[0][1]{created}{sharedContact1}{uid};
+    $self->assert_not_null($other2SharedContactUid1);
+    my $other2SharedContactUid2 = $res->[0][1]{created}{sharedContact2}{uid};
+    $self->assert_not_null($other2SharedContactUid2);
+    my $other2UnsharedContactUid = $res->[0][1]{created}{unsharedContact}{uid};
+    $self->assert_not_null($other2UnsharedContactUid);
+
+    xlog "Create contact in own addressbook";
+    $res = $jmap->CallMethods([
+        ['ContactCard/set', {
+            create => {
+                ownContact => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    emails => {
+                        e1 => {
+                            address => 'ownContact@local'
+                        },
+                        e2 => {
+                            address => 'ownContactPref@local',
+                            pref => 5
+                        },
+                        e3 => {
+                            address => 'ownContactPref2@local',
+                            pref => 5
+                        },
+                        e4 => {
+                            address => 'ownContactOther@local',
+                            pref => 10
+                        }
+                    },
+                },
+            },
+        }, 'R1'],
+    ], $using);
+    my $ownContactUid = $res->[0][1]{created}{ownContact}{uid};
+    $self->assert_not_null($ownContactUid);
+
+    xlog "Create group in own addressbook";
+    $res = $jmap->CallMethods([
+        ['ContactCard/set', {
+            create => {
+                ownGroup => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    kind => 'group',
+                    members => {
+                        $otherSharedContactUid => JSON::true,
+                        $other2SharedContactUid1 => JSON::true,
+                        $other2SharedContactUid2 => JSON::true,
+                        $other2UnsharedContactUid => JSON::true,
+                    },
+                    emails => {
+                        e1 => {
+                            address => 'ownGroup@local'
+                        }
+                    },
+                },
+            },
+        }, 'R1'],
+    ], $using);
+    my $ownGroupUid = $res->[0][1]{created}{ownGroup}{uid};
+    $self->assert_not_null($ownGroupUid);
+
+    xlog "Create group in shared addressbook";
+    $res = $otherJmap2->CallMethods([
+        ['ContactCard/set', {
+            create => {
+                sharedGroup => {
+                    '@type' => 'Card',
+                    version => '1.0',
+                    kind => 'group',
+                    members => {
+                        $ownContactUid => JSON::true,
+                        $otherSharedContactUid => JSON::true,
+                    },
+                    addressBookIds => { $other2SharedAbookId1 => JSON::true }
+                },
+            },
+        }, 'R1'],
+    ], $using);
+    my $other2SharedGroupUid = $res->[0][1]{created}{sharedGroup}{uid};
+    $self->assert_not_null($other2SharedGroupUid);
+
+    xlog "Lookup ownContactUid as cassandane";
+    $res = $self->dblookup('/dblookup/expandcard' => {
+        User => 'cassandane',
+        Key => $ownContactUid
+    });
+
+    $self->assert_cmp_deeply(
+        superhashof({
+            cassandane => {
+                $ownContactUid => any('ownContactPref@local',
+                                      'ownContactPref2@local')
+            }
+        }),
+        $res->{payload},
+    );
+
+    xlog "Lookup ownGroupUid as cassandane";
+    $res = $self->dblookup('/dblookup/expandcard' => {
+        User => 'cassandane',
+        Key => $ownGroupUid
+    });
+
+    $self->assert_cmp_deeply(
+        superhashof({
+            cassandane => {
+                $ownGroupUid => 'ownGroup@local'
+            },
+            other => {
+                $otherSharedContactUid => 'sharedcontact@local'
+            },
+            other2 => {
+                $other2SharedContactUid1 => 'sharedcontact2Pref@local',
+                $other2SharedContactUid2 => JSON::null
+            }
+        }),
+        $res->{payload},
+    );
+
+    xlog "Lookup other2SharedGroupUid as cassandane";
+    $res = $self->dblookup('/dblookup/expandcard' => {
+        User => 'cassandane',
+        Key => $other2SharedGroupUid,
+    });
+
+    $self->assert_cmp_deeply(
+        superhashof({
+            cassandane => {
+                $ownContactUid => any('ownContactPref@local',
+                                      'ownContactPref2@local')
+            },
+            other => {
+                $otherSharedContactUid => 'sharedcontact@local'
+            },
+            other2 => {
+                $other2SharedGroupUid => JSON::null
+            }
+        }),
+        $res->{payload},
+    );
+
+    xlog "Lookup bogus Uid as cassandane -- no content";
+    $res = $self->dblookup('/dblookup/expandcard' => {
+        User => 'cassandane',
+        Key => 'foo',
+    });
+
+    $self->assert_str_equals('204', $res->{http_response}->code);
+
+    xlog "Lookup ownGroupUid as other2 -- abook is NOT shared so no content";
+    $res = $self->dblookup('/dblookup/expandcard' => {
+        User => 'other2',
+        Key => $ownGroupUid,
+    });
+
+    $self->assert_str_equals('204', $res->{http_response}->code);
+}

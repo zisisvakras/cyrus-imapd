@@ -1,45 +1,6 @@
-/* deliver.c -- deliver shell - just calls lmtpd
- * Tim Martin
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* deliver.c -- deliver shell - just calls lmtpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -91,6 +52,7 @@ static struct protocol_t lmtp_protocol =
           { "STARTTLS", CAPA_STARTTLS },
           { "PIPELINING", CAPA_PIPELINING },
           { "IGNOREQUOTA", CAPA_IGNOREQUOTA },
+          { "TRACE", CAPA_TRACE },
           { NULL, 0 } } },
       { "STARTTLS", "220", "454", 0 },
       { "AUTH", 512, 0, "235", "5", "334 ", "*", NULL, 0 },
@@ -171,7 +133,7 @@ int main(int argc, char **argv)
     char *alt_config = NULL;
 
     /* keep this in alphabetical order */
-    static const char short_options[] = "C:DE:F:a:def:lm:qr:";
+    static const char short_options[] = "C:DE:F:a:def:lm:qr:t:";
 
     static const struct option long_options[] = {
         /* n.b. no long option for -C */
@@ -181,6 +143,7 @@ int main(int argc, char **argv)
         { "mailbox", required_argument, NULL, 'm' },
         { "ignore-quota", no_argument, NULL, 'q' },
         { "return-path", required_argument, NULL, 'r' },
+        { "trace-id", required_argument, NULL, 't' },
         { 0, 0, 0, 0 },
     };
 
@@ -243,6 +206,13 @@ int main(int argc, char **argv)
 
         case 'q':
             ignorequota = 1;
+            break;
+
+        case 't':
+            if (trace_set_id(optarg, 0)) {
+                fputs("deliver: invalid trace-id\n", stderr);
+                usage();
+            }
             break;
 
         default:
@@ -361,7 +331,7 @@ static int deliver_msg(char *return_path, char *authuser, int ignorequota,
     if (numusers == 0) {
         /* just deliver to mailbox 'mailbox' */
         const char *BB = config_getstring(IMAPOPT_POSTUSER);
-        txn->rcpt[0].addr = (char *) xmalloc(ml + strlen(BB) + 2); /* xxx leaks! */
+        txn->rcpt[0].addr = (char *) xmalloc(ml + strlen(BB) + 2); /* XXX leaks! */
         sprintf(txn->rcpt[0].addr, "%s+%s", BB, mailbox);
         txn->rcpt[0].ignorequota = ignorequota;
     } else {

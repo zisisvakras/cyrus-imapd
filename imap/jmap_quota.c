@@ -1,45 +1,6 @@
-/* jmap_quota.c -- Routines for handling JMAP Quota requests
- *
- * Copyright (c) 1994-2024 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_quota.c -- Routines for handling JMAP Quota requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -61,6 +22,7 @@ static int jmap_quota_get(jmap_req_t *req);
 static int jmap_quota_changes(jmap_req_t *req);
 static int jmap_quota_query(jmap_req_t *req);
 
+// clang-format off
 static jmap_method_t jmap_quota_methods_standard[] = {
     {
         "Quota/get",
@@ -82,7 +44,9 @@ static jmap_method_t jmap_quota_methods_standard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_quota_methods_nonstandard[] = {
     {
         "Quota/get",
@@ -92,6 +56,7 @@ static jmap_method_t jmap_quota_methods_nonstandard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 HIDDEN void jmap_quota_init(jmap_settings_t *settings)
 {
@@ -119,6 +84,7 @@ HIDDEN void jmap_quota_capabilities(json_t *account_capabilities)
 }
 
 /* Legacy Quota/get method */
+// clang-format off
 static const jmap_property_t legacy_quota_props[] = {
     {
         "id",
@@ -137,11 +103,12 @@ static const jmap_property_t legacy_quota_props[] = {
     },
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static int jmap_legacy_quota_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     char *inboxname = mboxname_user_mbox(req->accountid, NULL);
 
@@ -400,6 +367,7 @@ static int fetch_quotas_cb(struct quota *q, void *rock)
 }
 
 /* Quota/get method */
+// clang-format off
 static const jmap_property_t quota_props[] = {
     {
         "id",
@@ -453,6 +421,7 @@ static const jmap_property_t quota_props[] = {
     },
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static void fetch_quotas(struct qrock_t *qrock)
 {
@@ -570,7 +539,7 @@ static void getquota(const char *id, void *val, void *rock)
 static int jmap_quota_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     struct qrock_t qrock = { req, NULL, { 0 }, NULL, HASH_TABLE_INITIALIZER };
 
@@ -641,7 +610,7 @@ static void changes_cb(const char *id, void *val, void *rock)
 static int jmap_quota_changes(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_changes changes;
+    struct jmap_changes changes = JMAP_CHANGES_INITIALIZER;
     struct qrock_t qrock = { req, NULL, { 0 }, NULL, HASH_TABLE_INITIALIZER };
 
     json_t *err = NULL;
@@ -732,7 +701,8 @@ typedef struct filter {
     const char *type;
 } filter;
 
-static void *filter_build(json_t *arg)
+static void *filter_build(json_t *arg,
+                          void *rock __attribute__((unused)))
 {
     filter *f = (filter *) xzmalloc(sizeof(struct filter));
 
@@ -859,7 +829,7 @@ static int quota_cmp QSORT_R_COMPAR_ARGS(const void *va, const void *vb,
 static int jmap_quota_query(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_query query;
+    struct jmap_query query = JMAP_QUERY_INITIALIZER;
     jmap_filter *parsed_filter = NULL;
     arrayu64_t sortcrit = ARRAYU64_INITIALIZER;
     struct qrock_t qrock = { req, NULL, { 0 }, NULL, HASH_TABLE_INITIALIZER };
@@ -876,7 +846,7 @@ static int jmap_quota_query(jmap_req_t *req)
 
     /* Build filter */
     if (JNOTNULL(query.filter)) {
-        parsed_filter = jmap_buildfilter(query.filter, filter_build);
+        parsed_filter = jmap_buildfilter(query.filter, filter_build, NULL);
     }
 
     /* Build sort */

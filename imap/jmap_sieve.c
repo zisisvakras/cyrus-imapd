@@ -1,45 +1,6 @@
-/* jmap_sieve.c -- Routines for managing Sieve scripts via JMAP
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_sieve.c -- Routines for managing Sieve scripts via JMAP */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -88,6 +49,7 @@ static int jmap_sieve_test(jmap_req_t *req);
 static int maxscripts = 0;
 static json_int_t maxscriptsize = 0;
 
+// clang-format off
 static jmap_method_t jmap_sieve_methods_standard[] = {
     {
         "SieveScript/get",
@@ -115,7 +77,9 @@ static jmap_method_t jmap_sieve_methods_standard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_sieve_methods_nonstandard[] = {
     {
         "SieveScript/get",
@@ -149,6 +113,7 @@ static jmap_method_t jmap_sieve_methods_nonstandard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 HIDDEN void jmap_sieve_init(jmap_settings_t *settings)
 {
@@ -233,6 +198,7 @@ HIDDEN void jmap_sieve_capabilities(json_t *account_capabilities)
     }
 }
 
+// clang-format off
 static const jmap_property_t sieve_props[] = {
     {
         "id",
@@ -256,6 +222,7 @@ static const jmap_property_t sieve_props[] = {
     },
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static int getscript(void *rock, struct sieve_data *sdata)
 {
@@ -287,7 +254,7 @@ static int getscript(void *rock, struct sieve_data *sdata)
 static int jmap_sieve_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     struct mailbox *mailbox = NULL;
     struct sieve_db *db = NULL;
@@ -301,10 +268,18 @@ static int jmap_sieve_get(jmap_req_t *req)
         goto done;
     }
 
-    r = sieve_ensure_folder(req->accountid, &mailbox, /*silent*/0);
+    char *mboxname = sieve_mboxname(req->accountid);
+    r = mailbox_open_irl(mboxname, &mailbox);
+    free(mboxname);
+    if (r == IMAP_MAILBOX_NONEXISTENT) {
+        r = 0;
+        struct buf buf = BUF_INITIALIZER;
+        buf_printf(&buf, MODSEQ_FMT, 0L);
+        get.state = buf_release(&buf);
+        jmap_ok(req, jmap_get_reply(&get));
+        goto done;
+    }
     if (r) goto done;
-
-    mailbox_unlock_index(mailbox, NULL);
 
     db = sievedb_open_userid(req->accountid);
     if (!db) {
@@ -788,7 +763,7 @@ static int _sieve_setargs_parse(jmap_req_t *req __attribute__((unused)),
 static int jmap_sieve_set(struct jmap_req *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_set set;
+    struct jmap_set set = JMAP_SET_INITIALIZER;
     struct sieve_set_args sub_args = { NULL, 0 };
     json_t *jerr = NULL;
     struct mailbox *mailbox = NULL;
@@ -978,7 +953,8 @@ typedef struct filter {
     int isactive;
 } filter;
 
-static void *filter_build(json_t *arg)
+static void *filter_build(json_t *arg,
+                          void *rock __attribute__((unused)))
 {
     filter *f = (filter *) xzmalloc(sizeof(struct filter));
 
@@ -1107,7 +1083,7 @@ static int sieve_cmp QSORT_R_COMPAR_ARGS(const void *va, const void *vb, void *r
 static int jmap_sieve_query(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_query query;
+    struct jmap_query query = JMAP_QUERY_INITIALIZER;
     jmap_filter *parsed_filter = NULL;
     arrayu64_t sortcrit = ARRAYU64_INITIALIZER;
     struct mailbox *mailbox = NULL;
@@ -1125,7 +1101,7 @@ static int jmap_sieve_query(jmap_req_t *req)
 
     /* Build filter */
     if (JNOTNULL(query.filter)) {
-        parsed_filter = jmap_buildfilter(query.filter, filter_build);
+        parsed_filter = jmap_buildfilter(query.filter, filter_build, NULL);
     }
 
     /* Build sort */
@@ -1150,10 +1126,20 @@ static int jmap_sieve_query(jmap_req_t *req)
         }
     }
 
-    r = sieve_ensure_folder(req->accountid, &mailbox, /*silent*/0);
+    char *mboxname = sieve_mboxname(req->accountid);
+    r = mailbox_open_irl(mboxname, &mailbox);
+    free(mboxname);
+    if (r == IMAP_MAILBOX_NONEXISTENT) {
+        r = 0;
+        struct buf buf = BUF_INITIALIZER;
+        buf_printf(&buf, MODSEQ_FMT, 0L);
+        query.query_state = buf_release(&buf);
+        query.result_position = query.position;
+        query.can_calculate_changes = 0;
+        jmap_ok(req, jmap_query_reply(&query));
+        goto done;
+    }
     if (r) goto done;
-
-    mailbox_unlock_index(mailbox, NULL);
 
     db = sievedb_open_userid(req->accountid);
     if (!db) {
@@ -1466,7 +1452,9 @@ static int getmailboxexists(void *sc, const char *extname)
 static int getmailboxidexists(void *sc, const char *extname)
 {
     script_data_t *sd = (script_data_t *)sc;
-    char *intname = mboxlist_find_uniqueid(extname, sd->userid, sd->authstate);
+    char *intname = (*extname == JMAP_MAILBOXID_PREFIX) ?
+        mboxlist_find_jmapid(extname, sd->userid, sd->authstate) :
+        mboxlist_find_uniqueid(extname, sd->userid, sd->authstate);
     int exists = 0;
 
     if (intname && !mboxname_isnondeliverymailbox(intname, 0)) {

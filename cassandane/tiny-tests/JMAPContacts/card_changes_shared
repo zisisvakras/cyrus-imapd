@@ -2,10 +2,9 @@
 use Cassandane::Tiny;
 
 sub test_card_changes_shared
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
     my $carddav = $self->{carddav};
     my $admintalk = $self->{adminstore}->get_client();
@@ -29,9 +28,8 @@ sub test_card_changes_shared
     xlog $self, "share to user";
     $admintalk->setacl("user.manifold.#addressbooks.Default", "cassandane" => 'lrswipkxtecdn') or die;
 
-# Update to ContactCard/[get|set] once implemented
     xlog $self, "get contacts";
-    my $res = $jmap->CallMethods([['Contact/get', { accountId => 'manifold' }, "R2"]]);
+    my $res = $jmap->CallMethods([['ContactCard/get', { accountId => 'manifold' }, "R2"]]);
     my $state = $res->[0][1]{state};
 
     xlog $self, "get contact updates";
@@ -44,12 +42,20 @@ sub test_card_changes_shared
     $self->assert_equals(JSON::false, $res->[0][1]{hasMoreChanges});
 
     xlog $self, "create contact 1";
-    $res = $jmap->CallMethods([['Contact/set', {
-                    accountId => 'manifold',
-                    create => {"1" => {firstName => "first", lastName => "last"}}
+    $res = $jmap->CallMethods([
+        ['ContactCard/set', {
+            accountId => 'manifold',
+            create => {
+                "1" => {
+                    '@type' => 'Card',
+                    version => '1.0', 
+                    firstName => "first",
+                    lastName => "last"
+                }
+            }
     }, "R1"]]);
     $self->assert_not_null($res);
-    $self->assert_str_equals('Contact/set', $res->[0][0]);
+    $self->assert_str_equals('ContactCard/set', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
     my $id1 = $res->[0][1]{created}{"1"}{id};
 
@@ -70,12 +76,20 @@ sub test_card_changes_shared
     $state = $res->[0][1]{newState};
 
     xlog $self, "create contact 2";
-    $res = $jmap->CallMethods([['Contact/set', {
-                    accountId => 'manifold',
-                    create => {"2" => {firstName => "second", lastName => "prev"}}
+    $res = $jmap->CallMethods([
+        ['ContactCard/set', {
+            accountId => 'manifold',
+            create => {
+                "2" => {
+                    '@type' => 'Card',
+                    version => '1.0', 
+                    firstName => "second",
+                    lastName => "prev"
+                }
+            }
     }, "R1"]]);
     $self->assert_not_null($res);
-    $self->assert_str_equals('Contact/set', $res->[0][0]);
+    $self->assert_str_equals('ContactCard/set', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
     my $id2 = $res->[0][1]{created}{"2"}{id};
 
@@ -136,13 +150,13 @@ sub test_card_changes_shared
     $state = $res->[0][1]{newState};
 
     xlog $self, "destroy contact 1, update contact 2";
-    $res = $jmap->CallMethods([['Contact/set', {
+    $res = $jmap->CallMethods([['ContactCard/set', {
                     accountId => 'manifold',
                     destroy => [$id1],
                     update => {$id2 => {firstName => "foo"}}
                 }, "R1"]]);
     $self->assert_not_null($res);
-    $self->assert_str_equals('Contact/set', $res->[0][0]);
+    $self->assert_str_equals('ContactCard/set', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
 
     xlog $self, "get contact updates";
@@ -160,11 +174,11 @@ sub test_card_changes_shared
     $self->assert_str_equals($id1, $res->[0][1]{destroyed}[0]);
 
     xlog $self, "destroy contact 2";
-    $res = $jmap->CallMethods([['Contact/set', {
+    $res = $jmap->CallMethods([['ContactCard/set', {
                     accountId => 'manifold',
                     destroy => [$id2]
                 }, "R1"]]);
     $self->assert_not_null($res);
-    $self->assert_str_equals('Contact/set', $res->[0][0]);
+    $self->assert_str_equals('ContactCard/set', $res->[0][0]);
     $self->assert_str_equals('R1', $res->[0][2]);
 }

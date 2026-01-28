@@ -44,12 +44,10 @@ use DateTime;
 use DateTime::Format::ISO8601;
 use JSON::XS;
 use Net::CalDAVTalk 0.05;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use POSIX;
 use Carp;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 

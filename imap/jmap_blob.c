@@ -1,45 +1,6 @@
-/* jmap_blob.c -- Routines for handling JMAP Blob requests
- *
- * Copyright (c) 1994-2024 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_blob.c -- Routines for handling JMAP Blob requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -64,13 +25,14 @@ static int jmap_blob_get(jmap_req_t *req);
 static int jmap_blob_lookup(jmap_req_t *req);
 static int jmap_blob_upload(jmap_req_t *req);
 
+// clang-format off
 static jmap_method_t jmap_blob_methods_standard[] = {
     /* RFC 8620 */
     {
         "Blob/copy",
         JMAP_URN_CORE,
         &jmap_blob_copy,
-        JMAP_READ_WRITE // no conversations, we need to get lock ordering first
+        JMAP_NEED_CSTATE | JMAP_READ_WRITE
     },
     /* RFC 9404 */
     {
@@ -93,7 +55,9 @@ static jmap_method_t jmap_blob_methods_standard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_core_methods_nonstandard[] = {
     {
         "Blob/get",
@@ -115,6 +79,7 @@ static jmap_method_t jmap_core_methods_nonstandard[] = {
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 static json_t *blob_capabilities = NULL;
 
@@ -129,9 +94,7 @@ HIDDEN void jmap_blob_init(jmap_settings_t *settings)
     json_t *algorithms = json_array();
     json_array_append_new(algorithms, json_string("md5"));
     json_array_append_new(algorithms, json_string("sha"));
-#ifdef HAVE_SSL
     json_array_append_new(algorithms, json_string("sha-256"));
-#endif
 
     blob_capabilities =
         json_pack("{s:i, s:i, s:o, s:o}",
@@ -212,7 +175,8 @@ static int jmap_copyblob(jmap_req_t *req,
     else {
         fwrite(buf_base(&msg_buf), buf_len(&msg_buf), 1, to_fp);
     }
-    if (ferror(to_fp)) {
+    if (fflush(to_fp) || ferror(to_fp) || fdatasync(fileno(to_fp))) {
+        fclose(to_fp);
         syslog(LOG_ERR, "jmap_copyblob(%s): tofp=%s: %s",
                blobid, append_stagefname(stage), strerror(errno));
         r = IMAP_IOERROR;
@@ -234,18 +198,18 @@ static int jmap_copyblob(jmap_req_t *req,
     strarray_t flags = STRARRAY_INITIALIZER;
     strarray_append(&flags, "\\Deleted");
     strarray_append(&flags, "\\Expunged");  // custom flag to insta-expunge!
-	r = append_fromstage(&as, &to_body, stage, 0, internaldate, &flags, 0, NULL);
+        r = append_fromstage(&as, &to_body, stage, 0, internaldate, &flags, 0, NULL);
     strarray_fini(&flags);
-	if (r) {
+        if (r) {
         syslog(LOG_ERR, "jmap_copyblob(%s): append_fromstage: %s",
                 blobid, error_message(r));
-		append_abort(&as);
-		goto done;
-	}
-	message_free_body(to_body);
-	free(to_body);
-	r = append_commit(&as);
-	if (r) {
+                append_abort(&as);
+                goto done;
+        }
+        message_free_body(to_body);
+        free(to_body);
+        r = append_commit(&as);
+        if (r) {
         syslog(LOG_ERR, "jmap_copyblob(%s): append_commit: %s",
                 blobid, error_message(r));
         goto done;
@@ -266,13 +230,11 @@ done:
 static int jmap_blob_copy(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_copy copy;
+    struct jmap_copy copy = JMAP_COPY_INITIALIZER;
     json_t *val, *err = NULL;
     size_t i = 0;
     int r = 0;
     struct mailbox *to_mbox = NULL;
-    struct mboxlock *srcnamespacelock = NULL;
-    struct mboxlock *dstnamespacelock = NULL;
 
     /* Parse request */
     jmap_copy_parse(req, &parser, NULL, NULL, &copy, &err);
@@ -281,29 +243,7 @@ static int jmap_blob_copy(jmap_req_t *req)
         goto cleanup;
     }
 
-    char *srcinbox = mboxname_user_mbox(copy.from_account_id, NULL);
-    char *dstinbox = mboxname_user_mbox(req->accountid, NULL);
-    if (strcmp(srcinbox, dstinbox) < 0) {
-        srcnamespacelock = mboxname_usernamespacelock(srcinbox);
-        dstnamespacelock = mboxname_usernamespacelock(dstinbox);
-    }
-    else {
-        dstnamespacelock = mboxname_usernamespacelock(dstinbox);
-        srcnamespacelock = mboxname_usernamespacelock(srcinbox);
-    }
-    free(srcinbox);
-    free(dstinbox);
-
-    // now we can open the cstate
-    r = conversations_open_user(req->accountid, 0, &req->cstate);
-    if (r) {
-        syslog(LOG_ERR, "jmap_email_copy: can't open converstaions: %s",
-                        error_message(r));
-        jmap_error(req, jmap_server_error(r));
-        goto cleanup;
-    }
-
-    /* Check if we can upload to toAccountId */
+    /* Check if we are allowed to write */
     r = jmap_open_upload_collection(req->accountid, &to_mbox);
     if (r == IMAP_PERMISSION_DENIED) {
         json_array_foreach(copy.create, i, val) {
@@ -336,8 +276,6 @@ done:
 
 cleanup:
     mailbox_close(&to_mbox);
-    mboxname_release(&srcnamespacelock);
-    mboxname_release(&dstnamespacelock);
     jmap_parser_fini(&parser);
     jmap_copy_fini(&copy);
     return r;
@@ -379,6 +317,7 @@ static int getblob_cb(const conv_guidrec_t* rec, void* vrock)
     return 0;
 }
 
+// clang-format off
 static const jmap_property_t blob_xprops[] = {
     {
         "data",
@@ -405,13 +344,11 @@ static const jmap_property_t blob_xprops[] = {
         NULL,
         JMAP_PROP_SERVER_SET | JMAP_PROP_IMMUTABLE | JMAP_PROP_SKIP_GET
     },
-#ifdef HAVE_SSL
     {
         "digest:sha-256",
         NULL,
         JMAP_PROP_SERVER_SET | JMAP_PROP_IMMUTABLE | JMAP_PROP_SKIP_GET
     },
-#endif
     {
         "size",
         NULL,
@@ -419,6 +356,7 @@ static const jmap_property_t blob_xprops[] = {
     },
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 struct blob_range {
     size_t offset;
@@ -459,7 +397,7 @@ static int _parse_range(jmap_req_t *req __attribute__((unused)),
 static int jmap_blob_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     json_t *jval;
     size_t i;
@@ -567,7 +505,6 @@ static int jmap_blob_get(jmap_req_t *req)
                 json_object_set_new(item, "digest:sha", json_stringn(output, 28));
             }
 
-#ifdef HAVE_SSL
             if (jmap_wantprop(get.props, "digest:sha-256")) {
                 unsigned char data[32];
                 memset(data, 0, sizeof(data));
@@ -577,8 +514,6 @@ static int jmap_blob_get(jmap_req_t *req)
                 charset_b64encode_mimebody((char *)data, 32, output, &len64, NULL, 0 /* no wrap */);
                 json_object_set_new(item, "digest:sha-256", json_stringn(output, 44));
             }
-
-#endif
         }
         jmap_getblob_ctx_fini(&ctx);
     }
@@ -698,7 +633,7 @@ static int caleventid_cb(void *vrock, struct caldav_jscal *jscal)
 static int jmap_blob_lookup(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     int32_t datatypes = 0;
     json_t *err = NULL;
     struct buf buf = BUF_INITIALIZER;
@@ -804,10 +739,12 @@ static int jmap_blob_lookup(jmap_req_t *req)
 
             /* Read message record */
             struct message_guid guid;
+            struct timespec internaldate;
             bit64 cid = 0;
             msgrecord_t *mr = NULL;
             r = msgrecord_find(mbox, getblob->uid, &mr);
             if (!r) r = msgrecord_get_guid(mr, &guid);
+            if (!r) r = msgrecord_get_internaldate(mr, &internaldate);
             if (!r) r = msgrecord_get_cid(mr, &cid);
             msgrecord_unref(&mr);
             if (r) {
@@ -835,20 +772,24 @@ static int jmap_blob_lookup(jmap_req_t *req)
                 strarray_t *ids = values + i;
 
                 switch (item->typenum) {
-                case DATATYPE_MAILBOX:
-                    strarray_add(ids, uniqueid);
+                case DATATYPE_MAILBOX: {
+                    char mboxid[JMAP_MAX_MAILBOXID_SIZE];
+                    jmap_set_mailboxid(req->cstate, mbentry, mboxid);
+                    strarray_add(ids, mboxid);
                     break;
+                }
 
                 case DATATYPE_THREAD: {
                     char threadid[JMAP_THREADID_SIZE];
-                    jmap_set_threadid(cid, threadid);
+                    jmap_set_threadid(req->cstate, cid, threadid);
                     strarray_add(ids, threadid);
                     break;
                     }
 
                 case DATATYPE_EMAIL: {
-                    char emailid[JMAP_EMAILID_SIZE];
-                    jmap_set_emailid(&guid, emailid);
+                    char emailid[JMAP_MAX_EMAILID_SIZE];
+                    jmap_set_emailid(req->cstate, &guid,
+                                     0, &internaldate, emailid);
                     strarray_add(ids, emailid);
                     break;
                     }
@@ -943,6 +884,7 @@ done:
     return 0;
 }
 
+// clang-format off
 static const jmap_property_t blob_upload_props[] = {
     {
         "id",
@@ -962,6 +904,7 @@ static const jmap_property_t blob_upload_props[] = {
 
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static int _set_arg_to_buf(struct jmap_req *req, struct buf *buf, json_t *arg, int recurse, json_t **errp)
 {
@@ -1091,7 +1034,7 @@ static int _upload_arg_to_buf(struct jmap_req *req, struct buf *buf, json_t *arg
 static int jmap_blob_upload(struct jmap_req *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_set set;
+    struct jmap_set set = JMAP_SET_INITIALIZER;
     json_t *jerr = NULL;
     int r = 0;
     time_t now = time(NULL);

@@ -1,0 +1,38 @@
+#include "cunit/unit.h"
+#include "imap/auditlog.h"
+
+#include "lib/libconfig.h"
+
+#include <syslog.h>
+
+#define DBDIR "test-auditlog-dbdir"
+
+static int set_up(void)
+{
+    config_read_string("configdirectory: "DBDIR"/conf\n"
+                       "auditlog: yes\n");
+    return 0;
+}
+
+static int tear_down(void)
+{
+    config_reset();
+    return 0;
+}
+
+static void test_basic(void)
+{
+    const uint64_t bytes_in = 1123, bytes_out = 98714;
+    char expect[1024];
+
+    /* don't need exhaustive format testing, logfmt.testc already does that */
+    snprintf(expect, sizeof(expect),
+             "event=%s used.bytes.in=%" PRIu64 " used.bytes.out=%" PRIu64,
+             "auditlog.traffic", bytes_in, bytes_out);
+
+    CU_SYSLOG_MATCH_SUBSTR(expect);
+    auditlog_traffic(bytes_in, bytes_out);
+    CU_ASSERT_SYSLOG(/* all */ 0, 1);
+}
+
+/* vim: set ft=c: */

@@ -1,45 +1,6 @@
-/* ctl_zoneinfo.c -- Program to perform operations on zoneinfo db
- *
- * Copyright (c) 1994-2013 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* ctl_zoneinfo.c -- Program to perform operations on zoneinfo db */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -87,7 +48,6 @@ int main(int argc, char **argv)
 {
     int opt, r = 0;
     char *alt_config = NULL, *pub = NULL, *ver = NULL, *winfile = NULL;
-    const char *zoneinfo_dir = NULL;
     enum { REBUILD, WINZONES, NONE } op = NONE;
 
     /* keep this in alphabetical order */
@@ -142,8 +102,7 @@ int main(int argc, char **argv)
     signals_set_shutdown(&shut_down);
     signals_add_handlers(0);
 
-    zoneinfo_dir = config_getstring(IMAPOPT_ZONEINFO_DIR);
-    if (!zoneinfo_dir) {
+    if (!config_zoneinfo_dir) {
         fprintf(stderr, "zoneinfo_dir must be set for tzdist service\n");
         cyrus_done();
         return EX_CONFIG;
@@ -167,7 +126,7 @@ int main(int argc, char **argv)
         hash_insert(INFO_TZID, info, &tzentries);
 
         /* Add LEAP record (last updated and hash) */
-        snprintf(buf, sizeof(buf), "%s%s", zoneinfo_dir, FNAME_LEAPSECFILE);
+        snprintf(buf, sizeof(buf), "%s%s", config_zoneinfo_dir, FNAME_LEAPSECFILE);
         if (verbose) printf("Processing leap seconds file %s\n", buf);
         if (!(fp = fopen(buf, "r"))) {
             fprintf(stderr, "Could not open leap seconds file %s\n", buf);
@@ -204,7 +163,7 @@ int main(int argc, char **argv)
         }
 
         /* Add ZONE/LINK records */
-        do_zonedir(zoneinfo_dir, &tzentries, info);
+        do_zonedir(config_zoneinfo_dir, &tzentries, info);
 
         zoneinfo_open(NULL);
 
@@ -260,8 +219,8 @@ int main(int argc, char **argv)
             goto done;
         }
 
-        if (chdir(zoneinfo_dir)) {
-            fprintf(stderr, "chdir(%s) failed\n", zoneinfo_dir);
+        if (chdir(config_zoneinfo_dir)) {
+            fprintf(stderr, "chdir(%s) failed\n", config_zoneinfo_dir);
             goto done;
         }
 

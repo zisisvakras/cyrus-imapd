@@ -2,9 +2,9 @@
 use Cassandane::Tiny;
 
 sub test_addressbook_set_sharewith_acl
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
     my $admin = $self->{adminstore}->get_client();
 
@@ -21,6 +21,12 @@ sub test_addressbook_set_sharewith_acl
     ]);
     my $addressbookId = $res->[0][1]{created}{1}{id};
     $self->assert_not_null($addressbookId);
+    my $href = $res->[0][1]{created}{1}{'cyrusimap.org:href'};
+    $self->assert_not_null($href);
+
+    # parse href into an mboxname
+    my @comps = split(/\//, $href);
+    my $mboxname = $comps[-1];
 
     my @testCases = ({
         rights => {
@@ -37,7 +43,7 @@ sub test_addressbook_set_sharewith_acl
         },
     }, {
         rights => {
-            mayAdmin => JSON::true,
+            mayShare => JSON::true,
         },
         acl => 'wa',
    }, {
@@ -72,13 +78,13 @@ sub test_addressbook_set_sharewith_acl
         my %mergedrights = ((
             mayRead => JSON::false,
             mayWrite => JSON::false,
-            mayAdmin => JSON::false,
+            mayShare => JSON::false,
             mayDelete => JSON::false,
         ), %{$_->{wantRights}});
 
         $self->assert_deep_equals(\%mergedrights,
             $res->[1][1]{list}[0]{shareWith}{test1});
-        my %acl = @{$admin->getacl("user.cassandane.#addressbooks.$addressbookId")};
+        my %acl = @{$admin->getacl("user.cassandane.#addressbooks.$mboxname")};
         $self->assert_str_equals($_->{acl}, $acl{test1});
     }
 }

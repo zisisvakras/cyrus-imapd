@@ -1,45 +1,6 @@
-/* caldav_util.c -- utility functions for dealing with CALDAV database
- *
- * Copyright (c) 1994-2021 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* caldav_util.c -- utility functions for dealing with CALDAV database */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -60,6 +21,7 @@
 #include "strhash.h"
 #include "syslog.h"
 #include "times.h"
+#include "user.h"
 #include "util.h"
 #include "zoneinfo_db.h"
 
@@ -169,10 +131,12 @@ EXPORTED int caldav_get_validators(struct mailbox *mailbox, void *data,
     if ((namespace_calendar.allow & ALLOW_USERDATA) &&
         cdata->dav.imap_uid && cdata->comp_flags.shared &&
         caldav_is_personalized(mailbox, cdata, userid, &userdata)) {
-        struct dlist *dl;
+        struct dlist *dl = NULL;
 
         /* Parse the userdata and fetch the validators */
-        dlist_parsemap(&dl, 1, buf_base(&userdata), buf_len(&userdata));
+        r = dlist_parsemap(&dl, 1, buf_base(&userdata), buf_len(&userdata));
+        buf_free(&userdata);
+        if (r) return r;
 
         if (etag) {
             struct message_guid *userdata_guid;
@@ -196,11 +160,10 @@ EXPORTED int caldav_get_validators(struct mailbox *mailbox, void *data,
             dlist_getdate(dl, "LASTMOD", &user_lastmod);
 
             /* Per-user Last-Modified is latest mod time */
-            *lastmod = MAX(record->internaldate, user_lastmod);
+            *lastmod = MAX(record->internaldate.tv_sec, user_lastmod);
         }
 
         dlist_free(&dl);
-        buf_free(&userdata);
     }
     else if (cdata->comp_flags.defaultalerts) {
         if (etag) {
@@ -232,21 +195,17 @@ EXPORTED int caldav_is_personalized(struct mailbox *mailbox,
 
     if (cdata->comp_flags.shared) {
         /* Lookup per-user calendar data */
-        int r = mailbox_get_annotate_state(mailbox, cdata->dav.imap_uid, NULL);
+        mbname_t *mbname = NULL;
 
-        if (!r) {
-            mbname_t *mbname = NULL;
-
-            if (mailbox->i.options & OPT_IMAP_SHAREDSEEN) {
-                /* No longer using per-user-data - use owner data */
-                mbname = mbname_from_intname(mailbox_name(mailbox));
-                userid = mbname_userid(mbname);
-            }
-
-            r = mailbox_annotation_lookup(mailbox, cdata->dav.imap_uid,
-                                          PER_USER_CAL_DATA, userid, userdata);
-            mbname_free(&mbname);
+        if (mailbox->i.options & OPT_IMAP_SHAREDSEEN) {
+            /* No longer using per-user-data - use owner data */
+            mbname = mbname_from_intname(mailbox_name(mailbox));
+            userid = mbname_userid(mbname);
         }
+
+        int r = annotatemore_msg_lookup(mailbox, cdata->dav.imap_uid,
+                                        PER_USER_CAL_DATA, userid, userdata);
+        mbname_free(&mbname);
 
         if (!r && buf_len(userdata)) return 1;
         buf_free(userdata);
@@ -1168,7 +1127,7 @@ EXPORTED int caldav_store_resource(struct transaction_t *txn, icalcomponent *ica
         if (organizer) {
             assert(!buf_len(&txn->buf));
             buf_printf(&txn->buf, "<%s>", organizer);
-            mimehdr = charset_encode_mimeheader(buf_cstring(&txn->buf),
+            mimehdr = charset_encode_addrheader(buf_cstring(&txn->buf),
                                                 buf_len(&txn->buf), 0);
             spool_replace_header(xstrdup("From"), mimehdr, txn->req_hdrs);
             buf_reset(&txn->buf);
@@ -1193,7 +1152,7 @@ EXPORTED int caldav_store_resource(struct transaction_t *txn, icalcomponent *ica
 
     if (strarray_size(schedule_addresses)) {
         char *value = strarray_join(schedule_addresses, ",");
-        mimehdr = charset_encode_mimeheader(value, 0, 0);
+        mimehdr = charset_encode_addrheader(value, 0, 0);
         spool_replace_header(xstrdup("X-Schedule-User-Address"),
                              mimehdr, txn->req_hdrs);
         free(value);
@@ -1341,7 +1300,7 @@ static int _create_mailbox(const char *userid, const char *mailboxname,
                            const struct namespace *namespace,
                            const struct auth_state *authstate,
                            int is_jmapcalendar,
-                           struct mboxlock **namespacelockp)
+                           user_nslock_t **user_nslockp)
 {
     char rights[100];
     struct mailbox *mailbox = NULL;
@@ -1349,8 +1308,8 @@ static int _create_mailbox(const char *userid, const char *mailboxname,
     int r = mboxlist_lookup(mailboxname, NULL, NULL);
     if (r != IMAP_MAILBOX_NONEXISTENT) return r;
 
-    if (!*namespacelockp) {
-        *namespacelockp = mboxname_usernamespacelock(mailboxname);
+    if (!*user_nslockp) {
+        *user_nslockp = user_nslock_lockmb_w(mailboxname);
         // maybe we lost the race on this one
         r = mboxlist_lookup(mailboxname, NULL, NULL);
         if (r != IMAP_MAILBOX_NONEXISTENT) return r;
@@ -1409,7 +1368,7 @@ static int _create_mailbox(const char *userid, const char *mailboxname,
 
 EXPORTED unsigned long config_types_to_caldav_types(void)
 {
-    unsigned long config_types =
+    uint64_t config_types =
         config_getbitfield(IMAPOPT_CALENDAR_COMPONENT_SET);
     unsigned long types = 0;
 
@@ -1438,7 +1397,7 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
 {
     int r;
     char *mailboxname;
-    struct mboxlock *namespacelock = NULL;
+    user_nslock_t *user_nslock = NULL;
 
     /* calendar-home-set */
     mailboxname = caldav_mboxname(userid, NULL);
@@ -1463,7 +1422,7 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
             else {
                 r = _create_mailbox(userid, mailboxname, MBTYPE_CALENDAR, 0,
                                     ACL_ALL | DACL_READFB, DACL_READFB, NULL,
-                                    namespace, authstate, 0, &namespacelock);
+                                    namespace, authstate, 0, &user_nslock);
             }
         }
         else if (r == IMAP_MAILBOX_NONEXISTENT) {
@@ -1484,7 +1443,7 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
         r = _create_mailbox(userid, mailboxname, MBTYPE_CALENDAR, comp_types,
                             ACL_ALL | DACL_READFB, DACL_READFB,
                             config_getstring(IMAPOPT_CALENDAR_DEFAULT_DISPLAYNAME),
-                            namespace, authstate, 1, &namespacelock);
+                            namespace, authstate, 1, &user_nslock);
         free(mailboxname);
         if (r) goto done;
     }
@@ -1495,7 +1454,7 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
         mailboxname = caldav_mboxname(userid, SCHED_INBOX);
         r = _create_mailbox(userid, mailboxname, MBTYPE_CALENDAR, 0,
                             ACL_ALL | DACL_SCHED, DACL_SCHED, NULL,
-                            namespace, authstate, 0, &namespacelock);
+                            namespace, authstate, 0, &user_nslock);
         free(mailboxname);
         if (r) goto done;
 
@@ -1503,7 +1462,7 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
         mailboxname = caldav_mboxname(userid, SCHED_OUTBOX);
         r = _create_mailbox(userid, mailboxname, MBTYPE_CALENDAR, 0,
                             ACL_ALL | DACL_SCHED, 0, NULL,
-                            namespace, authstate, 0, &namespacelock);
+                            namespace, authstate, 0, &user_nslock);
         free(mailboxname);
         if (r) goto done;
     }
@@ -1514,13 +1473,13 @@ EXPORTED int caldav_create_defaultcalendars(const char *userid,
         mailboxname = caldav_mboxname(userid, MANAGED_ATTACH);
         r = _create_mailbox(userid, mailboxname, MBTYPE_COLLECTION, 0,
                             ACL_ALL, ACL_READ, NULL,
-                            namespace, authstate, 0, &namespacelock);
+                            namespace, authstate, 0, &user_nslock);
         free(mailboxname);
         if (r) goto done;
     }
 
   done:
-    if (namespacelock) mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -1635,7 +1594,7 @@ static int caldav_bump_defaultalarms_mailbox(struct mailbox *mailbox)
         }
         if (dl) {
             /* Update modseq in the per-user data */
-            dlist_updatedate(dl, "LASTMOD", copyrecord.last_updated);
+            dlist_updatedate(dl, "LASTMOD", copyrecord.last_updated.tv_sec);
             dlist_updatenum64(dl, "MODSEQ", copyrecord.modseq);
             buf_reset(&userdata);
             dlist_printbuf(dl, 1, &userdata);

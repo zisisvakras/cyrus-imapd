@@ -4,12 +4,11 @@ use Cassandane::Tiny;
 sub test_email_set_getquota
     :min_version_3_1 :needs_component_sieve
     :JMAPExtensions
+    ($self)
 {
-    my ($self) = @_;
-
-    $self->_set_quotaroot('user.cassandane');
+    $self->set_quotaroot('user.cassandane');
     xlog $self, "set ourselves a basic limit";
-    $self->_set_quotalimits(storage => 1000); # that's 1000 * 1024 bytes
+    $self->set_quotalimits(storage => 1000); # that's 1000 * 1024 bytes
 
     my $jmap = $self->{jmap};
     my $service = $self->{instance}->get_service("http");

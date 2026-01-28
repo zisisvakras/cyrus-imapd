@@ -1,45 +1,6 @@
-/* jmap_notes.c -- Routines for handling JMAP notes
- *
- * Copyright (c) 1994-2020 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_notes.c -- Routines for handling JMAP notes */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -75,31 +36,35 @@ static int jmap_note_get(jmap_req_t *req);
 static int jmap_note_set(jmap_req_t *req);
 static int jmap_note_changes(jmap_req_t *req);
 
+// clang-format off
 static jmap_method_t jmap_notes_methods_standard[] = {
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
+// clang-format off
 static jmap_method_t jmap_notes_methods_nonstandard[] = {
     {
         "Note/get",
         JMAP_NOTES_EXTENSION,
         &jmap_note_get,
-        /*flags*/0
+        JMAP_NEED_CSTATE,
     },
     {
         "Note/set",
         JMAP_NOTES_EXTENSION,
         &jmap_note_set,
-        JMAP_READ_WRITE
+        JMAP_NEED_CSTATE|JMAP_READ_WRITE
     },
     {
         "Note/changes",
         JMAP_NOTES_EXTENSION,
         &jmap_note_changes,
-        /*flags*/0
+        JMAP_NEED_CSTATE,
     },
     { NULL, NULL, NULL, 0}
 };
+// clang-format on
 
 HIDDEN void jmap_notes_init(jmap_settings_t *settings)
 {
@@ -197,14 +162,6 @@ static int ensure_notes_collection(const char *accountid, mbentry_t **mbentryp)
         return 0;
     }
 
-    // otherwise, clean up ready for next attempt
-    mboxlist_entry_free(&mbentry);
-
-    struct mboxlock *namespacelock = user_namespacelock(accountid);
-
-    // did we lose the race?
-    r = lookup_notes_collection(accountid, &mbentry);
-
     if (r == IMAP_MAILBOX_NONEXISTENT) {
         if (!mbentry) goto done;
         else if (mbentry->server) {
@@ -221,6 +178,7 @@ static int ensure_notes_collection(const char *accountid, mbentry_t **mbentryp)
                    mbentry->name, error_message(r));
         }
         else {
+            /* Add special-use flag */
             char *userid = mboxname_to_userid(mbentry->name);
             static const char *annot = "/specialuse";
             struct buf buf = BUF_INITIALIZER;
@@ -234,11 +192,16 @@ static int ensure_notes_collection(const char *accountid, mbentry_t **mbentryp)
                        annot, error_message(r));
                 goto done;
             }
+
+            /* Re-fetch the mbentry so it is fully populated */
+            char *mboxname = xstrdup(mbentry->name);
+            mboxlist_entry_free(&mbentry);
+            r = mboxlist_lookup(mboxname, &mbentry, NULL);
+            free(mboxname);
         }
     }
 
  done:
-    mboxname_release(&namespacelock);
     if (mbentryp && !r) *mbentryp = mbentry;
     else mboxlist_entry_free(&mbentry);
     return r;
@@ -297,24 +260,34 @@ static int _note_get(message_t *msg, json_t *note, hash_table *props,
 
     /* body */
     if (jmap_wantprop(props, "body")) {
-        int encoding = 0;
-        const char *charset_id = NULL;
-        charset_t charset = CHARSET_UNKNOWN_CHARSET;
-
         buf_reset(buf);
         r = message_get_body(msg, buf);
-        if (!r) r = message_get_encoding(msg, &encoding);
-        if (!r) r = message_get_charset_id(msg, &charset_id);
+        if (!r) {
+            struct body *body;
+
+            message_read_bodystructure(msg_record(msg), &body);
+            if (body) {
+                int encoding = encoding_lookupname(body->encoding);
+                charset_t charset = charset_lookupname(body->charset_id);
+
+                if (encoding ||
+                    strcasecmp(charset_canon_name(charset), "utf-8")) {
+                    char *dec = charset_to_utf8cstr(buf_base(buf), buf_len(buf),
+                                                    charset, encoding);
+                    if (dec) {
+                        buf_setcstr(buf, dec);
+                        free(dec);
+                    }
+                }
+                charset_free(&charset);
+                message_free_body(body);
+                free(body);
+            }
+        }
         if (r) return r;
 
-        charset = charset_lookupname(charset_id);
-        if (encoding || strcasecmp(charset_canon_name(charset), "utf-8")) {
-            char *dec = charset_to_utf8cstr(buf_cstring(buf), buf_len(buf),
-                                            charset, encoding);
-            buf_setcstr(buf, dec);
-            free(dec);
-        }
-        charset_free(&charset);
+        buf_replace_all(buf, "\r\n", "\n");  // replace CRLF with LF
+        buf_replace_all(buf, "\r", "\n");    // replace CR with LF
 
         json_object_set_new(note, "body", json_string(buf_cstring(buf)));
     }
@@ -405,6 +378,7 @@ static void not_found_cb(const char *id,
     }
 }
 
+// clang-format off
 static const jmap_property_t notes_props[] = {
     {
         "id",
@@ -438,11 +412,12 @@ static const jmap_property_t notes_props[] = {
     },
     { NULL, NULL, 0 }
 };
+// clang-format on
 
 static int jmap_note_get(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_get get;
+    struct jmap_get get = JMAP_GET_INITIALIZER;
     json_t *err = NULL;
     mbentry_t *mbentry = NULL;
     struct mailbox *mbox = NULL;
@@ -457,18 +432,25 @@ static int jmap_note_get(jmap_req_t *req)
         goto done;
     }
 
-    int r = ensure_notes_collection(req->accountid, &mbentry);
+    int r = lookup_notes_collection(req->accountid, &mbentry);
     if (r) {
-        syslog(LOG_ERR,
-               "jmap_note_get: ensure_notes_collection(%s): %s",
-               req->accountid, error_message(r));
+        if (r == IMAP_MAILBOX_NONEXISTENT) {
+            /* Build response */
+            buf_printf(&buf, MODSEQ_FMT, 0UL);
+            get.state = buf_release(&buf);
+            jmap_ok(req, jmap_get_reply(&get));
+        }
+        else {
+            syslog(LOG_ERR,
+                   "jmap_note_get: lookup_notes_collection(%s): %s",
+                   req->accountid, error_message(r));
+        }
         goto done;
     }
 
     rights = jmap_myrights_mbentry(req, mbentry);
 
     r = mailbox_open_irl(mbentry->name, &mbox);
-    mboxlist_entry_free(&mbentry);
     if (r) goto done;
 
     /* Does the client request specific notes? */
@@ -501,6 +483,7 @@ static int jmap_note_get(jmap_req_t *req)
     mailbox_close(&mbox);
 
 done:
+    mboxlist_entry_free(&mbentry);
     jmap_parser_fini(&parser);
     jmap_get_fini(&get);
 
@@ -536,12 +519,14 @@ static int _notes_setargs_check(const char *id, json_t *args, json_t **err)
     }
 
     arg = json_object_get(args, "body");
-    if (arg && (!json_is_string(arg) || !json_object_get(args, "isHTML"))) {
+    if (arg && (!json_is_string(arg) ||
+                (is_create && !json_object_get(args, "isHTML")))) {
         jmap_parser_invalid(&parser, "body");
     }
 
     arg = json_object_get(args, "isHTML");
-    if (arg && (!json_is_boolean(arg) || !json_object_get(args, "body"))) {
+    if (arg && (!json_is_boolean(arg) ||
+                (is_create && !json_object_get(args, "body")))) {
         jmap_parser_invalid(&parser, "isHTML");
     }
 
@@ -556,7 +541,8 @@ static int _notes_setargs_check(const char *id, json_t *args, json_t **err)
     return r;
 }
 
-static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note)
+static int _note_create(struct mailbox *mailbox, json_t *note,
+                        modseq_t cmodseq, json_t **new_note)
 {
     struct stagemsg *stage = NULL;
     struct appendstate as;
@@ -566,12 +552,14 @@ static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note
     char datestr[80], *from, *title, *body;
     FILE *f = NULL;
     int r = 0, isFlagged = 0, isHTML = 0, qpencode = 0;
-    time_t now = time(0);
+    struct timespec now;
     json_t *prop;
     const char *uid = NULL, *created = NULL;
 
+    cyrus_gettime(CLOCK_REALTIME, &now);
+
     /* Prepare to stage the message */
-    if (!(f = append_newstage(mailbox_name(mailbox), now, 0, &stage))) {
+    if (!(f = append_newstage(mailbox_name(mailbox), now.tv_sec, 0, &stage))) {
         syslog(LOG_ERR, "append_newstage(%s) failed", mailbox_name(mailbox));
         r = IMAP_IOERROR;
         goto done;
@@ -586,10 +574,10 @@ static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note
         json_object_set_new(*new_note, "id", json_string(uid));
     }
 
-    time_to_rfc3339(now, datestr, sizeof(datestr));
+    time_to_rfc3339(now.tv_sec, datestr, sizeof(datestr));
     json_object_set_new(*new_note, "lastSaved", json_string(datestr));
 
-    time_to_rfc5322(now, datestr, sizeof(datestr));
+    time_to_rfc5322(now.tv_sec, datestr, sizeof(datestr));
 
     prop = json_object_get(note, "created");
     if (prop) created = json_string_value(prop);
@@ -643,7 +631,7 @@ static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note
     else {
         buf_printf(&buf, "<%s@%s>", httpd_userid, config_servername);
     }
-    from = charset_encode_mimeheader(buf_cstring(&buf), buf_len(&buf), 0);
+    from = charset_encode_addrheader(buf_cstring(&buf), buf_len(&buf), 0);
 
     fprintf(f, "MIME-Version: 1.0 (Cyrus-JMAP/%s)\r\n"
             "X-Uniform-Type-Identifier: %s\r\n"
@@ -662,7 +650,7 @@ static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note
     free(title);
     free(from);
     free(body);
-    if (ferror(f) || fflush(f)) {
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
         r = IMAP_IOERROR;
     }
     fclose(f);
@@ -679,7 +667,7 @@ static int _note_create(struct mailbox *mailbox, json_t *note, json_t **new_note
 
     /* Append the message to the mailbox */
     if (isFlagged) strarray_append(&flags, "\\Flagged");
-    r = append_fromstage(&as, &bodypart, stage, now, 0,
+    r = append_fromstage(&as, &bodypart, stage, &now, cmodseq,
                          &flags, 0, /*annots*/NULL);
 
     if (r) {
@@ -750,7 +738,8 @@ static void _notes_update_cb(const char *id, message_t *msg,
           json_t *new_note = jmap_patchobject_apply(note, patch, NULL, 0);
 
             if (new_note) {
-                r = _note_create(msg_mailbox(msg), new_note, &updated_note);
+                r = _note_create(msg_mailbox(msg), new_note,
+                                 msg_createdmodseq(msg), &updated_note);
                 json_decref(new_note);
             }
             else {
@@ -829,7 +818,7 @@ static void _notes_destroy_cb(const char *id, message_t *msg,
 static int jmap_note_set(jmap_req_t *req)
 {
     struct jmap_parser parser = JMAP_PARSER_INITIALIZER;
-    struct jmap_set set;
+    struct jmap_set set = JMAP_SET_INITIALIZER;
     struct mailbox *mbox = NULL;
     mbentry_t *mbentry = NULL;
     struct buf buf = BUF_INITIALIZER;
@@ -887,7 +876,7 @@ static int jmap_note_set(jmap_req_t *req)
             err = json_pack("{s:s}", "type", "forbidden");
         }
         else if (!_notes_setargs_check(NULL/*id*/, val, &err)) {
-            r = _note_create(mbox, val, &new_note);
+            r = _note_create(mbox, val, 0/*cmodseq*/, &new_note);
             if (r) err = jmap_server_error(r);
         }
         if (err) {
@@ -986,21 +975,26 @@ static int jmap_note_changes(jmap_req_t *req)
         goto done;
     }
 
-    int r = ensure_notes_collection(req->accountid, &mbentry);
+    int r = lookup_notes_collection(req->accountid, &mbentry);
     if (r) {
-        syslog(LOG_ERR,
-               "jmap_note_changes: ensure_submission_collection(%s): %s",
-               req->accountid, error_message(r));
+        if (r == IMAP_MAILBOX_NONEXISTENT) {
+            /* Set new state */
+            changes.new_modseq = 0;
+            jmap_ok(req, jmap_changes_reply(&changes));
+        }
+        else {
+            syslog(LOG_ERR,
+                   "jmap_note_changes: lookup_submission_collection(%s): %s",
+                   req->accountid, error_message(r));
+        }
         goto done;
     }
 
     r = mailbox_open_irl(mbentry->name, &mbox);
-    mboxlist_entry_free(&mbentry);
+    if (r) goto done;
 
     r = mailbox_user_flag(mbox, DFLAG_UNBIND, &userflag, 0);
     if (r) userflag = -1;
-
-    if (r) goto done;
 
     struct mailbox_iter *iter = mailbox_iter_init(mbox, changes.since_modseq, 0);
     modseq_t highest_modseq = mbox->i.highestmodseq;
@@ -1106,6 +1100,7 @@ static int jmap_note_changes(jmap_req_t *req)
     jmap_ok(req, jmap_changes_reply(&changes));
 
 done:
+    mboxlist_entry_free(&mbentry);
     jmap_changes_fini(&changes);
     jmap_parser_fini(&parser);
     return 0;

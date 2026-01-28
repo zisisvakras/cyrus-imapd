@@ -1,44 +1,6 @@
-/* mupdate.c -- cyrus murder database master
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mupdate.c -- cyrus murder database master */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -74,16 +36,16 @@
 #include "mupdate-client.h"
 #include "telemetry.h"
 
-#include "strarray.h"
 #include "assert.h"
 #include "global.h"
+#include "loginlog.h"
 #include "mailbox.h"
 #include "mboxlist.h"
 #include "mpool.h"
 #include "nonblock.h"
 #include "prot.h"
+#include "strarray.h"
 #include "tls.h"
-#include "tls_th-lock.h"
 #include "util.h"
 #include "version.h"
 #include "xmalloc.h"
@@ -126,11 +88,7 @@ struct conn {
     sasl_conn_t *saslconn;
     char *userid;
 
-#ifdef HAVE_SSL
     SSL *tlsconn;
-#else
-    void *tlsconn;
-#endif
     void *tls_comp;     /* TLS compression method, if any */
     int compress_done;  /* have we done a successful compress? */
 
@@ -360,10 +318,8 @@ static void conn_free(struct conn *C)
     if (C->pin) prot_free(C->pin);
     if (C->pout) prot_free(C->pout);
 
-#ifdef HAVE_SSL
     if (C->tlsconn) tls_reset_servertls(&C->tlsconn);
     tls_shutdown_serverengine();
-#endif
 
     cyrus_close_sock(C->fd);
     if (C->logfd != -1) close(C->logfd);
@@ -552,12 +508,6 @@ int service_init(int argc, char **argv,
 
     database_init();
 
-#ifdef HAVE_SSL
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    CRYPTO_thread_setup();
-#endif
-#endif
-
     if (!masterp) {
         r = pthread_create(&t, NULL, &mupdate_client_start, NULL);
         if (r == 0) {
@@ -603,11 +553,6 @@ int service_init(int argc, char **argv,
 /* Called by service API to shut down the service */
 void service_abort(int error)
 {
-#ifdef HAVE_SSL
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    CRYPTO_thread_cleanup();
-#endif
-#endif
     shut_down(error);
 }
 
@@ -845,7 +790,7 @@ static mupdate_docmd_result_t docmd(struct conn *c)
         break;
 
     case 'S':
-        if (!strcmp(c->cmd.s, "Starttls")) {
+        if (!strcmp(c->cmd.s, "Starttls") && tls_starttls_enabled()) {
             CHECKNEWLINE(c, ch);
 
             /* XXX  discard any input pipelined after STARTTLS */
@@ -1050,7 +995,7 @@ static void dobanner(struct conn *c)
     prot_printf(c->pout, "%s\r\n",
                 (ret == SASL_OK && mechcount > 0) ? mechs : "* AUTH");
 
-    if (tls_enabled() && !c->tlsconn) {
+    if (tls_starttls_enabled() && !c->tlsconn) {
         prot_printf(c->pout, "* STARTTLS\r\n");
     }
 
@@ -1495,7 +1440,7 @@ static void cmd_authenticate(struct conn *C,
 
     if (r) {
         const char *errorstring = NULL;
-        const char *userid = "-notset-";
+        const char *userid = NULL;
 
         switch (r) {
         case IMAP_SASL_CANCEL:
@@ -1518,9 +1463,8 @@ static void cmd_authenticate(struct conn *C,
             if (r != SASL_NOUSER)
                 sasl_getprop(C->saslconn, SASL_USERNAME, (const void **) &userid);
 
-            syslog(LOG_ERR, "badlogin: %s %s (%s) [%s]",
-                   C->clienthost,
-                   mech, userid, sasl_errdetail(C->saslconn));
+            loginlog_bad(C->clienthost, userid, mech, NULL,
+                         sasl_errdetail(C->saslconn));
 
             prot_printf(C->pout, "%s NO \"%s\"\r\n", tag,
                         sasl_errstring((r == SASL_NOUSER ? SASL_BADAUTH : r),
@@ -1540,8 +1484,7 @@ static void cmd_authenticate(struct conn *C,
     }
 
     C->userid = (char *) val;
-    syslog(LOG_NOTICE, "login: %s %s %s%s %s", C->clienthost, C->userid,
-           mech, C->tlsconn ? "+TLS" : "", "User logged in");
+    loginlog_good(C->clienthost, C->userid, mech, !!C->tlsconn);
 
     prot_printf(C->pout, "%s OK \"Authenticated\"\r\n", tag);
 
@@ -1966,7 +1909,6 @@ static void sendupdates(struct conn *C, int flushnow)
     }
 }
 
-#ifdef HAVE_SSL
 static void cmd_starttls(struct conn *C, const char *tag)
 {
     int result;
@@ -2013,21 +1955,11 @@ static void cmd_starttls(struct conn *C, const char *tag)
     prot_settls(C->pin, C->tlsconn);
     prot_settls(C->pout, C->tlsconn);
 
-#if (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     C->tls_comp = (void *) SSL_get_current_compression(C->tlsconn);
-#endif
 
     /* Reissue capability banner */
     dobanner(C);
 }
-#else
-void cmd_starttls(struct conn *C __attribute__((unused)),
-                  const char *tag __attribute__((unused)))
-{
-    fatal("cmd_starttls() executed, but starttls isn't implemented!",
-          EX_SOFTWARE);
-}
-#endif /* HAVE_SSL */
 
 #ifdef HAVE_ZLIB
 static void cmd_compress(struct conn *C, const char *tag, const char *alg)
@@ -2036,13 +1968,11 @@ static void cmd_compress(struct conn *C, const char *tag, const char *alg)
         prot_printf(C->pout,
                     "%s BAD DEFLATE active via COMPRESS\r\n", tag);
     }
-#if defined(HAVE_SSL) && (OPENSSL_VERSION_NUMBER >= 0x0090800fL)
     else if (C->tls_comp) {
         prot_printf(C->pout,
                     "%s NO %s active via TLS\r\n",
                     tag, SSL_COMP_get_name(C->tls_comp));
     }
-#endif
     else if (strcasecmp(alg, "DEFLATE")) {
         prot_printf(C->pout,
                     "%s NO Unknown COMPRESS algorithm: %s\r\n", tag, alg);

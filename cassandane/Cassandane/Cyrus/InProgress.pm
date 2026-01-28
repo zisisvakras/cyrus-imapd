@@ -43,14 +43,12 @@ use warnings;
 use DateTime;
 use JSON;
 use JSON::XS;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use Storable 'dclone';
 use File::Basename;
 use IO::File;
 use Cwd qw(abs_path getcwd);
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 

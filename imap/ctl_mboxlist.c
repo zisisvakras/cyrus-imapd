@@ -1,44 +1,6 @@
-/* ctl_mboxlist.c -- do DB related operations on mboxlist
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* ctl_mboxlist.c -- do DB related operations on mboxlist */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 /* currently doesn't catch signals; probably SHOULD */
 
@@ -78,6 +40,7 @@
 #include "dlist.h"
 #include "global.h"
 #include "json_support.h"
+#include "jmap_util.h"
 #include "libcyr_cfg.h"
 #include "mboxlist.h"
 #include "mupdate.h"
@@ -95,6 +58,7 @@ enum mboxop { DUMP,
               M_POPULATE,
               UNDUMP,
               VERIFY,
+              FIX_KEYS,
               NONE };
 
 struct dumprock {
@@ -493,7 +457,7 @@ static void do_pop_mupdate(void)
         struct mb_node *me = wipe_head;
         wipe_head = wipe_head->next;
 
-        struct mboxlock *namespacelock = mboxname_usernamespacelock(me->mailbox);
+        user_nslock_t *user_nslock = user_nslock_lockmb_w(me->mailbox);
 
         if (!mboxlist_delayed_delete_isenabled() ||
             mboxname_isdeletedmailbox(me->mailbox, NULL)) {
@@ -504,7 +468,7 @@ static void do_pop_mupdate(void)
                     MBOXLIST_DELETE_LOCALONLY|MBOXLIST_DELETE_FORCE);
         }
 
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
 
         if (ret) {
             fprintf(stderr, "couldn't delete defunct mailbox %s\n",
@@ -612,6 +576,9 @@ static int dump_cb(const mbentry_t *mbentry, void *rockp)
     /* char *uniqueid; */
     json_object_set_new(jobj, "uniqueid", json_string(mbentry->uniqueid));
 
+    /* char *jmapid; */
+    json_object_set_new(jobj, "jmapId", json_string(mbentry->jmapid));
+
     /* char *legacy_specialuse; */
     json_object_set_new(jobj, "legacy_specialuse",
                               json_string(mbentry->legacy_specialuse));
@@ -696,7 +663,8 @@ static void do_undump_legacy(void)
         line++;
 
         sscanf(buf, "%m[^\t]\t%d %ms %m[^>]>%ms " TIME_T_FMT " %" SCNu32
-               " %llu %llu %m[^\n]\n", &newmbentry->name, &newmbentry->mbtype,
+               " " MODSEQ_FMT " " MODSEQ_FMT " %m[^\n]\n",
+               &newmbentry->name, &newmbentry->mbtype,
                &newmbentry->partition, &newmbentry->acl, &newmbentry->uniqueid,
                &newmbentry->mtime, &newmbentry->uidvalidity, &newmbentry->foldermodseq,
                &newmbentry->createdmodseq, &newmbentry->legacy_specialuse);
@@ -713,7 +681,8 @@ static void do_undump_legacy(void)
             mboxlist_entry_free(&newmbentry);
             newmbentry = mboxlist_entry_create();
             sscanf(buf, "%m[^\t]\t%d %ms >%ms " TIME_T_FMT " %" SCNu32
-                   " %llu %llu %m[^\n]\n", &newmbentry->name, &newmbentry->mbtype,
+                   " " MODSEQ_FMT " " MODSEQ_FMT " %m[^\n]\n",
+                   &newmbentry->name, &newmbentry->mbtype,
                    &newmbentry->partition, &newmbentry->uniqueid,
                    &newmbentry->mtime, &newmbentry->uidvalidity, &newmbentry->foldermodseq,
                    &newmbentry->createdmodseq, &newmbentry->legacy_specialuse);
@@ -925,6 +894,16 @@ static int do_undump(void)
             goto skip;
         }
 
+        /* char *jmapid; */
+        if ((tmp = json_string_value(json_object_get(value, "jmapId")))) {
+           newmbentry->jmapid = xstrdup(tmp);
+        }
+        else {
+            /* XXX could potentially infer this if the mailbox is on disk */
+            fprintf(stderr, "missing jmapId for %s\n", key);
+            goto skip;
+        }
+
         /* char *legacy_specialuse; */
         if ((tmp = json_string_value(json_object_get(value, "legacy_specialuse")))) {
             newmbentry->legacy_specialuse = xstrdup(tmp);
@@ -1080,7 +1059,7 @@ static void verify_mboxes(ptrarray_t *mboxes, ptrarray_t *found, int *idx)
         // paths on the filesystem.
         do {
             r = -1;
-	    found_path_entry = ptrarray_nth(found, *idx);
+            found_path_entry = ptrarray_nth(found, *idx);
             if (
                     !(found_path_entry->type & MBOX) ||   /* end of mailboxes */
                     (r = strcmp(found_mailbox_entry->mboxname, found_path_entry->mboxname)) < 0
@@ -1103,7 +1082,7 @@ static void verify_mboxes(ptrarray_t *mboxes, ptrarray_t *found, int *idx)
 
     /* now report all unmatched mailboxes found in filesystem */
     for (i = 0; i < ptrarray_size(found); i++) {
-	found_path_entry = ptrarray_nth(found, i);
+        found_path_entry = ptrarray_nth(found, i);
         if (!(found_path_entry->type & MBOX)) break;
         if (!(found_path_entry->type & MATCHED)) {
             printf("'%s' has a directory '%s' but no DB entry\n",
@@ -1241,6 +1220,87 @@ static void do_verify(void)
     verify_mboxes(mboxes, found, &idx);
 }
 
+static int fix_cb(const mbentry_t *mbentry, void *rockp __attribute__((unused)))
+{
+    mbentry_t *byunqid = NULL;
+
+    int r = mboxlist_lookup_by_uniqueid(mbentry->uniqueid, &byunqid, NULL);
+    if (r) {
+        xsyslog(LOG_NOTICE, "missing uniqueid record, skipping",
+               "mboxname=<%s> uniqueid=<%s>",
+               mbentry->name, mbentry->uniqueid);
+        return 0;
+    }
+
+    // we are not the current record?  We don't need to process this.
+    if (strcmp(mbentry->name, byunqid->name))
+        goto done;
+
+    if (mbentry->jmapid) {
+        mbname_t *mbname = mbname_from_intname(mbentry->name);
+        const char *userid = mbname_userid(mbname);
+
+        if (!userid) userid = "";
+
+        // already got a record, we're good!
+        int res = mboxlist_lookup_by_jmapid(userid, mbentry->jmapid, NULL, NULL);
+        mbname_free(&mbname);
+        if (!res) return 0;
+
+        xsyslog(LOG_NOTICE, "adding missing J record to mboxlist",
+                "mboxname=<%s> jmapid=<%s>",
+                mbentry->name, mbentry->jmapid);
+    }
+    else {
+        struct mailbox *mailbox = NULL;
+        r = mailbox_open_from_mbe(byunqid, &mailbox);
+        if (r) goto done;
+        struct buf jmapid = BUF_INITIALIZER;
+
+        byunqid->foldermodseq = mailbox_modseq_dirty(mailbox);
+
+        buf_putc(&jmapid, JMAP_MAILBOXID_PREFIX);
+        MODSEQ_TO_JMAPID(&jmapid, byunqid->foldermodseq);
+        mailbox_set_jmapid(mailbox, buf_cstring(&jmapid));
+
+        free(byunqid->jmapid);
+        byunqid->jmapid = buf_release(&jmapid);
+        buf_free(&jmapid);
+
+        xsyslog(LOG_NOTICE, "adding new J record to mboxlist",
+                "mboxname=<%s> jmapid=<%s>",
+                byunqid->name, byunqid->jmapid);
+
+        r = mailbox_commit(mailbox);
+        if (r) {
+            xsyslog(LOG_ERR, "DBERROR: error committing transaction",
+                    "error=<%s>", cyrusdb_strerror(r));
+            goto done;
+        }
+    }
+
+    r = mboxlist_updatelock(byunqid, /*localonly*/1);
+    if (r) {
+        xsyslog(LOG_ERR, "failed to update mboxlist",
+                "mboxname=<%s> error=<%s>",
+                mbentry->name, error_message(r));
+    }
+
+done:
+    mboxlist_entry_free(&byunqid);
+
+    return r;
+}
+
+static void do_fix_keys(int intermediary)
+{
+    int flags = MBOXTREE_TOMBSTONES;
+
+    if (intermediary) flags |= MBOXTREE_INTERMEDIATES;
+
+    mboxlist_allmbox("", &fix_cb, NULL, flags);
+}
+
 static void usage(void)
 {
     fprintf(stderr, "DUMP:\n");
@@ -1253,6 +1313,8 @@ static void usage(void)
     fprintf(stderr, "  ctl_mboxlist [-C <alt_config>] -m [-a] [-w] [-i] [-f filename]\n");
     fprintf(stderr, "VERIFY:\n");
     fprintf(stderr, "  ctl_mboxlist [-C <alt_config>] -v [-f filename]\n");
+    fprintf(stderr, "FIX I/J keys:\n");
+    fprintf(stderr, "  ctl_mboxlist [-C <alt_config>] -k [-f filename]\n");
     exit(1);
 }
 
@@ -1268,7 +1330,7 @@ int main(int argc, char *argv[])
     int undump_legacy = 0;
 
     /* keep this in alphabetical order */
-    static const char short_options[] = "C:Ladf:imp:uvwxy";
+    static const char short_options[] = "C:Ladf:ikmp:uvwxy";
 
     static const struct option long_options[] = {
         /* n.b. no long option for -C */
@@ -1277,6 +1339,7 @@ int main(int argc, char *argv[])
         { "dump", no_argument, NULL, 'd' },
         { "filename", required_argument, NULL, 'f' },
         { "interactive", no_argument, NULL, 'i' },
+        { "fix-keys", no_argument, NULL, 'k' },
         { "sync-mupdate", no_argument, NULL, 'm' },
         { "partition", required_argument, NULL, 'p' },
         { "undump", no_argument, NULL, 'u' },
@@ -1315,6 +1378,11 @@ int main(int argc, char *argv[])
 
         case 'u':
             if (op == NONE) op = UNDUMP;
+            else usage();
+            break;
+
+        case 'k':
+            if (op == NONE) op = FIX_KEYS;
             else usage();
             break;
 
@@ -1412,6 +1480,17 @@ int main(int argc, char *argv[])
         mboxlist_open(mboxdb_fname);
 
         do_verify();
+
+        mboxlist_close();
+        mboxlist_done();
+        break;
+
+
+    case FIX_KEYS:
+        mboxlist_init();
+        mboxlist_open(mboxdb_fname);
+
+        do_fix_keys(dointermediary);
 
         mboxlist_close();
         mboxlist_done();

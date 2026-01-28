@@ -1,51 +1,13 @@
-/* jmap_util.h -- Helper routines for JMAP
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* jmap_util.h -- Helper routines for JMAP */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef JMAP_UTIL_H
 #define JMAP_UTIL_H
 
 #include <jansson.h>
 
+#include "carddav_db.h"
 #include "hash.h"
 #include "ical_support.h"
 #include "message.h"
@@ -105,19 +67,22 @@ struct jmap_parser {
     strarray_t path;
     json_t *invalid;
     json_t *serverset;
+    bitvector_t is_encoded;
 };
 
 #define JMAP_PARSER_INITIALIZER { \
     BUF_INITIALIZER, \
     STRARRAY_INITIALIZER, \
     json_array(), \
-    json_object() \
+    json_object(), \
+    BV_INITIALIZER \
 }
 
 extern void jmap_parser_fini(struct jmap_parser *parser);
 extern void jmap_parser_push(struct jmap_parser *parser, const char *prop);
 extern void jmap_parser_push_index(struct jmap_parser *parser,
                                    const char *prop, size_t index, const char *name);
+extern void jmap_parser_push_path(struct jmap_parser *parser, const char *path);
 extern void jmap_parser_pop(struct jmap_parser *parser);
 extern const char* jmap_parser_path(struct jmap_parser *parser, struct buf *buf);
 extern void jmap_parser_invalid(struct jmap_parser *parser, const char *prop);
@@ -193,11 +158,47 @@ extern int jmap_is_valid_id(const char *id);
 #define JMAP_BLOBID_SIZE 42
 extern void jmap_set_blobid(const struct message_guid *guid, char *buf);
 
-#define JMAP_EMAILID_SIZE 26
-extern void jmap_set_emailid(const struct message_guid *guid, char *buf);
+#define JMAP_LEGACY_EMAILID_PREFIX 'M'
+#define JMAP_LEGACY_EMAILID_SIZE 26  // 24 chars of encoded GUID + prefix and NUL
 
+#define JMAP_EMAILID_PREFIX 'S'
+#define JMAP_EMAILID_SIZE (CONV_JMAPID_SIZE + 2)  // +2 for prefix and NUL
+
+#define JMAP_MAX_EMAILID_SIZE MAX(JMAP_EMAILID_SIZE, JMAP_LEGACY_EMAILID_SIZE)
+
+extern void jmap_set_emailid(struct conversations_state *cstate,
+                             const struct message_guid *guid,
+                             uint64_t nanosec,
+                             const struct timespec *ts,
+                             char *emailid);
+
+#define JMAP_MAILBOXID_PREFIX 'P'
+#define JMAP_MAILBOXID_SIZE (CONV_JMAPID_SIZE + 2)  // +2 for prefix and NUL
+
+#define JMAP_MAX_MAILBOXID_SIZE MAX(JMAP_MAILBOXID_SIZE, UUID_STR_LEN)
+
+extern void jmap_set_mailboxid(struct conversations_state *cstate,
+                               const mbentry_t *mbentry, char *mboxid);
+
+#define JMAP_LEGACY_THREADID_PREFIX 'T'
+#define JMAP_THREADID_PREFIX 'A'
 #define JMAP_THREADID_SIZE 18
-extern void jmap_set_threadid(conversation_id_t cid, char *buf);
+extern void jmap_set_threadid(struct conversations_state *cstate,
+                              conversation_id_t cid, char *thrid);
+
+#define JMAP_ADDRBOOKID_PREFIX 'R'
+#define JMAP_ADDRBOOKID_SIZE JMAP_MAILBOXID_SIZE
+
+#define JMAP_MAX_ADDRBOOKID_SIZE MAX(JMAP_ADDRBOOKID_SIZE, MAX_MAILBOX_NAME+1)
+
+extern void jmap_set_addrbookid(struct conversations_state *cstate,
+                                const mbentry_t *mbentry, char *mboxid);
+
+#define JMAP_CONTACTID_PREFIX 'D'
+#define JMAP_CONTACTID_SIZE (CONV_JMAPID_SIZE + 2)  // +2 for prefix and NUL
+extern void jmap_set_contactid(struct conversations_state *cstate,
+                               const struct carddav_data *cdata,
+                               struct buf *cid);
 
 #ifdef HAVE_ICAL
 struct jmap_caleventid {

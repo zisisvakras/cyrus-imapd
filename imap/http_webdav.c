@@ -1,45 +1,6 @@
-/* http_webdav.c -- Routines for handling WebDAV collections in httpd
- *
- * Copyright (c) 1994-2015 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_webdav.c -- Routines for handling WebDAV collections in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -98,6 +59,7 @@ static const struct buf *to_buf(const struct buf *buf)
     return buf;
 }
 
+// clang-format off
 static struct mime_type_t webdav_mime_types[] = {
     /* First item MUST be the default type and storage format */
     { "*/*", NULL, NULL,
@@ -107,8 +69,10 @@ static struct mime_type_t webdav_mime_types[] = {
     },
     { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 };
+// clang-format on
 
 /* Array of supported REPORTs */
+// clang-format off
 static const struct report_type_t webdav_reports[] = {
 
     /* WebDAV Versioning (RFC 3253) REPORTs */
@@ -125,8 +89,10 @@ static const struct report_type_t webdav_reports[] = {
 
     { NULL, 0, NULL, NULL, 0, 0 }
 };
+// clang-format on
 
 /* Array of known "live" properties */
+// clang-format off
 static const struct prop_entry webdav_props[] = {
 
     /* WebDAV (RFC 4918) properties */
@@ -225,7 +191,9 @@ static const struct prop_entry webdav_props[] = {
 
     { NULL, 0, 0, NULL, NULL, NULL }
 };
+// clang-format on
 
+// clang-format off
 struct meth_params webdav_params = {
     webdav_mime_types,
     &webdav_parse_path,
@@ -254,9 +222,11 @@ struct meth_params webdav_params = {
     { DAV_FINITE_DEPTH, webdav_props},
     webdav_reports
 };
+// clang-format on
 
 
 /* Namespace for Webdav collections */
+// clang-format off
 struct namespace_t namespace_drive = {
     URL_NS_DRIVE, 0, "drive", "/dav/drive", NULL,
     http_allow_noauth_get, /*authschemes*/0,
@@ -290,6 +260,7 @@ struct namespace_t namespace_drive = {
         { &meth_unlock,         &webdav_params }       /* UNLOCK       */
     }
 };
+// clang-format on
 
 static void my_webdav_init(struct buf *serverinfo __attribute__((unused)))
 {
@@ -322,12 +293,12 @@ static int my_webdav_auth(const char *userid)
     }
 
     /* Auto-provision toplevel DAV drive collection for 'userid' */
-    struct mboxlock *namespacelock = NULL;
+    user_nslock_t *user_nslock = NULL;
     mbname_t *mbname = mbname_from_userid(userid);
     mbname_push_boxes(mbname, config_getstring(IMAPOPT_DAVDRIVEPREFIX));
     int r = mboxlist_lookup(mbname_intname(mbname), NULL, NULL);
     if (r == IMAP_MAILBOX_NONEXISTENT) {
-        namespacelock = user_namespacelock(userid);
+        user_nslock = user_nslock_lock_w(userid);
         // did we lose the race?  Nothing to do!
         r = mboxlist_lookup(mbname_intname(mbname), NULL, NULL);
         if (r != IMAP_MAILBOX_NONEXISTENT) goto done;
@@ -375,7 +346,7 @@ static int my_webdav_auth(const char *userid)
     }
 
  done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mbname_free(&mbname);
     return r;
 }

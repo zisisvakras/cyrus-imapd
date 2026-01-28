@@ -42,7 +42,6 @@ use strict;
 use warnings;
 use Data::Dumper;
 
-use lib '.';
 use base qw(Cassandane::Cyrus::TestCase);
 use Cassandane::Util::Log;
 use Cassandane::Util::Words;
@@ -139,6 +138,16 @@ sub test_frontend_commands
     $self->assert_not_null($result);
     $self->assert_str_equals('ok', $frontend->get_last_completion_response());
 
+    # enable should be proxied through
+    $result = $frontend->enable('qresync');
+    $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+
+    # should be able to fetch vanished
+    $result = $frontend->uid(1);
+    $result = $frontend->fetch('1:*', ['FLAGS'],
+                               ['CHANGEDSINCE', '1', 'VANISHED']);
+    $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+
     # XXX test other commands
 }
 
@@ -191,9 +200,9 @@ sub test_list_specialuse
         # only want specialuse folders
         $self->assert(exists $specialuse{$name});
         # must be flagged with appropriate flag
-        $self->assert_equals(1, scalar grep { $_ eq "\\$name" } @{$flags});
+        $self->assert_contains("\\$name", $flags, 1);
         # must be flagged with \subscribed
-        $self->assert_equals(1, scalar grep { $_ eq '\\Subscribed' } @{$flags});
+        $self->assert_contains('\\Subscribed', $flags, 1);
     }
 
     # make sure no expected responses were missing
@@ -202,6 +211,73 @@ sub test_list_specialuse
     # ask the frontend about them
     my $fresult = $frontend->list([qw(SPECIAL-USE)], "", "*",
         'RETURN', [qw(SUBSCRIBED)]);
+    $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+    xlog $self, Dumper $fresult;
+
+    # expect the same results as on backend
+    $self->assert_deep_equals($bresult, $fresult);
+}
+
+sub test_list_subscribed
+{
+    my ($self) = @_;
+
+    my $frontend = $self->{frontend_store}->get_client();
+    my $backend = $self->{backend1_store}->get_client();
+
+    my %subscribed = map { $_ => 1 } qw( A1 A2 A3 );
+    my %other = map { $_ => 1 } qw( lists personal timesheets );
+
+    # create some subscribed folders
+    foreach my $f (keys %subscribed) {
+        $frontend->create("INBOX.$f");
+        $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+
+        $frontend->subscribe("INBOX.$f");
+        $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+    }
+
+    # create some other non special-use folders (control group)
+    foreach my $f (keys %other) {
+        $frontend->create("INBOX.$f");
+        $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+
+        $frontend->subscribe("INBOX.$f");
+        $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+    }
+
+    # ask the backend about them
+    my $bresult = $backend->list([qw(SUBSCRIBED)], "", "INBOX.A*");
+    $self->assert_str_equals('ok', $backend->get_last_completion_response());
+    xlog $self, Dumper $bresult;
+
+    # check the responses
+    my %found;
+    foreach my $r (@{$bresult}) {
+        my ($flags, $sep, $name) = @{$r};
+        # carve out the interesting part of the name
+        $self->assert_matches(qr/^INBOX$sep/, $name);
+        $name = substr($name, 6);
+        $found{$name} = 1;
+        # only want subscribed folders
+        $self->assert(exists $subscribed{$name});
+        # must be flagged with \subscribed
+        $self->assert_contains('\\Subscribed', $flags, 1);
+    }
+
+    # make sure no expected responses were missing
+    $self->assert_deep_equals(\%subscribed, \%found);
+
+    # ask the frontend about them
+    my $fresult = $frontend->list([qw(SUBSCRIBED)], "", "INBOX.A*");
+    $self->assert_str_equals('ok', $frontend->get_last_completion_response());
+    xlog $self, Dumper $fresult;
+
+    # expect the same results as on backend
+    $self->assert_deep_equals($bresult, $fresult);
+
+    # ask the frontend about them with a non-empty reference argument
+    $fresult = $frontend->list([qw(SUBSCRIBED)], "INBOX.A", "*");
     $self->assert_str_equals('ok', $frontend->get_last_completion_response());
     xlog $self, Dumper $fresult;
 
@@ -247,7 +323,7 @@ sub test_xlist
         if ($name eq 'INBOX') {
             $found{$name} = 1;
             # must be flagged with \Inbox
-            $self->assert_equals(1, scalar grep { $_ eq '\\Inbox' } @{$flags});
+            $self->assert_contains('\\Inbox', $flags, 1);
         }
         else {
             # carve out the interesting part of the name
@@ -257,11 +333,11 @@ sub test_xlist
             $self->assert(exists $specialuse{$name} or exists $other{$name});
             if (exists $specialuse{$name}) {
                 # must be flagged with appropriate flag
-                $self->assert_equals(1, scalar grep { $_ eq "\\$name" } @{$flags});
+                $self->assert_contains("\\$name", $flags, 1);
             }
             else {
                 # must not be flagged with name-based flag
-                $self->assert_equals(0, scalar grep { $_ eq "\\$name" } @{$flags});
+                $self->assert_not_contains("\\$name", $flags);
             }
         }
     }

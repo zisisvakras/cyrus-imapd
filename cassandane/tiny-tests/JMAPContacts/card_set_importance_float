@@ -2,15 +2,17 @@
 use Cassandane::Tiny;
 
 sub test_card_set_importance_float
-    :min_version_3_5 :needs_dependency_icalvcard
+    :min_version_3_5
+    ($self)
 {
-    my ($self) = @_;
     my $jmap = $self->{jmap};
 
     my $res = $jmap->CallMethods([
         ['ContactCard/set', {
             create => {
                 c1 => {
+                    '@type' => 'Card',
+                    version => '1.0', 
                     name => { full => 'John Doe' },
                     'cyrusimap.org:importance' => -122.129545321514,
                 },

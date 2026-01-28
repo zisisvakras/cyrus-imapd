@@ -3,14 +3,14 @@ use Cassandane::Tiny;
 
 sub test_bug3735
     :Bug3735
+    ($self)
 {
-    my ($self) = @_;
     $self->{instance}->create_user("a");
     $self->{instance}->create_user("ab");
-    $self->_set_quotaroot('user.a');
-    $self->_set_limits(storage => 12345);
-    $self->_set_quotaroot('user.ab');
-    $self->_set_limits(storage => 12345);
+    $self->set_quotaroot('user.a');
+    $self->set_quotalimits(storage => 12345);
+    $self->set_quotaroot('user.ab');
+    $self->set_quotalimits(storage => 12345);
 
     my $filename = $self->{instance}->{basedir} . "/bug3735.out";
 
@@ -24,5 +24,5 @@ sub test_bug3735
     my @res = <RESULTS>;
     close RESULTS;
 
-    $self->assert(grep { m/user\.ab/ } @res);
+    $self->assert_contains(qr{user\.ab}, \@res);
 }

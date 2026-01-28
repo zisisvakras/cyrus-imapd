@@ -1,0 +1,81 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_basic_entity_tests
+    ($self)
+{
+    my $user  = $self->default_user;
+    my $abook = $user->addressbooks->create;
+
+    my $name = 'Mr. John Q. Public, Esq.';
+
+    my $card = $abook->create_card({
+        name => { full => $name }
+    });
+
+    $self->assert_not_null($card->id);
+    $self->assert_not_null($card->prodId);
+
+    $self->assert_cmp_deeply(
+        { $abook->id => JSON::true },
+        $card->addressBookIds,
+    );
+
+    $self->assert_cmp_deeply(
+        { full => $name },
+        $card->name,
+    );
+
+    my $group = $abook->create_card_group({
+        name => "My Cool Group",
+    });
+
+    my $member = $group->create_member({
+        name => "G. Memberson",
+    });
+
+    my $regotten_group = $user->contacts->get($group->id);
+    $self->assert_cmp_deeply(
+        { $member->uid => bool(1) },
+        $regotten_group->members,
+    );
+
+    my $inbox = $user->mailboxes->inbox;
+    $self->assert_str_equals('Inbox', $inbox->name);
+
+    my $email = $inbox->new_email;
+
+    $self->assert_cmp_deeply(
+        [ { name => 'Xavier Ample', email => 'xa@example.com' } ],
+        $email->from,
+    );
+
+    my $other = $self->{instance}->create_user('other');
+    $inbox->share_with($other => [ 'mayRead' ]);
+
+    $self->assert_cmp_deeply(
+        {
+            $other->username => {
+                mayAdmin  => JSON::false(),
+                mayRead   => JSON::true(),
+                mayWrite  => JSON::false(),
+            }
+        },
+        $inbox->properties->{shareWith},
+    );
+
+    my $imap = $user->imap;
+
+    $self->assert_cmp_deeply(
+        superhashof({ other => 'lr' }),
+        { $imap->getacl('INBOX')->@* },
+    );
+
+    $inbox->unshare_entirely;
+
+    $self->assert_null(
+        # Gross: convert list of pairs into ref to anonymous hash, look up
+        # "other" in it, assert we find nothing.
+        { $imap->getacl('INBOX')->@* }->{other}
+    );
+}

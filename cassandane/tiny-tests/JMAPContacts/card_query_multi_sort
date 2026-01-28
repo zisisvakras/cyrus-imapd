@@ -2,10 +2,9 @@
 use Cassandane::Tiny;
 
 sub test_card_query_multi_sort
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
 
     xlog $self, "create cards";
@@ -13,6 +12,8 @@ sub test_card_query_multi_sort
         ['ContactCard/set', {
             create => {
                 card1 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     uid => 'XXX-UID-1',
                     organizations => {
                         'o1' => {
@@ -21,6 +22,8 @@ sub test_card_query_multi_sort
                     }
                 },
                 card2 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     uid => 'XXX-UID-2',
                     organizations => {
                         'o1' => {
@@ -29,6 +32,8 @@ sub test_card_query_multi_sort
                     }
                 },
                 card3 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     uid => 'XXX-UID-3',
                     organizations => {
                         'o1' => {
@@ -37,6 +42,8 @@ sub test_card_query_multi_sort
                     }
                 },
                 card4 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     uid => 'XXX-UID-4',
                     organizations => {
                         'o1' => {

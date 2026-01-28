@@ -1,44 +1,6 @@
-/* index.h -- Routines for dealing with the index file in the imapd
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* index.h -- Routines for dealing with the index file in the imapd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 /* Header for internal usage of index.c + programs that make raw access
  * to index files */
@@ -89,6 +51,7 @@ struct index_init {
     int want_dav;
     uint32_t want_mbtype;
     int want_expunged;
+    int stay_locked;
     struct vanished_params vanished;
     seqset_t *vanishedlist;
 };
@@ -130,7 +93,8 @@ struct index_state {
     char *flagname[MAX_USER_FLAGS];
     char *userid;
     char *mboxname;
-    char *mboxid;
+    char *uniqueid;
+    char *mailboxid;
     struct protstream *out;
     struct auth_state *authstate;
     int want_dav;
@@ -163,7 +127,7 @@ typedef struct msgdata {
     strarray_t ref;             /* array of references */
     time_t sentdate;            /* sent date & time of message
                                    from Date: header (adjusted by time zone) */
-    time_t internaldate;        /* internaldate */
+    struct timespec internaldate;/* internaldate */
     time_t savedate;            /* savedate */
     size_t size;                /* message size */
     modseq_t modseq;            /* modseq of record*/
@@ -230,9 +194,10 @@ struct nntp_overview {
 enum index_warmup_flags
 {
     WARMUP_INDEX            = (1<<0),
-    WARMUP_CONVERSATIONS    = (1<<1),
+    WARMUP_CACHE            = (1<<1),
     WARMUP_ANNOTATIONS      = (1<<2),
-    WARMUP_SEARCH           = (1<<3),
+    WARMUP_CONVERSATIONS    = (1<<3),
+    WARMUP_SEARCH           = (1<<4),
     WARMUP_ALL              = (~WARMUP_SEARCH)
 };
 
@@ -256,11 +221,13 @@ struct progress_rock {
 int index_fetchresponses(struct index_state *state,
                          seqset_t *seq,
                          int usinguid,
+                         struct conversations_state *convstate,
                          const struct fetchargs *fetchargs,
                          int *fetchedsomething);
 extern int index_fetch(struct index_state *state,
                        const char* sequence,
-                       int usinguid,
+                       int usinguid, int readonly,
+                       struct conversations_state *convstate,
                        const struct fetchargs* fetchargs,
                        int* fetchedsomething);
 extern int index_store(struct index_state *state,
@@ -269,24 +236,11 @@ extern int index_store(struct index_state *state,
 extern int index_run_annotator(struct index_state *state,
                                const char *sequence, int usinguid,
                                struct namespace *namespace, int isadmin);
-extern int index_warmup(struct mboxlist_entry *, unsigned int warmup_flags,
+extern int index_warmup(const struct mboxlist_entry *, unsigned int warmup_flags,
                         seqset_t *uids);
 extern int index_sort(struct index_state *state, const struct sortcrit *sortcrit,
                       struct searchargs *searchargs, int usinguid,
                       struct progress_rock *prock);
-extern int index_convsort(struct index_state *state, struct sortcrit *sortcrit,
-                      struct searchargs *searchargs,
-                      const struct windowargs * windowargs);
-extern int index_convmultisort(struct index_state *state,
-                               struct sortcrit *sortcrit,
-                               struct searchargs *searchargs,
-                               const struct windowargs * windowargs);
-extern int index_snippets(struct index_state *state,
-                          const struct snippetargs *snippetargs,
-                          struct searchargs *searchargs);
-extern int index_convupdates(struct index_state *state, struct sortcrit *sortcrit,
-                      struct searchargs *searchargs,
-                      const struct windowargs * windowargs);
 extern int index_thread(struct index_state *state, int algorithm,
                         struct searchargs *searchargs, int usinguid,
                         struct progress_rock *prock);
@@ -314,6 +268,7 @@ extern int index_refresh(struct index_state *state);
 extern void index_checkflags(struct index_state *state, int print, int dirty);
 extern void index_select(struct index_state *state, struct index_init *init);
 extern int index_status(struct index_state *state, struct statusdata *sdata);
+extern void index_unlock(struct index_state *state);
 extern void index_release(struct index_state *state);
 extern void index_close(struct index_state **stateptr);
 
@@ -385,7 +340,8 @@ extern int index_getuidsequence(struct index_state *state,
                                 unsigned **uid_list);
 
 extern const char *index_mboxname(const struct index_state *state);
-extern const char *index_mboxid(const struct index_state *state);
+extern const char *index_uniqueid(const struct index_state *state);
+extern const char *index_mailboxid(const struct index_state *state);
 extern int index_hasrights(const struct index_state *state, int rights);
 
 extern int index_reload_record(struct index_state *state,

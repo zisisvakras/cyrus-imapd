@@ -1,44 +1,6 @@
-/* annotate.c -- Annotation manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* annotate.c -- Annotation manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -292,7 +254,7 @@ EXPORTED void appendstrlist(struct strlist **l, char *s)
 
     while (*tail) tail = &(*tail)->next;
 
-    *tail = (struct strlist *)xmalloc(sizeof(struct strlist));
+    *tail = xmalloc(sizeof(struct strlist));
     (*tail)->s = xstrdup(s);
     (*tail)->next = 0;
 }
@@ -356,7 +318,7 @@ EXPORTED void appendentryatt(struct entryattlist **l, const char *entry,
 
     while (*tail) tail = &(*tail)->next;
 
-    *tail = (struct entryattlist *)xmalloc(sizeof(struct entryattlist));
+    *tail = xmalloc(sizeof(struct entryattlist));
     (*tail)->entry = xstrdup(entry);
     (*tail)->attvalues = attvalues;
     (*tail)->next = NULL;
@@ -457,9 +419,11 @@ EXPORTED size_t sizeentryatts(const struct entryattlist *l)
     size_t sz = 0;
     struct attvaluelist *av;
 
-    for ( ; l ; l = l->next)
-        for (av = l->attvalues ; av ; av = av->next)
+    for ( ; l ; l = l->next) {
+        for (av = l->attvalues ; av ; av = av->next) {
             sz += av->value.len;
+        }
+    }
     return sz;
 }
 
@@ -499,10 +463,8 @@ static void init_internal()
 }
 
 /* must be called after cyrus_init */
-EXPORTED void annotate_init(int (*fetch_func)(const char *, const char *,
-                                     const strarray_t *, const strarray_t *),
-                            int (*store_func)(const char *, const char *,
-                                     struct entryattlist *))
+EXPORTED void annotate_init(annotate_fetch_func *fetch_func,
+                            annotate_store_func *store_func)
 {
     if (fetch_func) {
         proxy_fetch_func = fetch_func;
@@ -597,6 +559,15 @@ static int annotate_dbname(const char *mboxid, char **fnamep)
 out:
     mboxlist_entry_free(&mbentry);
     return r;
+}
+
+EXPORTED int annotate_anydb_islocked()
+{
+    struct annotate_db *d;
+    for (d = all_dbs_head ; d ; d = d->next) {
+        if (d->in_txn) return 1;
+    }
+    return 0;
 }
 
 static int _annotate_getdb(const char *mboxid,
@@ -961,7 +932,7 @@ static int split_attribs(const char *data, int datalen,
     /* initialize metadata */
     memset(mdata, 0, sizeof(struct annotate_metadata));
 
-    /* xxx sanity check the data? */
+    /* XXX sanity check the data? */
     if (datalen <= 0)
             return 1;
     /*
@@ -1221,6 +1192,18 @@ EXPORTED int annotatemore_findall_mailbox(const struct mailbox *mailbox,
                                      uid, entry, since_modseq, proc, rock, flags);
 }
 
+EXPORTED int annotatemore_findall_mbentry(const mbentry_t *mbentry,
+                         unsigned int uid,
+                         const char *entry,
+                         modseq_t since_modseq,
+                         annotatemore_find_proc_t proc,
+                         void *rock,
+                         int flags)
+{
+    return annotatemore_findall_full(NULL, NULL, mbentry,
+                                     uid, entry, since_modseq, proc, rock, flags);
+}
+
 EXPORTED int annotatemore_findall_pattern(const char *pattern,
                          unsigned int uid,
                          const char *entry,
@@ -1259,7 +1242,7 @@ EXPORTED int annotatemore_findall_mboxname(const char *mboxname,
     return r;
 }
 
-/***************************  Annotate State Management  ***************************/
+/************************  Annotate State Management  ************************/
 
 EXPORTED annotate_state_t *annotate_state_new(void)
 {
@@ -1273,7 +1256,7 @@ EXPORTED annotate_state_t *annotate_state_new(void)
 
 static void annotate_state_start(annotate_state_t *state)
 {
-    /* xxx better way to determine a size for this table? */
+    /* XXX better way to determine a size for this table? */
     construct_hash_table(&state->entry_table, 100, 1);
     construct_hash_table(&state->server_table, 10, 1);
 }
@@ -1814,8 +1797,8 @@ static void annotation_get_lastpop(annotate_state_t *state,
 
     assert(mailbox);
 
-    if (mailbox->i.pop3_last_login) {
-        time_to_rfc3501(mailbox->i.pop3_last_login, valuebuf,
+    if (mailbox->i.pop3_last_login.tv_sec) {
+        time_to_rfc3501(mailbox->i.pop3_last_login.tv_sec, valuebuf,
                         sizeof(valuebuf));
         buf_appendcstr(&value, valuebuf);
     }
@@ -1848,9 +1831,10 @@ static void annotation_get_pop3showafter(annotate_state_t *state,
 
     assert(mailbox);
 
-    if (mailbox->i.pop3_show_after)
+    if (mailbox->i.pop3_show_after.tv_sec)
     {
-        time_to_rfc3501(mailbox->i.pop3_show_after, valuebuf, sizeof(valuebuf));
+        time_to_rfc3501(mailbox->i.pop3_show_after.tv_sec,
+                        valuebuf, sizeof(valuebuf));
         buf_appendcstr(&value, valuebuf);
     }
 
@@ -1882,7 +1866,7 @@ static void annotation_get_foldermodseq(annotate_state_t *state,
     annotate_state_need_mbentry(state);
     assert(state->mbentry);
 
-    buf_printf(&value, "%llu", state->mbentry->foldermodseq);
+    buf_printf(&value, MODSEQ_FMT, state->mbentry->foldermodseq);
     output_entryatt(state, entry->name, "", &value);
 
     buf_free(&value);
@@ -1903,7 +1887,7 @@ static void annotation_get_usermodseq(annotate_state_t *state,
     mboxname = mboxname_user_mbox(state->userid, NULL);
     mboxname_read_counters(mboxname, &counters);
 
-    buf_printf(&value, "%llu", counters.highestmodseq);
+    buf_printf(&value, MODSEQ_FMT, counters.highestmodseq);
 
     output_entryatt(state, entry->name, state->userid, &value);
     free(mboxname);
@@ -1923,7 +1907,13 @@ static void annotation_get_usercounters(annotate_state_t *state,
     mboxname = mboxname_user_mbox(state->userid, NULL);
     int r = mboxname_read_counters(mboxname, &counters);
 
-    if (!r) buf_printf(&value, "%u %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %u",
+    if (!r) buf_printf(&value, "%u "  MODSEQ_FMT " "
+                       MODSEQ_FMT " " MODSEQ_FMT " "
+                       MODSEQ_FMT " " MODSEQ_FMT " "
+                       MODSEQ_FMT " " MODSEQ_FMT " "
+                       MODSEQ_FMT " " MODSEQ_FMT " "
+                       MODSEQ_FMT " " MODSEQ_FMT " "
+                       "%u",
                        counters.version, counters.highestmodseq,
                        counters.mailmodseq, counters.caldavmodseq,
                        counters.carddavmodseq, counters.notesmodseq,
@@ -2037,6 +2027,7 @@ static void annotation_get_fromdb(annotate_state_t *state,
 }
 
 /* TODO: need to handle /<section-part>/ somehow */
+// clang-format: off
 static const annotate_entrydesc_t message_builtin_entries[] =
 {
     {
@@ -2065,6 +2056,7 @@ static const annotate_entrydesc_t message_builtin_entries[] =
     },
     {
         /* we use 'basethrid' to support split threads */
+        /* prior to version 20, there was no storage for basethrid, so it became an annotation */
         IMAP_ANNOT_NS "basethrid",
         ATTRIB_TYPE_STRING,
         BACKEND_ONLY,
@@ -2136,6 +2128,7 @@ static const annotate_entrydesc_t message_builtin_entries[] =
     },
     { NULL, 0, ANNOTATION_PROXY_T_INVALID, 0, 0, NULL, NULL, NULL, NULL }
 };
+// clang-format: on
 
 static const annotate_entrydesc_t message_db_entry =
     {
@@ -2150,6 +2143,7 @@ static const annotate_entrydesc_t message_db_entry =
         NULL
     };
 
+// clang-format: off
 static const annotate_entrydesc_t mailbox_builtin_entries[] =
 {
     {
@@ -2486,6 +2480,7 @@ static const annotate_entrydesc_t mailbox_builtin_entries[] =
         NULL
     },{ NULL, 0, ANNOTATION_PROXY_T_INVALID, 0, 0, NULL, NULL, NULL, NULL }
 };
+// clang-format: on
 
 static const annotate_entrydesc_t mailbox_db_entry =
     {
@@ -2500,6 +2495,7 @@ static const annotate_entrydesc_t mailbox_db_entry =
         NULL
     };
 
+// clang-format: off
 static const annotate_entrydesc_t server_builtin_entries[] =
 {
     {
@@ -2627,6 +2623,7 @@ static const annotate_entrydesc_t server_builtin_entries[] =
     },{ NULL, 0, ANNOTATION_PROXY_T_INVALID,
         0, 0, NULL, NULL, NULL, NULL }
 };
+// clang-format: on
 
 static const annotate_entrydesc_t server_db_entry =
     {
@@ -2835,7 +2832,7 @@ EXPORTED int annotate_state_fetch(annotate_state_t *state,
 
             if (proxy_fetch_func && state->orig_entry && state->mbentry->server &&
                 !hash_lookup(state->mbentry->server, &state->server_table)) {
-                /* xxx ignoring result */
+                /* XXX ignoring result */
                 proxy_fetch_func(state->mbentry->server, state->mbentry->ext_name,
                                  state->orig_entry, state->orig_attribute);
                 hash_insert(state->mbentry->server, (void *)0xDEADBEEF, &state->server_table);
@@ -3378,12 +3375,12 @@ static int annotate_canon_value(struct buf *value, int type)
         errno = 0;
         buf_cstring(value);
         uwhatever = strtoul(value->s, &p, 10);
-        if ((p == value->s)             /* no value */
-            || (*p != '\0')             /* illegal char */
-            || (unsigned)(p - value->s) != value->len
-                                        /* embedded NUL */
-            || errno                    /* overflow */
-            || strchr(value->s, '-')) { /* negative number */
+        if ((p == value->s)                           /* no value */
+            || (*p != '\0')                           /* illegal char */
+            || (unsigned)(p - value->s) != value->len /* embedded NUL */
+            || errno                                  /* overflow */
+            || strchr(value->s, '-')                  /* negative number */)
+        {
             return IMAP_ANNOTATION_BADVALUE;
         }
         break;
@@ -3393,11 +3390,11 @@ static int annotate_canon_value(struct buf *value, int type)
         errno = 0;
         buf_cstring(value);
         whatever = strtol(value->s, &p, 10);
-        if ((p == value->s)             /* no value */
-            || (*p != '\0')             /* illegal char */
-            || (unsigned)(p - value->s) != value->len
-                                        /* embedded NUL */
-            || errno) {                 /* underflow/overflow */
+        if ((p == value->s)                           /* no value */
+            || (*p != '\0')                           /* illegal char */
+            || (unsigned)(p - value->s) != value->len /* embedded NUL */
+            || errno                                  /* underflow/overflow */)
+        {
             return IMAP_ANNOTATION_BADVALUE;
         }
         break;
@@ -3630,11 +3627,11 @@ static int annotation_set_pop3showafter(annotate_state_t *state,
             return IMAP_PROTOCOL_BAD_PARAMETERS;
     }
 
-    if (date != mailbox->i.pop3_show_after) {
+    if (date != mailbox->i.pop3_show_after.tv_sec) {
         if (!maywrite) return IMAP_PERMISSION_DENIED;
         mailbox_index_dirty(mailbox);
         mailbox_modseq_dirty(mailbox);
-        mailbox->i.pop3_show_after = date;
+        mailbox->i.pop3_show_after.tv_sec = date;
         if (!state->silent)
             mboxlist_update_foldermodseq(mailbox_name(mailbox), mailbox->i.highestmodseq);
     }
@@ -4651,7 +4648,7 @@ EXPORTED int annotatemore_upgrade(void)
     buf_appendcstr(&buf, ".OLD");
 
     /* rename db file to backup */
-    r = rename(fname, buf_cstring(&buf));
+    r = cyrus_rename(fname, buf_cstring(&buf));
     free(fname);
     if (r) goto done;
     

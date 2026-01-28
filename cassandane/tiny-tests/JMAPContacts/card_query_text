@@ -2,10 +2,9 @@
 use Cassandane::Tiny;
 
 sub test_card_query_text
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
 
     xlog $self, "create cards";
@@ -13,6 +12,8 @@ sub test_card_query_text
         ['ContactCard/set', {
             create => {
                 card1 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     notes => {
                         'n1' => {
                             note => 'cats and dogs'
@@ -20,6 +21,8 @@ sub test_card_query_text
                     }
                 },
                 card2 => {
+                    '@type' => 'Card',
+                    version => '1.0',
                     notes => {
                         'n1' => {
                             note => 'hats and bats'

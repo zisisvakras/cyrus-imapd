@@ -2,17 +2,17 @@
 use Cassandane::Tiny;
 
 sub test_addressbook_set_destroy_default
-    :min_version_3_9 :needs_dependency_icalvcard
+    :min_version_3_9
+    ($self)
 {
-    my ($self) = @_;
-
     my $jmap = $self->{jmap};
-    my $carddav = $self->{carddav};
 
-    my $defaultId = 'Default';
+    xlog $self, "get addressbook ids";
+    my $res = $jmap->CallMethods([['AddressBook/get', {}, "R1"]]);
+    my $defaultId = $res->[0][1]{list}[0]{id};
 
     xlog "Attempt to destroy default addressbook";
-    my $res = $jmap->CallMethods([
+    $res = $jmap->CallMethods([
         ['AddressBook/set', {
             destroy => [$defaultId],
         }, 'R1'],

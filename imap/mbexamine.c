@@ -1,44 +1,6 @@
-/* mbexamine.c -- examine the contents of a mailbox index and cache
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mbexamine.c -- examine the contents of a mailbox index and cache */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -239,7 +201,7 @@ static int do_examine(struct findall_data *data, void *rock)
 
     printf(" Mailbox Header Info:\n");
     printf("  Path to mailbox: %s\n", mailbox_datapath(mailbox, 0));
-    printf("  Mailbox ACL: %s\n", mailbox_acl(mailbox)); /* xxx parse */
+    printf("  Mailbox ACL: %s\n", mailbox_acl(mailbox)); /* XXX parse */
     printf("  Unique ID: %s\n", mailbox_uniqueid(mailbox));
     printf("  User Flags: ");
 
@@ -262,7 +224,8 @@ static int do_examine(struct findall_data *data, void *rock)
     printf("    Deleted Size: " QUOTA_T_FMT " bytes  Expunged Size: " QUOTA_T_FMT " bytes\n",
            mailbox->i.quota_deleted_used, mailbox->i.quota_expunged_used);
     printf("  Last Append Date: (" TIME_T_FMT ") %s",
-           mailbox->i.last_appenddate, ctime(&mailbox->i.last_appenddate));
+           mailbox->i.last_appenddate.tv_sec,
+           ctime(&mailbox->i.last_appenddate.tv_sec));
     printf("  UIDValidity: %u  Last UID: %u\n",
            mailbox->i.uidvalidity, mailbox->i.last_uid);
     printf("  Deleted: %u  Answered: %u  Flagged: %u\n",
@@ -285,8 +248,9 @@ static int do_examine(struct findall_data *data, void *rock)
         }
     }
     printf("\n");
-    printf("  Last POP3 Login: (" TIME_T_FMT ") %s", mailbox->i.pop3_last_login,
-           ctime(&mailbox->i.pop3_last_login));
+    printf("  Last POP3 Login: (" TIME_T_FMT ") %s",
+           mailbox->i.pop3_last_login.tv_sec,
+           ctime(&mailbox->i.pop3_last_login.tv_sec));
     printf("  Highest Mod Sequence: " MODSEQ_FMT "\n",
            mailbox->i.highestmodseq);
 
@@ -307,29 +271,44 @@ static int do_examine(struct findall_data *data, void *rock)
         }
 
         printf("%06u> UID:%08u"
-               "   INT_DATE:" TIME_T_FMT " SENTDATE:" TIME_T_FMT " SAVEDATE:" TIME_T_FMT " SIZE:%-6u\n",
-               msgno, record->uid, record->internaldate,
-               record->sentdate, record->savedate, record->size);
+               "   INT_DATE:" TIME_T_FMT,
+               msgno, record->uid, record->internaldate.tv_sec);
+        if (mailbox->i.minor_version >= 20 &&
+                UTIME_SAFE_NSEC(record->internaldate.tv_nsec)) {
+            printf(UINT64_NANOSEC_FMT, record->internaldate.tv_nsec);
+        }
+        printf(" SENTDATE:" TIME_T_FMT
+               " SAVEDATE:" TIME_T_FMT " SIZE: " UINT64_LALIGN_FMT "\n",
+               record->sentdate.tv_sec, record->savedate.tv_sec, 6, record->size);
         printf("      > HDRSIZE:%-6u LASTUPD :" TIME_T_FMT " SYSFLAGS:%08X",
-               record->header_size, record->last_updated,
+               record->header_size, record->last_updated.tv_sec,
                record->system_flags);
 
-        if (mailbox->i.minor_version >= 6)
-            printf("      > CACHEVER:%-2u", record->cache_version);
-
-        if (mailbox->i.minor_version >= 7) {
-            printf(" GUID:%s", message_guid_encode(&record->guid));
-        }
-
-        if (mailbox->i.minor_version >= 8) {
-            printf(" MODSEQ:" MODSEQ_FMT, record->modseq);
-        }
-
-        if (mailbox->i.minor_version >= 13) {
-            printf("  THRID: %llx", record->cid);
-        }
-
         printf("\n");
+
+        if (mailbox->i.minor_version >= 6) {
+            printf("      > CACHEVER:%-5u", record->cache_version);
+
+            if (mailbox->i.minor_version >= 7) {
+                printf(" GUID:%s", message_guid_encode(&record->guid));
+
+                if (mailbox->i.minor_version >= 8) {
+                    printf(" MODSEQ:" MODSEQ_FMT, record->modseq);
+
+                    if (mailbox->i.minor_version >= 16)
+                        printf(" CMODSEQ:" MODSEQ_FMT, record->createdmodseq);
+
+                    if (mailbox->i.minor_version >= 13) {
+                        printf("  CID: " CONV_FMT, record->cid);
+
+                        if (mailbox->i.minor_version >= 20)
+                            printf("  BASECID: " CONV_FMT, record->basecid);
+                    }
+                }
+            }
+
+            printf("\n");
+        }
 
         printf("      > INTERNALFLAGS:");
         if (record->internal_flags & FLAG_INTERNAL_EXPUNGED)
@@ -342,6 +321,8 @@ static int do_examine(struct findall_data *data, void *rock)
             printf(" FLAG_INTERNAL_NEEDS_CLEANUP");
         if (record->internal_flags & FLAG_INTERNAL_SNOOZED)
             printf(" FLAG_INTERNAL_SNOOZED");
+
+        printf("\n");
 
         printf("      > SYSTEMFLAGS:");
         if (record->system_flags & FLAG_SEEN) printf(" FLAG_SEEN");
@@ -582,18 +563,18 @@ static int do_compare(struct findall_data *data, void *rock)
             printf("\n");
 
             printf("   Size: ");
-            if (record) printf("%-50u", record->size);
+            if (record) printf(UINT64_LALIGN_FMT, 50, record->size);
             else printf("%-50s", "");
 
             if (fs_record.uid && !message_guid_isnull(&fs_record.guid))
-                printf("\t%-50u", fs_record.size);
+                printf(UINT64_LALIGN_FMT, 50, fs_record.size);
             printf("\n");
 
-            if (record) time_to_rfc5322(record->sentdate, sent, sizeof(sent));
+            if (record) time_to_rfc5322(record->sentdate.tv_sec, sent, sizeof(sent));
             printf("   Date: %-50s", sent);
 
             if (fs_record.uid && !message_guid_isnull(&fs_record.guid)) {
-                time_to_rfc5322(fs_record.sentdate, sent, sizeof(sent));
+                time_to_rfc5322(fs_record.sentdate.tv_sec, sent, sizeof(sent));
                 printf("\t%-50s", sent);
             }
             printf("\n");

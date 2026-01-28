@@ -40,19 +40,20 @@
 package Cassandane::Cyrus::JMAPContacts;
 use strict;
 use warnings;
+
+use experimental 'signatures';
+
 use DateTime;
 use JSON::XS;
 use Net::CalDAVTalk 0.09;
 use Net::CardDAVTalk 0.03;
-use Mail::JMAPTalk 0.13;
 use Data::Dumper;
 use Storable 'dclone';
 use File::Basename;
 use File::Copy;
 use Cwd qw(abs_path getcwd);
 
-use lib '.';
-use base qw(Cassandane::Cyrus::TestCase);
+use base qw(Cassandane::Cyrus::TestCase Cassandane::Mixin::QuotaHelper);
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
 
@@ -87,14 +88,12 @@ sub set_up
     $self->SUPER::set_up();
     $self->{jmap}->DefaultUsing([
         'urn:ietf:params:jmap:core',
+        'urn:ietf:params:jmap:contacts',
         'https://cyrusimap.org/ns/jmap/contacts',
         'https://cyrusimap.org/ns/jmap/debug',
     ]);
 
-    my $buildinfo = Cassandane::BuildInfo->new();
-    if ($buildinfo->get('dependency', 'icalvcard')) {
-        $self->{jmap}->AddUsing('urn:ietf:params:jmap:contacts');
-    }
+    $ENV{DEBUGDAV} = 1;
 }
 
 sub normalize_jscard
@@ -115,28 +114,29 @@ sub normalize_jscard
     }
 }
 
-sub _set_quotaroot
-{
-    my ($self, $quotaroot) = @_;
-    $self->{quotaroot} = $quotaroot;
-}
+sub dblookup ($self, $path, $headers) {
+    # Using the admin JMAP UA for this is sort of nonsense, but it's going to
+    # get the job done.  Isolating this in a subroutine should make it easy to
+    # improve later. -- rjbs, 2025-12-12
+    $self->{_admin_user} //= $self->{instance}->create_user_without_setup('admin');
+    my $admin_jmap = $self->{_admin_user}->jmap;
 
-sub _set_quotalimits
-{
-    my ($self, %resources) = @_;
-    my $admintalk = $self->{adminstore}->get_client();
-
-    my $quotaroot = delete $resources{quotaroot} || $self->{quotaroot};
-    my @quotalist;
-    foreach my $resource (keys %resources)
-    {
-        my $limit = $resources{$resource}
-            or die "No limit specified for $resource";
-        push(@quotalist, uc($resource), $limit);
+    if (ref $headers eq 'HASH') {
+        # This is just how HTTP::Request works.
+        $headers = [ %$headers ];
     }
-    $self->{limits}->{$quotaroot} = { @quotalist };
-    $admintalk->setquota($quotaroot, \@quotalist);
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    my $req = HTTP::Request->new(
+        GET => URI->new_abs($path, $admin_jmap->api_uri),
+        $headers,
+    );
+
+    my $res = $admin_jmap->http_request($req);
+
+    return {
+        http_response => $res,
+        payload => scalar eval { decode_json($res->decoded_content(charset => undef)) },
+    };
 }
 
 use Cassandane::Tiny::Loader 'tiny-tests/JMAPContacts';

@@ -1,45 +1,6 @@
-/* http_api.h -- Routines for handling JMAP API requests
- *
- * Copyright (c) 1994-2019 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_api.h -- Routines for handling JMAP API requests */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef JMAP_API_H
 #define JMAP_API_H
@@ -56,6 +17,7 @@
 #include "msgrecord.h"
 #include "ptrarray.h"
 #include "strarray.h"
+#include <stdbool.h>
 
 #define JMAP_INT_MAX    9007199254740991LL  /*  2^53-1 */
 #define JMAP_INT_MIN    (-JMAP_INT_MAX)     /* -2^53+1 */
@@ -75,6 +37,7 @@
 #define JMAP_URN_PRINCIPALS "urn:ietf:params:jmap:principals"
 #define JMAP_URN_CALENDAR_PREFERENCES "urn:ietf:params:jmap:calendars:preferences"
 
+#define JMAP_CORE_EXTENSION          "https://cyrusimap.org/ns/jmap/core"
 #define JMAP_BLOB_EXTENSION          "https://cyrusimap.org/ns/jmap/blob"
 #define JMAP_CONTACTS_EXTENSION      "https://cyrusimap.org/ns/jmap/contacts"
 #define JMAP_CALENDARS_EXTENSION     "https://cyrusimap.org/ns/jmap/calendars"
@@ -91,6 +54,7 @@
 enum {
     MAX_SIZE_REQUEST = 0,
     MAX_CALLS_IN_REQUEST,
+    MAX_CREATEDIDS_IN_REQUEST,
     MAX_CONCURRENT_REQUESTS,
     MAX_OBJECTS_IN_GET,
     MAX_OBJECTS_IN_SET,
@@ -218,6 +182,7 @@ enum jmap_method_flags {
     JMAP_READ_WRITE  = (1 << 0),  /* user can change state with this method */
     JMAP_NEED_CSTATE = (1 << 1),  /* conv.db is required for this method
                                      (lock type determined by r/w flag) */
+    JMAP_NO_USERLOCK = (1 << 2)   /* action touches many users, it will do its own locking */
 };
 
 typedef struct {
@@ -255,7 +220,8 @@ extern void jmap_admin_init(jmap_settings_t *settings);
 extern void jmap_core_capabilities(json_t *account_capabilities);
 extern void jmap_blob_capabilities(json_t *account_capabilities);
 extern void jmap_quota_capabilities(json_t *account_capabilities);
-extern void jmap_mail_capabilities(json_t *account_capabilities, int mayCreateTopLevel);
+extern void jmap_mail_capabilities(json_t *account_capabilities,
+                                   const char *accountid, int mayCreateTopLevel);
 extern void jmap_emailsubmission_capabilities(json_t *account_capabilities);
 extern void jmap_mdn_capabilities(json_t *account_capabilities);
 extern void jmap_vacation_capabilities(json_t *account_capabilities);
@@ -322,6 +288,10 @@ extern int jmap_findblob_exact(jmap_req_t *req, const char *accountid,
 #define JMAP_MODSEQ_FOLDER (1<<1)
 extern modseq_t jmap_modseq(jmap_req_t *req, int mbtype, int flags);
 
+#define JMAP_STATE_STRING_PREFIX 'J'
+extern char *jmap_state_string(jmap_req_t *req, modseq_t modseq,
+                               int mbtype, int flags);
+
 /* Helpers for DAV-based JMAP types */
 extern char *jmap_xhref(const char *mboxname, const char *resource);
 
@@ -345,7 +315,9 @@ enum {
     JMAP_PROP_SKIP_GET   = (1<<2), // skip in Foo/get if not requested by client
     JMAP_PROP_ALWAYS_GET = (1<<3), // always include in Foo/get
     JMAP_PROP_REJECT_GET = (1<<4), // reject as unknown in Foo/get
-    JMAP_PROP_REJECT_SET = (1<<5)  // reject as unknown in Foo/set
+    JMAP_PROP_REJECT_SET = (1<<5), // reject as unknown in Foo/set
+    JMAP_PROP_EXTERNAL   = (1<<6), // property is stored externally
+    JMAP_PROP_MANDATORY  = (1<<7), // MUST be present in Foo/set{create}
 };
 
 extern const jmap_property_t *jmap_property_find(const char *name,
@@ -366,8 +338,16 @@ struct jmap_get {
     json_t *not_found;
 };
 
+#define JMAP_GET_INITIALIZER {0}
+
 typedef int jmap_args_parse_cb(jmap_req_t *, struct jmap_parser *,
                                const char *arg, json_t *val, void *);
+
+extern hash_table *jmap_get_validate_props(jmap_req_t *req,
+                                           struct jmap_parser *parser,
+                                           const jmap_property_t *valid_props,
+                                           const char *key,
+                                           json_t *arg);
 
 extern void jmap_get_parse(jmap_req_t *req, struct jmap_parser *parser,
                            const jmap_property_t valid_props[],
@@ -385,6 +365,7 @@ extern json_t *jmap_get_reply(struct jmap_get *get);
 struct jmap_set {
     /* Request arguments */
     const char *if_in_state;
+    bool apply_empty_updates;
     json_t *create;
     json_t *update;
     json_t *destroy;
@@ -400,6 +381,8 @@ struct jmap_set {
     json_t *not_destroyed;
 };
 
+#define JMAP_SET_INITIALIZER {0}
+
 extern void jmap_set_parse(jmap_req_t *req, struct jmap_parser *parser,
                            const jmap_property_t valid_props[],
                            jmap_args_parse_cb args_parse, void *args_rock,
@@ -414,6 +397,9 @@ struct jmap_changes {
     /* Request arguments */
     modseq_t since_modseq;
     size_t max_changes;
+
+    /* Behavior control flags */
+    int prefixed_state;
 
     /* Response fields */
     modseq_t new_modseq;
@@ -452,6 +438,8 @@ struct jmap_copy {
     json_t *not_created;
 };
 
+#define JMAP_COPY_INITIALIZER {0}
+
 extern void jmap_copy_parse(jmap_req_t *req, struct jmap_parser *parser,
                             jmap_args_parse_cb args_parse, void *args_rock,
                             struct jmap_copy *copy, json_t **err);
@@ -483,6 +471,8 @@ struct jmap_query {
     json_t *ids;
 };
 
+#define JMAP_QUERY_INITIALIZER {0}
+
 enum jmap_filter_op   {
     JMAP_FILTER_OP_NONE = 0,
     JMAP_FILTER_OP_AND,
@@ -495,11 +485,12 @@ typedef struct jmap_filter {
     ptrarray_t conditions;
 } jmap_filter;
 
-typedef void* jmap_buildfilter_cb(json_t* arg);
+typedef void* jmap_buildfilter_cb(json_t* arg, void *rock);
 typedef int   jmap_filtermatch_cb(void* cond, void* rock);
 typedef void  jmap_filterfree_cb(void* cond);
 
-extern jmap_filter *jmap_buildfilter(json_t *arg, jmap_buildfilter_cb *parse);
+extern jmap_filter *jmap_buildfilter(json_t *arg, jmap_buildfilter_cb *parse,
+                                     void *rock);
 extern int jmap_filter_match(jmap_filter *f,
                              jmap_filtermatch_cb *match, void *rock);
 extern void jmap_filter_free(jmap_filter *f, jmap_filterfree_cb *freecond);
@@ -556,6 +547,8 @@ struct jmap_querychanges {
     json_t *added;
 };
 
+#define JMAP_QUERYCHANGES_INITIALIZER {0}
+
 extern void jmap_querychanges_parse(jmap_req_t *req,
                                     struct jmap_parser *parser,
                                     jmap_args_parse_cb args_parse, void *args_rock,
@@ -581,6 +574,8 @@ struct jmap_parse {
     json_t *not_found;
 };
 
+#define JMAP_PARSE_INITIALIZER {0}
+
 extern void jmap_parse_parse(jmap_req_t *req, struct jmap_parser *parser,
                                  jmap_args_parse_cb args_parse, void *args_rock,
                                  struct jmap_parse *parse,
@@ -601,6 +596,8 @@ extern void jmap_mbentry_cache_free(jmap_req_t *req);
 extern const mbentry_t *jmap_mbentry_by_uniqueid(jmap_req_t *req, const char *id);
 extern const mbentry_t *jmap_mbentry_by_uniqueid_all(jmap_req_t *req, const char *id);
 extern mbentry_t *jmap_mbentry_by_uniqueid_copy(jmap_req_t *req, const char *id);
+extern const mbentry_t *jmap_mbentry_by_mboxid(jmap_req_t *req, const char *id);
+extern mbentry_t *jmap_mbentry_by_mboxid_copy(jmap_req_t *req, const char *id);
 extern mbentry_t *jmap_mbentry_from_dav(jmap_req_t *req, struct dav_data *dav);
 
 extern int jmap_findmbox_role(jmap_req_t *req, const char *role,

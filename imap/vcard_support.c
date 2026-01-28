@@ -1,45 +1,6 @@
-/* vcard_support.h -- Helper functions for vcard
- *
- * Copyright (c) 1994-2016 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* vcard_support.h -- Helper functions for vcard */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 #include <libxml/parser.h>
@@ -303,14 +264,12 @@ static void add_type_pref(const char *key __attribute__((unused)),
 
         vparse_add_param(ventry, "TYPE", "pref");
     }
-#ifdef HAVE_LIBICALVCARD
     else {
         vcardenumarray_element pref = { .val = VCARD_TYPE_PREF };
         vcardproperty *prop = ((struct preferred_prop *) data)->prop;
 
         vcardproperty_add_type_parameter(prop, &pref);
     }
-#endif
 }
 
 EXPORTED void vcard_to_v3(struct vparse_card *vcard)
@@ -657,8 +616,6 @@ EXPORTED void vcard_to_v4(struct vparse_card *vcard)
     buf_free(&buf);
 }
 
-#ifdef HAVE_LIBICALVCARD
-
 EXPORTED  vcardcomponent *vcard_parse_string_x(const char *str)
 {
     vcardcomponent *vcard = vcardcomponent_new_from_string(str);
@@ -798,23 +755,3 @@ EXPORTED const char *vcardproperty_get_xparam_value(vcardproperty *prop,
 
     return NULL;
 }
-
-EXPORTED void vcardproperty_add_type_parameter(vcardproperty *prop,
-                                               vcardenumarray_element *type)
-{
-    vcardenumarray *types;
-    vcardparameter *param =
-        vcardproperty_get_first_parameter(prop, VCARD_TYPE_PARAMETER);
-
-    if (param) {
-        types = vcardparameter_get_type(param);
-    }
-    else {
-        types = vcardenumarray_new(1);
-        param = vcardparameter_new_type(types);
-        vcardproperty_add_parameter(prop, param);
-    }
-    vcardenumarray_append(types, type);
-}
-
-#endif /* HAVE_LIBVCARDVCARD */

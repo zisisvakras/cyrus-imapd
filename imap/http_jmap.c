@@ -1,45 +1,6 @@
-/* http_jmap.c -- Routines for handling JMAP requests in httpd
- *
- * Copyright (c) 1994-2018 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* http_jmap.c -- Routines for handling JMAP requests in httpd */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -111,6 +72,7 @@ static struct connect_params ws_params = {
 
 
 /* Namespace for JMAP */
+// clang-format off
 struct namespace_t namespace_jmap = {
     URL_NS_JMAP, 0, "jmap", JMAP_ROOT, "/.well-known/jmap",
     jmap_need_auth, 0,
@@ -142,6 +104,7 @@ struct namespace_t namespace_jmap = {
         { NULL,                 NULL }                  /* UNLOCK       */
     }
 };
+// clang-format on
 
 
 /*
@@ -222,7 +185,11 @@ static int jmap_auth(const char *userid __attribute__((unused)))
 
 static int jmap_need_auth(struct transaction_t *txn __attribute__((unused)))
 {
-    /* All endpoints require authentication */
+    /* Allow CORS preflight requests, if CORS is enabled */
+    if (txn->meth == METH_OPTIONS && config_getstring(IMAPOPT_HTTPALLOWCORS))
+        return 0;
+
+    /* Otherwise require authentication */
     return HTTP_UNAUTHORIZED;
 }
 
@@ -515,6 +482,12 @@ static int meth_post(struct transaction_t *txn,
     /* Read body */
     else if ((ret = http_read_req_body(txn))) {
         txn->flags.conn = CONN_CLOSE;
+    }
+
+    /* Check the size of the request */
+    else if (buf_len(&txn->req_body.payload) >
+        (size_t) my_jmap_settings.limits[MAX_SIZE_REQUEST]) {
+        ret = JMAP_LIMIT_SIZE;
     }
 
     /* Parse the JSON request */
@@ -878,7 +851,7 @@ static int _create_upload_collection(const char *accountid,
                                      struct mailbox **mailboxp)
 {
     /* upload collection */
-    struct mboxlock *namespacelock = user_namespacelock(accountid);
+    user_nslock_t *user_nslock = user_nslock_lock_w(accountid);
     mbentry_t *mbentry = NULL;
     int r = lookup_upload_collection(accountid, &mbentry);
     int need_setacl = 0;
@@ -955,7 +928,7 @@ static int _create_upload_collection(const char *accountid,
     }
 
  done:
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mboxlist_entry_free(&mbentry);
     return r;
 }
@@ -1026,7 +999,7 @@ static int jmap_upload(struct transaction_t *txn)
     struct stagemsg *stage = NULL;
     FILE *f = NULL;
     const char **hdr;
-    time_t now = time(NULL);
+    struct timespec now;
     struct appendstate as;
     char *accountid = NULL;
     char *normalisedtype = NULL;
@@ -1080,8 +1053,10 @@ static int jmap_upload(struct transaction_t *txn)
         goto done;
     }
 
+    cyrus_gettime(CLOCK_REALTIME, &now);
+
     /* Prepare to stage the message */
-    if (!(f = append_newstage(mailbox_name(mailbox), now, 0, &stage))) {
+    if (!(f = append_newstage(mailbox_name(mailbox), now.tv_sec, 0, &stage))) {
         syslog(LOG_ERR, "append_newstage(%s) failed", mailbox_name(mailbox));
         txn->error.desc = "append_newstage() failed";
         ret = HTTP_SERVER_ERROR;
@@ -1141,7 +1116,7 @@ static int jmap_upload(struct transaction_t *txn)
             buf_printf(&txn->buf, "<%s@%s>", httpd_userid, config_servername);
         }
 
-        mimehdr = charset_encode_mimeheader(buf_cstring(&txn->buf),
+        mimehdr = charset_encode_addrheader(buf_cstring(&txn->buf),
                                             buf_len(&txn->buf), 0);
         fprintf(f, "From: %s\r\n", mimehdr);
         free(mimehdr);
@@ -1157,7 +1132,7 @@ static int jmap_upload(struct transaction_t *txn)
     }
     else {
         char datestr[80];
-        time_to_rfc5322(now, datestr, sizeof(datestr));
+        time_to_rfc5322(now.tv_sec, datestr, sizeof(datestr));
         fprintf(f, "Date: %s\r\n", datestr);
     }
 
@@ -1186,6 +1161,16 @@ static int jmap_upload(struct transaction_t *txn)
     /* Write the data to the file */
     fwrite(data, datalen, 1, f);
 
+    if (fflush(f) || ferror(f) || fdatasync(fileno(f))) {
+        syslog(LOG_ERR, "IOERROR: append_setup(%s) failed: %s",
+               mailbox_name(mailbox), strerror(errno));
+        fclose(f);
+        r = IMAP_IOERROR;
+        txn->error.desc = "append_setup() failed";
+        ret = HTTP_SERVER_ERROR;
+        goto done;
+    }
+
 wrotebody:
 
     fclose(f);
@@ -1204,7 +1189,7 @@ wrotebody:
     /* Append the message to the mailbox */
     strarray_append(&flags, "\\Deleted");
     strarray_append(&flags, "\\Expunged");  // custom flag to insta-expunge!
-    r = append_fromstage(&as, &body, stage, now, 0, &flags, 0, /*annots*/NULL);
+    r = append_fromstage(&as, &body, stage, &now, 0, &flags, 0, /*annots*/NULL);
 
     if (r) {
         append_abort(&as);
@@ -1232,7 +1217,7 @@ wrotebody:
     }
 
     char datestr[RFC3339_DATETIME_MAX];
-    time_to_rfc3339(now + 86400, datestr, RFC3339_DATETIME_MAX);
+    time_to_rfc3339(now.tv_sec + 86400, datestr, RFC3339_DATETIME_MAX);
 
     char blob_id[JMAP_BLOBID_SIZE];
     jmap_set_blobid(rawmessage ? &body->guid : &body->content_guid, blob_id);
@@ -1454,8 +1439,16 @@ static int jmap_ws(struct transaction_t *txn, enum wslay_opcode opcode,
     /* Always start with fresh working buffer */
     buf_reset(&txn->buf);
 
-    /* Parse the JSON request */
-    ret = parse_json_body(txn, &req);
+    /* Check the size of the request */
+    if (buf_len(&txn->req_body.payload) >
+        (size_t) my_jmap_settings.limits[MAX_SIZE_REQUEST]) {
+        ret = JMAP_LIMIT_SIZE;
+    }
+    else {
+        /* Parse the JSON request */
+        ret = parse_json_body(txn, &req);
+    }
+
     if (ret) {
         ret = jmap_error_response(txn, ret, &res);
     }

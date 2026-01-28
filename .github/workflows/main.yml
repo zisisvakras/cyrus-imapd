@@ -12,27 +12,56 @@ on:
       - master
       - main
       - 'cyrus-imapd-*'
+
+env:
+  CYRUS_CLONE_ROOT: ${{ github.workspace }}
+
 jobs:
   build:
+    name: "${{ matrix.desc }}"
     strategy:
       fail-fast: false
       matrix:
-        compiler: [ "gcc", "clang" ]
+        include:
+          - compiler: "--gcc"
+            desc: "gcc w/cass"
+          - compiler: "--clang"
+            desc: "clang w/cass"
+          - compiler: "--gcc"
+            desc: "gcc+ubsan w/cass"
+            san: "--ubsan"
+          - compiler: "--gcc"
+            desc: "gcc+asan w/cass"
+            san: "--asan"
+            skip: "!Cyrus::Sieve.badscript_timsieved !Cyrus::LibCyrus"
+          - compiler: "--gcc"
+            # -Og finds more errors at compile time
+            desc: "gcc -Og cunit"
+            cflags: "-Og"
+            cxxflags: "-Og"
+            skip-cass: 1
+          - compiler: "--gcc"
+            desc: "Non-UTC timezone"
+            pretest: "ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime && sudo dpkg-reconfigure --frontend noninteractive tzdata"
+          - compiler: "--gcc"
+            desc: "gcc -Og debian trixie"
+            cflags: "-Og"
+            cxxflags: "-Og"
+            image: "ghcr.io/cyrusimap/cyrus-docker:trixie"
     runs-on: ubuntu-latest
     container:
-        image: ghcr.io/cyrusimap/cyrus-docker:bookworm
-        options: --init
+        image: ${{ matrix.image || 'ghcr.io/cyrusimap/cyrus-docker:bookworm' }}
+        options: --init --privileged
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: install missing or frequently-updated deps
-      shell: bash
-      run: |
-        cpanm Mail::IMAPTalk # in image, but fetch latest!
     - name: setup git safe directory
       shell: bash
       run: git config --global --add safe.directory /__w/cyrus-imapd/cyrus-imapd
+    - name: override kernel core pattern
+      shell: bash
+      run: sudo sysctl -w kernel.core_pattern=core.%p
     - name: fetch upstream release tags
       if: ${{ github.repository != 'cyrusimap/cyrus-imapd' }}
       shell: bash
@@ -42,13 +71,13 @@ jobs:
         # following".  we're explicitly fetching the tags we want, we do not
         # need every other tag that's reachable from them
         git fetch --no-tags upstream 'refs/tags/cyrus-imapd-*:refs/tags/cyrus-imapd-*'
-    - name: configure and build
-      env:
-        CC: "${{ matrix.compiler }}"
+    - name: Run pre-test code if any
+      if: ${{ matrix.pretest }}
       shell: bash
-      run: |
-        echo "building cyrus version" $(./tools/git-version.sh)
-        ./tools/build-with-cyruslibs.sh
+      run: ${{ matrix.pretest }}
+    - name: configure and build
+      shell: bash
+      run: cyd build "${{ matrix.compiler }}" "${{ matrix.san }}" --cflags "${{ matrix.cflags }}" --cxxflags "${{ matrix.cxxflags }}"
     - name: report version information
       shell: bash
       run: |
@@ -56,89 +85,17 @@ jobs:
         echo "Mail::IMAPTalk" $(cpanm --info Mail::IMAPTalk)
         /usr/cyrus/libexec/master -V
         /usr/cyrus/sbin/cyr_buildinfo
-    - name: set up cassandane
-      working-directory: cassandane
-      shell: bash
-      run: |
-        cp -af cassandane.ini.dockertests cassandane.ini
-        chown cyrus:mail cassandane.ini
-        make -j8
     - name: run cassandane quietly
+      if: ${{ ! matrix.skip-cass }}
       id: cass1
       continue-on-error: true
-      working-directory: cassandane
-      run: setpriv --reuid=cyrus --regid=mail --clear-groups --inh-caps='-chown,-dac_override,-dac_read_search,-fowner,-fsetid,-kill,-setgid,-setuid,-setpcap,-linux_immutable,-net_bind_service,-net_broadcast,-net_admin,-net_raw,-ipc_lock,-ipc_owner,-sys_module,-sys_rawio,-sys_chroot,-sys_ptrace,-sys_pacct,-sys_admin,-sys_boot,-sys_nice,-sys_resource,-sys_time,-sys_tty_config,-mknod,-lease,-audit_write,-audit_control,-setfcap,-mac_override,-mac_admin,-syslog,-wake_alarm,-block_suspend,-audit_read,-cap_38,-cap_39,-cap_40' ./testrunner.pl --slow -f prettier -j 8 !Test::Core
+      run: cyd test --no-ok --slow --format prettier "${{ matrix.skip }}"
     - name: rerun cassandane failures noisily
       if: ${{ steps.cass1.outcome == 'failure' }}
-      working-directory: cassandane
-      run: setpriv --reuid=cyrus --regid=mail --clear-groups --inh-caps='-chown,-dac_override,-dac_read_search,-fowner,-fsetid,-kill,-setgid,-setuid,-setpcap,-linux_immutable,-net_bind_service,-net_broadcast,-net_admin,-net_raw,-ipc_lock,-ipc_owner,-sys_module,-sys_rawio,-sys_chroot,-sys_ptrace,-sys_pacct,-sys_admin,-sys_boot,-sys_nice,-sys_resource,-sys_time,-sys_tty_config,-mknod,-lease,-audit_write,-audit_control,-setfcap,-mac_override,-mac_admin,-syslog,-wake_alarm,-block_suspend,-audit_read,-cap_38,-cap_39,-cap_40' ./testrunner.pl -f pretty -j 8 --rerun
+      run: cyd test --no-slow --format pretty --rerun
     - name: collect logs
-      if: always()
+      if: ${{ ! matrix.skip-cass }}
       run: cat /tmp/cass/*/conf/log/syslog
-  asan-make-check:
-    runs-on: ubuntu-latest
-    container:
-        image: ghcr.io/cyrusimap/cyrus-docker:bookworm
-        options: --init
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: setup git safe directory
-      shell: bash
-      run: git config --global --add safe.directory /__w/cyrus-imapd/cyrus-imapd
-    - name: fetch upstream release tags
-      if: ${{ github.repository != 'cyrusimap/cyrus-imapd' }}
-      shell: bash
-      run: |
-        git remote add upstream https://github.com/cyrusimap/cyrus-imapd.git
-        # n.b. --no-tags does not mean "no tags", it means "no automatic tag
-        # following".  we're explicitly fetching the tags we want, we do not
-        # need every other tag that's reachable from them
-        git fetch --no-tags upstream 'refs/tags/cyrus-imapd-*:refs/tags/cyrus-imapd-*'
-    - name: configure and build
-      shell: bash
-      run: |
-        echo "building cyrus version" $(./tools/git-version.sh)
-        LSAN_OPTIONS=suppressions=leaksanitizer.suppress CYRUS_SAN_FLAGS="-fsanitize=address -static-libasan" ./tools/build-with-cyruslibs.sh
-    - name: report version information
-      shell: bash
-      run: |
-        echo "debian" $(cat /etc/debian_version)
-        /usr/cyrus/libexec/master -V
-        /usr/cyrus/sbin/cyr_buildinfo
-  ubsan-make-check:
-    runs-on: ubuntu-latest
-    container:
-        image: ghcr.io/cyrusimap/cyrus-docker:bookworm
-        options: --init
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: setup git safe directory
-      shell: bash
-      run: git config --global --add safe.directory /__w/cyrus-imapd/cyrus-imapd
-    - name: fetch upstream release tags
-      if: ${{ github.repository != 'cyrusimap/cyrus-imapd' }}
-      shell: bash
-      run: |
-        git remote add upstream https://github.com/cyrusimap/cyrus-imapd.git
-        # n.b. --no-tags does not mean "no tags", it means "no automatic tag
-        # following".  we're explicitly fetching the tags we want, we do not
-        # need every other tag that's reachable from them
-        git fetch --no-tags upstream 'refs/tags/cyrus-imapd-*:refs/tags/cyrus-imapd-*'
-    - name: configure and build
-      shell: bash
-      run: |
-        echo "building cyrus version" $(./tools/git-version.sh)
-        UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 CYRUS_SAN_FLAGS="-fsanitize=undefined" ./tools/build-with-cyruslibs.sh
-    - name: report version information
-      shell: bash
-      run: |
-        echo "debian" $(cat /etc/debian_version)
-        /usr/cyrus/libexec/master -V
-        /usr/cyrus/sbin/cyr_buildinfo
   valgrind-make-check:
     runs-on: ubuntu-latest
     container:
@@ -164,11 +121,11 @@ jobs:
       shell: bash
       run: |
         echo "building cyrus version" $(./tools/git-version.sh)
-        ./tools/build-with-cyruslibs.sh
+        cyd build
     - name: make check with valgrind
       shell: bash
       run: |
-        make VG=1 check
+        make VG=1 check-discrete
     - name: report version information
       shell: bash
       run: |

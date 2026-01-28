@@ -1,45 +1,6 @@
-/* itip_support.c -- Routines for dealing with iTIP
- *
- * Copyright (c) 1994-2021 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- */
+/* itip_support.c -- Routines for dealing with iTIP */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 
 #include <config.h>
@@ -404,8 +365,8 @@ HIDDEN icalcomponent *master_to_recurrence(icalcomponent *master,
         struct icaltimetype end = _get_datetime(master, endprop);
 
         // calculate and re-apply the diff
-        struct icaldurationtype diff = icaltime_subtract(end, start);
-        struct icaltimetype newend = icaltime_add(newstart, diff);
+        struct icaldurationtype diff = icalduration_from_times(end, start);
+        struct icaltimetype newend = icalduration_extend(newstart, diff);
 
         icaltimezone *endzone = (icaltimezone *)icaltime_get_timezone(end);
         icalproperty_set_dtend(endprop,
@@ -781,7 +742,7 @@ static int deliver_merge_request(const char *attendee,
             }
 
             /* Copy over JMAP privacy from current component to iTIP component */
-			prop =
+                        prop =
                 icalcomponent_get_x_property_by_name(comp, JMAPICAL_XPROP_PRIVACY);
             if (prop) {
                 icalcomponent_add_property(new_comp,
@@ -1009,8 +970,8 @@ static int deliver_merge_add(icalcomponent *ical,  // current iCalendar
     };
 
     if (!icaldurationtype_is_null_duration(duration) &&
-        icaldurationtype_as_int(duration) !=
-        icaldurationtype_as_int(icalcomponent_get_duration(master_comp))) {
+        icaldurationtype_as_utc_seconds(duration) !=
+        icaldurationtype_as_utc_seconds(icalcomponent_get_duration(master_comp))) {
         /* Change in event duration */
         rdate.period.start = dtstart;
         rdate.period.duration = duration;
@@ -1441,7 +1402,7 @@ HIDDEN enum sched_deliver_outcome sched_deliver_local(const char *userid,
     default:
         /* Unknown METHOD -- ignore it */
         syslog(LOG_ERR, "Unknown iTIP method: %s",
-               icalenum_method_to_string(method));
+               icalproperty_method_to_string(method));
 
         sched_data->flags &= ~SCHEDFLAG_IS_REPLY;
         goto inbox;

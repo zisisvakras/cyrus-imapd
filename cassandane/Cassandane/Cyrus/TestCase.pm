@@ -50,8 +50,8 @@ use File::Temp qw(tempfile);
 use List::Util qw(uniq);
 use Scalar::Util qw(refaddr);
 
-use lib '.';
 use base qw(Cassandane::Unit::TestCase);
+use Cassandane::TestUser;
 use Cassandane::Util::Log;
 use Cassandane::Util::Slurp;
 use Cassandane::Util::Words;
@@ -254,6 +254,9 @@ magic(ReverseACLs => sub {
 });
 magic(RightNow => sub {
     shift->config_set(sync_rightnow_channel => '""');
+});
+magic(SyncCache => sub {
+    shift->config_set('sync_cache_db_path' => '@basedir@/sync_cache.db');
 });
 magic(SyncLog => sub {
     shift->config_set(sync_log => 1);
@@ -471,6 +474,24 @@ magic(NoCheckSyslog => sub {
     my $self = shift;
     $self->{no_check_syslog} = 1;
 });
+magic(SuppressLSAN => sub {
+    my ($self, $patterns) = @_;
+
+    my @patterns = split(" ", $patterns);
+    unless (@patterns) {
+        die ":SuppressLSAN requires a list of arguments";
+    }
+
+    my ($fh, $tmp) = tempfile('lsan.suppressXXXXX', OPEN => 1,
+                              DIR => $self->{instance}->{basedir} . "/tmp");
+    for my $pattern (@patterns) {
+        print { $fh } "leak:$pattern\n";
+    }
+
+    close($fh);
+
+    $self->{lsan_suppressions} = $tmp;
+});
 magic(JmapMaxCalendarEventNotifs => sub {
     my $conf = shift;
     # set to some small number
@@ -480,9 +501,9 @@ magic(NoReplicaonly => sub {
     my $self = shift;
     $self->{no_replicaonly} = 1;
 });
-magic(ConversationMaxThread10 => sub {
+magic(ConversationsMaxThread10 => sub {
     my $self = shift;
-    $self->config_set('conversation_max_thread' => 10);
+    $self->config_set('conversations_max_thread' => 10);
 });
 magic(SlowIO => sub {
     my $self = shift;
@@ -495,6 +516,25 @@ magic(Mboxgroups => sub {
 magic(CaldavAlarmOnlyVevent => sub {
     my $self = shift;
     $self->config_set('caldav_alarm_support_components' => 'VEVENT');
+});
+magic(HttpAllowCorsFooExampleCom => sub {
+    my $self = shift;
+    $self->config_set(httpallowcors => 'https://foo.example.com');
+});
+magic(MailboxVersion => sub {
+    my ($self, $version) = @_;
+
+    unless ($version =~ /\A[0-9]+\z/) {
+        require Carp;
+        Carp::confess("Bad test spec, unknown mailbox version '$version'");
+    }
+
+    $self->{mailbox_version} = $version;
+});
+magic(OldJMAPIds => sub {
+    my ($self) = @_;
+
+    $self->{old_jmap_ids} = 1;
 });
 
 
@@ -519,9 +559,14 @@ sub _run_magic
     if (defined $sub) {
         foreach my $a (attributes::get($sub))
         {
+            my $args;
+            if ($a =~ s/\((.*)\)//) {
+                $args = $1;
+            }
+
             my $m = lc($a);
             # ignore min/max version attribution here
-            next if $a =~ m/^(?:min|max)_version_/;
+            next if $a =~ m/^(?:min|max)_(?:other_)?version_/;
             # ignore feature test attribution here
             next if $a =~ m/^needs_/;
             # ignore want attribution here
@@ -530,7 +575,7 @@ sub _run_magic
                 unless defined $magic_handlers{$m};
             next if $seen{$m};
             $self->{_current_magic} = "Magic attribute $a";
-            $magic_handlers{$m}->($self);
+            $magic_handlers{$m}->($self, $args);
             $self->{_current_magic} = undef;
             $seen{$m} = 1;
         }
@@ -553,6 +598,8 @@ sub _create_instances
 
     my $want = $self->{_want};
     my %instance_params = %{$self->{_instance_params}};
+
+    $instance_params{lsan_suppressions} = $self->{lsan_suppressions} // "";
 
     my $cassini = Cassandane::Cassini->instance();
 
@@ -615,7 +662,16 @@ sub _create_instances
         $instance_params{install_certificates} = $want->{install_certificates};
         $instance_params{smtpdaemon} = $want->{smtpdaemon};
 
-        $instance_params{description} = "main instance for test $self->{_name}";
+        $instance_params{mailbox_version} = $self->{mailbox_version}
+            if exists $self->{mailbox_version};
+
+        $instance_params{old_jmap_ids} = $self->{old_jmap_ids}
+            if exists $self->{old_jmap_ids};
+
+        my $class = ref $self;
+        my $name  = $self->{_name} =~ s/^test_//r;
+        $instance_params{description} = "main instance for test $class.$name";
+
         $self->{instance} = Cassandane::Instance->new(%instance_params);
         $self->{instance}->add_services(@{$want->{services}});
         $self->{instance}->_setup_for_deliver()
@@ -640,13 +696,15 @@ sub _create_instances
             unless ($self->{no_replicaonly}) {
                 $replica_params{config}->set(replicaonly => 'yes');
             }
-            my $cyrus_replica_prefix = $cassini->val('cyrus replica', 'prefix');
-            if (defined $cyrus_replica_prefix and -d $cyrus_replica_prefix) {
-                xlog $self, "replica instance: using [cyrus replica] configuration";
-                $replica_params{installation} = 'replica';
+            my $cyrus_other_prefix = $cassini->val('cyrus other', 'prefix');
+            if (defined $cyrus_other_prefix and -d $cyrus_other_prefix) {
+                xlog $self, "replica instance: using [cyrus other] configuration";
+                $replica_params{installation} = 'other';
             }
 
-            $replica_params{description} = "replica instance for test $self->{_name}";
+            my $class = ref $self;
+            my $name  = $self->{_name} =~ s/^test_//r;
+            $replica_params{description} = "replica instance for test $class.$name";
             $self->{replica} = Cassandane::Instance->new(%replica_params,
                                                          setup_mailbox => 0);
             my ($v) = Cassandane::Instance->get_version($replica_params{installation});
@@ -668,6 +726,9 @@ sub _create_instances
             $frontend_service_port = Cassandane::PortManager::alloc("localhost");
             $backend2_service_port = Cassandane::PortManager::alloc("localhost");
 
+            my %frontend_params = %instance_params;
+            my %backend2_params = %instance_params;
+
             # set up a front end on which we also run the mupdate master
             my $frontend_conf = $self->{_config}->clone();
             $frontend_conf->set(
@@ -686,15 +747,19 @@ sub _create_instances
                 proxy_password => 'mailproxy',
             );
 
-            my $cyrus_murder_prefix = $cassini->val('cyrus murder', 'prefix');
-            if (defined $cyrus_murder_prefix and -d $cyrus_murder_prefix) {
-                xlog $self, "murder instance: using [cyrus murder] configuration";
-                $instance_params{installation} = 'murder';
+            my $cyrus_other_prefix = $cassini->val('cyrus other', 'prefix');
+            if (defined $cyrus_other_prefix and -d $cyrus_other_prefix) {
+                xlog $self, "frontend instance: using [cyrus other] configuration";
+                xlog $self, "backend2 instance: using [cyrus other] configuration";
+                $frontend_params{installation} = 'other';
+                $backend2_params{installation} = 'other';
             }
 
-            $instance_params{description} = "murder frontend for test $self->{_name}";
-            $instance_params{config} = $frontend_conf;
-            $self->{frontend} = Cassandane::Instance->new(%instance_params,
+            my $class = ref $self;
+            my $name  = $self->{_name} =~ s/^test_//r;
+            $frontend_params{description} = "murder frontend for test $class.$name";
+            $frontend_params{config} = $frontend_conf;
+            $self->{frontend} = Cassandane::Instance->new(%frontend_params,
                                                           setup_mailbox => 0);
             $self->{frontend}->add_service(name => 'mupdate',
                                            port => $mupdate_port,
@@ -757,9 +822,9 @@ sub _create_instances
                 proxy_password => 'mailproxy',
             );
 
-            $instance_params{description} = "murder backend2 for test $self->{_name}";
-            $instance_params{config} = $backend2_conf;
-            $self->{backend2} = Cassandane::Instance->new(%instance_params,
+            $backend2_params{description} = "murder backend2 for test $class.$name";
+            $backend2_params{config} = $backend2_conf;
+            $self->{backend2} = Cassandane::Instance->new(%backend2_params,
                                                           setup_mailbox => 0); # XXX ?
             $self->{backend2}->add_services(@{$want->{services}});
 
@@ -795,9 +860,9 @@ sub _create_instances
 
 sub _need_http_tiny_env
 {
-    # Net::DAVTalk < 0.23 and Mail::JMAPTalk < 0.17 don't pass through
-    # SSL_options, but HTTP::Tiny >= 0.083 enables SSL certificate
-    # verification, which will fail without our SSL_options.
+    # Net::DAVTalk < 0.23 doesn't pass through SSL_options, but HTTP::Tiny >=
+    # 0.083 enables SSL certificate verification, which will fail without our
+    # SSL_options.
     #
     # For HTTP::Tiny >= 0.086, we can set an environment variable
     # to turn off SSL certificate verifications.
@@ -810,25 +875,22 @@ sub _need_http_tiny_env
     return undef if $@;
 
     my $ndv = version->parse($Net::DAVTalk::VERSION);
-    my $mjv = version->parse($Mail::JMAPTalk::VERSION);
     my $htv = version->parse($HTTP::Tiny::VERSION);
 
     # not needed: old HTTP::Tiny doesn't check certificates
     return undef if $htv < version->parse('0.083');
 
-    # not needed: new Net::DAVTalk and Mail::JMAPTalk pass through SSL_options
-    return undef if $ndv >= version->parse('0.23')
-                    && $mjv >= version->parse('0.17');
+    # not needed: new Net::DAVTalk passes through SSL_options
+    return undef if $ndv >= version->parse('0.23');
 
     # awkward: HTTP::Tiny 0.083-0.085 are new enough to check certificates
     # by default, but not new enough for us to override that by the
     # environment variable.  if you get errors here, you need to either
     # upgrade HTTP::Tiny to 0.086 (or later), or upgrade Net::DAVTalk to 0.23
-    # and Mail::JMAPTalk to 0.17 (or later).
+    # (or later).
     HTTP::Tiny->VERSION('0.086');
 
     xlog "Have Net::DAVTalk version " . Net::DAVTalk->VERSION();
-    xlog "Have Mail::JMAPTalk version " . Mail::JMAPTalk->VERSION();
     xlog "Have HTTP::Tiny version " . HTTP::Tiny->VERSION();
     xlog "Will set PERL_HTTP_TINY_SSL_INSECURE_BY_DEFAULT=1";
     return 1;
@@ -845,48 +907,14 @@ sub _setup_http_service_objects
 
     my $ca_file = abs_path("data/certs/cacert.pem");
 
-    my %common_args = (
-        user => 'cassandane',
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => ($service->is_ssl() ? 'https' : 'http'),
-        SSL_options => {
-            SSL_ca_file => $ca_file,
-            SSL_verifycn_scheme => 'none',
-        },
-    );
-
-    local $ENV{PERL_HTTP_TINY_SSL_INSECURE_BY_DEFAULT} = _need_http_tiny_env();
-
     if ($self->{instance}->{config}->get_bit('httpmodules', 'carddav')) {
-        require Net::CardDAVTalk;
-        $self->{carddav} = Net::CardDAVTalk->new(
-            %common_args,
-            url => '/',
-            expandurl => 1,
-        );
+        $self->{carddav} = $self->default_user->carddav;
     }
     if ($self->{instance}->{config}->get_bit('httpmodules', 'caldav')) {
-        require Net::CalDAVTalk;
-        $self->{caldav} = Net::CalDAVTalk->new(
-            %common_args,
-            url => '/',
-            expandurl => 1,
-        );
-        $self->{caldav}->UpdateAddressSet("Test User",
-                                          "cassandane\@example.com");
+        $self->{caldav} = $self->default_user->caldav;
     }
     if ($self->{instance}->{config}->get_bit('httpmodules', 'jmap')) {
-        require Mail::JMAPTalk;
-        $ENV{DEBUGJMAP} = 1;
-        $self->{jmap} = Mail::JMAPTalk->new(
-            %common_args,
-            url => '/jmap/',
-        );
-
-        # preload default UA while the HTTP::Tiny env var is still set
-        $self->{jmap}->ua();
+        $self->{jmap} = $self->default_user->new_jmaptester;
     }
 
     xlog $self, "http service objects setup complete!";
@@ -921,6 +949,12 @@ sub set_up
     }
 
     xlog $self, "Calling test function";
+}
+
+sub default_user
+{
+    my ($self) = @_;
+    return $self->{default_user};
 }
 
 sub _start_instances
@@ -1019,6 +1053,16 @@ sub _start_instances
                 if ($self->{_want}->{adminstore});
         }
     }
+
+    my $user = Cassandane::TestUser->new({
+        username => 'cassandane',
+        password => 'cassandane',
+        instance => $self->{instance},
+    });
+
+    $self->{default_user} = $user;
+
+    return;
 }
 
 sub tear_down
@@ -1039,6 +1083,11 @@ sub tear_down
     $self->{master_adminstore} = undef;
     $self->{backend1_store} = undef;
     $self->{backend1_adminstore} = undef;
+
+    $self->{default_user} = undef;
+    $self->{jmap} = undef;
+    $self->{caldav} = undef;
+    $self->{carddav} = undef;
 
     my @stop_errors;
     my @basedirs;

@@ -1,43 +1,6 @@
-/*
- * Copyright (c) 1994-2011 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* ctl_conversationsdb.c */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -48,7 +11,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sysexits.h>
-#include <syslog.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -71,7 +33,10 @@
 /* config.c stuff */
 const int config_need_data = CONFIG_NEED_PARTITION_DATA;
 
-enum { UNKNOWN, DUMP, UNDUMP, ZERO, BUILD, RECALC, AUDIT, CHECKFOLDERS, ZEROMODSEQ, UPGRADE };
+enum { UNKNOWN, DUMP, UNDUMP, ZERO, BUILD, RECALC, AUDIT, CHECKFOLDERS, ZEROMODSEQ, ENABLE_COMPACTIDS };
+
+static int recalc_repair  = 0;
+static int recalc_upgrade = 0;
 
 static int verbose = 0;
 
@@ -312,25 +277,25 @@ static int do_zeromodseq(const char *userid)
     return r;
 }
 
-
-static int build_cid_cb(const mbentry_t *mbentry,
-                        void *rock __attribute__((unused)))
+static int build_cid_cb(const mbentry_t *mbentry, void *rock)
 {
     struct mailbox *mailbox = NULL;
     int r = 0;
-    int count = 1;
-    struct conversations_state *cstate = conversations_get_mbox(mbentry->name);
+    int loop = 1;
+    struct conversations_state *cstate = (struct conversations_state *)rock;
 
-    if (!cstate) return IMAP_CONVERSATIONS_NOT_OPEN;
-
-    while (!r && count) {
+    while (!r && loop) {
         r = mailbox_open_iwl(mbentry->name, &mailbox);
         if (r) {
             fprintf(stderr, "Failed to open mailbox %s, skipping\n", mbentry->name);
             return 0;
         }
 
-        count = 0;
+        int count = 0;
+        loop = 0;
+
+        // skip mailboxes without conversations (e.g. the submission folder)
+        if (!mailbox_has_conversations(mailbox)) break;
 
         struct mailbox_iter *iter = mailbox_iter_init(mailbox, 0, ITER_SKIP_UNLINKED);
         const message_t *msg;
@@ -354,7 +319,10 @@ static int build_cid_cb(const mbentry_t *mbentry,
 
             count++;
             /* batch so we don't lock for ages */
-            if (count > 8192) break;
+            if (count > 8192) {
+                loop = 1;
+                break;
+            }
         }
 
         mailbox_iter_done(&iter);
@@ -374,7 +342,7 @@ static int do_build(const char *userid)
     r = conversations_open_user(userid, 0/*shared*/, &state);
     if (r) return r;
 
-    r = mboxlist_usermboxtree(userid, NULL, build_cid_cb, NULL, 0);
+    r = mboxlist_usermboxtree(userid, NULL, build_cid_cb, state, 0);
 
     conversations_commit(&state);
     return r;
@@ -416,14 +384,14 @@ static int audit_counts_cb(const mbentry_t *mbentry,
     return r;
 }
 
-static int do_recalc(const char *userid, int force)
+static int do_recalc(const char *userid)
 {
     struct conversations_state *state = NULL;
 
     int r = conversations_open_user(userid, 0/*shared*/, &state);
     if (r) return r;
 
-    if (!force && state->version == CONVERSATIONS_VERSION) {
+    if (recalc_upgrade && !recalc_repair && state->version == CONVERSATIONS_VERSION) {
         if (verbose)
             printf("%s already version %d, skipping\n", userid, state->version);
         conversations_commit(&state);
@@ -433,7 +401,7 @@ static int do_recalc(const char *userid, int force)
     // wipe if it's currently folders_byname, will recreate with byid
     int wipe = state->folders_byname;
 
-    r = conversations_zero_counts(state, wipe);
+    r = conversations_zero_counts(state, wipe, recalc_upgrade);
     if (r) goto err;
 
     r = mboxlist_usermboxtree(userid, NULL, recalc_counts_cb, NULL, 0);
@@ -446,6 +414,71 @@ static int do_recalc(const char *userid, int force)
     return 0;
 
 err:
+    conversations_abort(&state);
+    return r;
+}
+
+static int check_version_cb(const mbentry_t *mbentry,
+                            void *rock __attribute__((unused)))
+{
+    struct mailbox *mailbox = NULL;
+    int r;
+
+    r = mailbox_open_irl(mbentry->name, &mailbox);
+    if (r) return r;
+
+    if (mailbox->i.minor_version < 20) {
+        fprintf(stderr,
+                "MUST upgrade mailbox '%s'"
+                " to version 20 or higher before enabling compactids\n",
+                mailbox_name(mailbox));
+        r = IMAP_MAILBOX_BADFORMAT;
+    }
+
+    mailbox_close(&mailbox);
+    return r;
+}
+
+static int do_compactids(const char *userid, int enable)
+{
+    struct conversations_state *state = NULL;
+    int r;
+
+    r = conversations_open_user(userid, 0/*shared*/, &state);
+    if (r) return r;
+
+    if (enable) {
+        if (state->version < 2) {
+            fprintf(stderr,
+                    "MUST upgrade conversations.db for user '%s'"
+                    " to version 2 or higher before enabling compactids\n",
+                    userid);
+            r = IMAP_MAILBOX_BADFORMAT;
+            goto err;
+        }
+
+        r = mboxlist_usermboxtree(userid, NULL, check_version_cb, NULL, 0);
+        if (r) goto err;
+    }
+
+    r = conversations_enable_compactids(state, enable);
+    if (r) goto err;
+
+    /* bump modseq on INBOX so that compactids setting gets replicated */
+    char *inbox = mboxname_user_mbox(userid, NULL);
+    struct mailbox *mailbox = NULL;
+
+    r = mailbox_open_iwl(inbox, &mailbox);
+    free(inbox);
+    if (r) goto err;
+
+    mailbox_modseq_dirty(mailbox);
+    mailbox_close(&mailbox);
+
+    conversations_commit(&state);
+    return 0;
+
+ err:
     conversations_abort(&state);
     return r;
 }
@@ -730,8 +763,9 @@ static int fix_modseqs(struct conversations_state *a,
                 /* always update!  The delta logic will ensure we don't add
                  * the record if it's not already at least present in the
                  * other conversation */
-                conversation_update_thread(&convb, &threada->guid, threada->internaldate,
-                        threada->createdmodseq, /*delta_exists*/0);
+                conversation_update_thread(&convb, &threada->guid,
+                                           threada->nano_internaldate,
+                                           threada->createdmodseq, /*delta_exists*/0, /*force*/0);
             }
 
             /* be nice to know if this is needed, but at least twoskip
@@ -861,7 +895,7 @@ static int do_audit(const char *userid)
         goto out;
     }
 
-    r = conversations_zero_counts(state_temp, /*wipe*/0);
+    r = conversations_zero_counts(state_temp, /*wipe*/0, /*do_upgrade*/0);
     if (r) {
         fprintf(stderr, "Failed to zero counts in %s: %s\n",
                 filename_temp, error_message(r));
@@ -945,7 +979,7 @@ out:
 static int usage(const char *name)
     __attribute__((noreturn));
 
-static int do_user(const char *userid, void *rock __attribute__((unused)))
+static int do_user(const char *userid, void *rock)
 {
     char *fname;
     int r = 0;
@@ -988,7 +1022,7 @@ static int do_user(const char *userid, void *rock __attribute__((unused)))
         break;
 
     case RECALC:
-        if (do_recalc(userid, /*force*/1))
+        if (do_recalc(userid))
             r = EX_NOINPUT;
         break;
 
@@ -1002,8 +1036,8 @@ static int do_user(const char *userid, void *rock __attribute__((unused)))
             r = EX_NOINPUT;
         break;
 
-    case UPGRADE:
-        if (do_recalc(userid, /*force*/0))
+    case ENABLE_COMPACTIDS:
+        if (do_compactids(userid, *((int *) rock)))
             r = EX_NOINPUT;
         break;
 
@@ -1034,9 +1068,12 @@ int main(int argc, char **argv)
     const char *alt_config = NULL;
     const char *userid = NULL;
     int recursive = 0;
+    void *rock = NULL;
+    int enable_compactids = 0;
+    int r = 0;
 
     /* keep in alphabetical order */
-    static const char short_options[] = "AC:FMRST:bdruUvzZ:";
+    static const char short_options[] = "AC:FMRST:bdruUvzZ:I:";
 
     static const struct option long_options[] = {
         { "audit", no_argument, NULL, 'A' },
@@ -1054,6 +1091,7 @@ int main(int argc, char **argv)
         { "verbose", no_argument, NULL, 'v' },
         { "clear", no_argument, NULL, 'z' },
         { "clearcid", required_argument, NULL, 'Z' },
+        { "enable-compact-emailids", required_argument, NULL, 'I' },
         { 0, 0, 0, 0 },
     };
 
@@ -1116,8 +1154,9 @@ int main(int argc, char **argv)
             break;
 
         case 'R':
-            if (mode != UNKNOWN)
+            if (mode != UNKNOWN && mode != RECALC)
                 usage(argv[0]);
+            recalc_repair = 1;
             mode = RECALC;
             break;
 
@@ -1134,9 +1173,21 @@ int main(int argc, char **argv)
             break;
 
         case 'U':
+            if (mode != UNKNOWN && mode != RECALC)
+                usage(argv[0]);
+            recalc_upgrade = 1;
+            mode = RECALC;
+            break;
+
+        case 'I':
             if (mode != UNKNOWN)
                 usage(argv[0]);
-            mode = UPGRADE;
+            if (!strcmp(optarg, "1") ||
+                !strcasecmp(optarg, "on") || !strcasecmp(optarg, "yes")) {
+                enable_compactids = 1;
+            }
+            mode = ENABLE_COMPACTIDS;
+            rock = (void *) &enable_compactids;
             break;
 
         case 'v':
@@ -1177,10 +1228,10 @@ int main(int argc, char **argv)
     signals_add_handlers(0);
 
     if (recursive) {
-        mboxlist_alluser(do_user, NULL);
+        r = mboxlist_alluser(do_user, rock);
     }
     else {
-        do_user(userid, NULL);
+        r = do_user(userid, rock);
     }
 
     if (zerocids) {
@@ -1188,7 +1239,7 @@ int main(int argc, char **argv)
         free(zerocids);
     }
 
-    shut_down(0);
+    shut_down(r);
 }
 
 static int usage(const char *name)
@@ -1203,8 +1254,10 @@ static int usage(const char *name)
     fprintf(stderr, "    -z             zero the conversations DB (make all NULLs)\n");
     fprintf(stderr, "    -b             build conversations entries for any NULL records\n");
     fprintf(stderr, "    -R             recalculate all counts\n");
+    fprintf(stderr, "    -U             upgrade to latest version of conversations.db\n");
     fprintf(stderr, "    -A             audit conversations DB counts\n");
     fprintf(stderr, "    -F             check folder names\n");
+    fprintf(stderr, "    -I switch      enable/disable compact emailids.  1/on/yes to enable\n");
     fprintf(stderr, "    -T dir         store temporary data for audit in dir\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "    -r             recursive mode: username is a prefix\n");

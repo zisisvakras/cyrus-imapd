@@ -29,6 +29,7 @@
 
 #define XXH_STATIC_LINKING_ONLY /* access advanced declarations */
 #define XXH_INLINE_ALL          /* maximum optimise */
+#define XXH_NO_INLINE_HINTS   1 /* allow compiling with -Og on modern compilers */
 #define XXH_IMPLEMENTATION      /* access definitions */
 #include "xxhash.h"
 
@@ -140,6 +141,8 @@ struct twom_txn {
 };
 
 struct twom_cursor {
+    char *prefix;
+    size_t prefixlen;
     struct tm_loc loc;
     struct twom_txn *txn;
     unsigned alwaysyield:1;
@@ -590,9 +593,6 @@ static int read_header(struct twom_db *db, struct tm_file *file, struct tm_heade
 {
     assert(db && file);
     const char *base = file->base;
-
-    if (file->size < HEADER_SIZE + DUMMY_SIZE)
-        return TWOM_BADFORMAT;
 
     if (memcmp(base, HEADER_MAGIC, HEADER_MAGIC_SIZE))
         return TWOM_BADFORMAT;
@@ -1418,14 +1418,6 @@ static int recovery1(struct twom_db *db, struct tm_loc *loc, int *count)
     r = tm_commit(db, loc->end);
     if (r) return r;
 
-    if (ftruncate(file->fd, loc->end)) {
-        db->error("failed to truncate back to committed size",
-                  "fname=<%s> size=<%08llX>", db->fname, (LLU)loc->end);
-        return TWOM_IOERROR;
-    }
-    // this will cause tm_ensure to re-mmap even though the map is bigger
-    loc->file->size = loc->end;
-
     /* clear the dirty flag */
     struct tm_header *header = &file->header;
     header->flags &= ~DIRTY;
@@ -1651,6 +1643,18 @@ static int write_lock(struct twom_db *db, struct twom_txn **txnp,
         db->openfile = file;
     }
 
+    // empty file is same as nothing
+    if (!sbuf.st_size) {
+        r = TWOM_NOTFOUND;
+        goto done;
+    }
+
+    // any other tiny file isn't this format
+    if (sbuf.st_size < HEADER_SIZE + DUMMY_SIZE) {
+        r = TWOM_BADFORMAT;
+        goto done;
+    }
+
     // if we haven't mapped enough space, do it now
     if (file->size < (size_t)sbuf.st_size) {
         if (file->size) munmap(file->base, file->size);
@@ -1758,11 +1762,6 @@ static int read_lock(struct twom_db *db, struct twom_txn **txnp,
             goto done;
         }
 
-        if (sbuf.st_size < HEADER_SIZE + DUMMY_SIZE) {
-            r = TWOM_BADFORMAT;
-            goto done;
-        }
-
         // we're not interested in getting the latest file
         if (forcefile) break;
 
@@ -1792,6 +1791,18 @@ static int read_lock(struct twom_db *db, struct twom_txn **txnp,
         file->fd = newfd;
         file->next = db->openfile;
         db->openfile = file;
+    }
+
+    // empty file is same as nothing
+    if (!sbuf.st_size) {
+        r = TWOM_NOTFOUND;
+        goto done;
+    }
+
+    // any other tiny file isn't this format
+    if (sbuf.st_size < HEADER_SIZE + DUMMY_SIZE) {
+        r = TWOM_BADFORMAT;
+        goto done;
     }
 
     // if the existing map it too small, replace it
@@ -1936,9 +1947,36 @@ static int opendb(const char *fname, struct twom_open_data *setup, struct twom_d
     db->openfile->fd = fd;
     if (fd < 0) {
         if (setup->flags & TWOM_CREATE) {
-            fd = open(db->fname, O_RDWR|O_CREAT, 0644);
+            char *copy = strdup(fname);
+            const char *dir = dirname(copy);
+#if defined(O_DIRECTORY)
+            int dirfd = open(dir, O_RDONLY|O_DIRECTORY, 0600);
+#else
+            int dirfd = open(dir, O_RDONLY, 0600);
+#endif
+            free(copy);
+            if (dirfd < 0) {
+                if (errno == ENOENT) r = TWOM_NOTFOUND;
+                else r = TWOM_IOERROR;
+                goto done;
+            }
+            copy = strdup(fname);
+            const char *leaf = basename(copy);
+            fd = openat(dirfd, leaf, O_RDWR|O_CREAT, 0644);
+            free(copy);
             db->openfile->fd = fd;
-            if (fd < 0) goto done;
+            if (fd < 0) {
+                if (errno == ENOENT) r = TWOM_NOTFOUND;
+                else r = TWOM_IOERROR;
+                close(dirfd);
+                goto done;
+            }
+            if (fsync(dirfd) < 0) {
+                r = TWOM_IOERROR;
+                close(dirfd);
+                goto done;
+            }
+            close(dirfd);
             r = initdb(db, setup->flags);
             if (r) goto done;
         }
@@ -1951,11 +1989,19 @@ static int opendb(const char *fname, struct twom_open_data *setup, struct twom_d
     if (db->readonly || !txnp) {
         /* grab a read lock to read the header */
         r = read_lock(db, txnp, NULL, setup->flags);
+        if (r == TWOM_NOTFOUND && !db->readonly) {
+            r = initdb(db, setup->flags);
+            if (!r) r = read_lock(db, txnp, NULL, setup->flags);
+        }
         if (r) goto done;
     }
     else {
         /* go straight for a write lock and hold it */
         r = write_lock(db, txnp, NULL, setup->flags);
+        if (r == TWOM_NOTFOUND) {
+            r = initdb(db, setup->flags);
+            if (!r) r = write_lock(db, txnp, NULL, setup->flags);
+        }
         if (r) goto done;
     }
 
@@ -2196,24 +2242,24 @@ static int replay_cb(void *rock,
 static int tm_rename(struct twom_db *db, struct tm_file *oldfile, const char *newname)
 {
     struct stat sbuf, sbuffile;
-    char *copy = strdup(db->fname);
-    const char *dir = dirname(copy);
+    char *copyd = strdup(db->fname);
+    char *copyb = strdup(db->fname);
+    const char *dir = dirname(copyd);
+    const char *file = basename(copyb);
     int r = 0;
     int dirfd = -1;
 
-    if (!db->nosync) {
-    #if defined(O_DIRECTORY)
-        dirfd = open(dir, O_RDONLY|O_DIRECTORY, 0600);
+#if defined(O_DIRECTORY)
+    dirfd = open(dir, O_RDONLY|O_DIRECTORY, 0600);
 #else
-        dirfd = open(dir, O_RDONLY, 0600);
+    dirfd = open(dir, O_RDONLY, 0600);
 #endif
-        if (dirfd < 0) {
-            db->error("open directory failed",
-                      "filename=<%s> newname=<%s> directory=<%s>",
-                      db->fname, newname, dir);
-            r = TWOM_IOERROR;
-            goto done;
-        }
+    if (dirfd < 0) {
+        db->error("open directory failed",
+                  "filename=<%s> newname=<%s> directory=<%s>",
+                  db->fname, newname, dir);
+        r = TWOM_IOERROR;
+        goto done;
     }
 
     if (fstat(oldfile->fd, &sbuf) == -1) {
@@ -2237,7 +2283,7 @@ static int tm_rename(struct twom_db *db, struct tm_file *oldfile, const char *ne
         goto done;
     }
 
-    r = rename(newname, db->fname);
+    r = renameat(AT_FDCWD, newname, dirfd, file);
     if (r) goto done;
 
     if (!db->nosync) {
@@ -2252,7 +2298,8 @@ static int tm_rename(struct twom_db *db, struct tm_file *oldfile, const char *ne
 
  done:
     if (dirfd >= 0) close(dirfd);
-    free(copy);
+    free(copyd);
+    free(copyb);
     return r;
 }
 
@@ -2411,7 +2458,7 @@ int twom_db_open(const char *fname, struct twom_open_data *setup,
             r = twom_db_begin_txn(mydb, setup->flags, txnp);
             if (r) return r;
         }
-        // FIXME: we should check that setup->flags are compatible with the
+        // XXX: we should check that setup->flags are compatible with the
         // flags that the DB was originally opened with and reject if they
         // aren't, e.g. NOSYNC
         mydb->refcount++;
@@ -2579,6 +2626,7 @@ int twom_txn_fetch(struct twom_txn *txn,
     if (r) return r;
 
     if (flags & TWOM_FETCHNEXT) {
+again:
         r = advance_loc(txn, loc);
         if (r == TWOM_DONE) return TWOM_NOTFOUND;
         if (r) return r;
@@ -2600,7 +2648,10 @@ int twom_txn_fetch(struct twom_txn *txn,
     }
 
     /* active ancestor is a delete */
-    if (TYPE(ptr) == DELETE) return TWOM_NOTFOUND;
+    if (TYPE(ptr) == DELETE) {
+        if (flags & TWOM_FETCHNEXT) goto again;
+        return TWOM_NOTFOUND;
+    }
 
     r = check_tailcsum(txn, loc->file, ptr, offset);
     if (r) return r;
@@ -2669,6 +2720,18 @@ int twom_cursor_next(struct twom_cursor *cur,
         if (!ptr) return TWOM_IOERROR;
     }
 
+    // have we left our prefix?
+    if (cur->prefixlen) {
+        const char *this = ptr;
+        if (TYPE(ptr) == DELETE)
+            this = safeptr(loc, ANCESTOR(ptr));
+        size_t keylen = KEYLEN(this);
+        if (keylen < cur->prefixlen) return TWOM_DONE;
+        const char *key = KEYPTR(this);
+        if (txn->file->compar(key, cur->prefixlen, cur->prefix, cur->prefixlen))
+            return TWOM_DONE;
+    }
+
     // latest is a delete?  move along
     if (TYPE(ptr) == DELETE) goto again;
 
@@ -2730,6 +2793,7 @@ int twom_cursor_abort(struct twom_cursor **curp)
         cur->loc.file = NULL;
     }
     int r = twom_txn_abort(&cur->txn);
+    free(cur->prefix);
     free(cur);
     *curp = NULL;
     return r;
@@ -2743,6 +2807,8 @@ int twom_cursor_commit(struct twom_cursor **curp)
         cur->loc.file = NULL;
     }
     int r = twom_txn_commit(&cur->txn); // will call abort itself on error
+    free(cur->prefix);
+    free(cur);
     *curp = NULL;
     return r;
 }
@@ -2755,6 +2821,11 @@ int twom_txn_begin_cursor(struct twom_txn *txn,
     struct twom_cursor *cur = (struct twom_cursor *)twom_zmalloc(sizeof(struct twom_cursor));
     cur->txn = txn;
     if (flags & TWOM_ALWAYSYIELD) cur->alwaysyield = 1;
+    if ((flags & TWOM_CURSOR_PREFIX) && prefix && prefixlen) {
+        cur->prefix = twom_zmalloc(prefixlen);
+        memcpy(cur->prefix, prefix, prefixlen);
+        cur->prefixlen = prefixlen;
+    }
 
     int r = find_loc(cur->txn, &cur->loc, prefix, prefixlen);
     if (r) goto done;
@@ -2786,6 +2857,7 @@ void twom_cursor_fini(struct twom_cursor **curp)
         cur->loc.file->refcount--;
         cur->loc.file = NULL;
     }
+    free(cur->prefix);
     free(cur);
     *curp = NULL;
     return;
@@ -2816,16 +2888,10 @@ int twom_txn_foreach(struct twom_txn *txn,
     assert(cb);
     if (prefixlen) assert(prefix);
 
-    r = twom_txn_begin_cursor(txn, prefix, prefixlen, &cur, flags);
+    r = twom_txn_begin_cursor(txn, prefix, prefixlen, &cur, flags | TWOM_CURSOR_PREFIX);
     if (r) goto done;
 
     while ((r = twom_cursor_next(cur, &key, &keylen, &data, &datalen)) == 0) {
-        /* does it match prefix? */
-        if (prefixlen) {
-            if (keylen < prefixlen) break;
-            if (txn->file->compar(key, prefixlen, prefix, prefixlen)) break;
-        }
-
         if ((!goodp || goodp(rock, key, keylen, data, datalen))) {
             /* make callback */
             cb_r = cb(rock, key, keylen, data, datalen);
@@ -2968,7 +3034,7 @@ static int twom_txn_dump(struct twom_txn *txn, int detail)
             const char *key = KEYPTR(loc->file->base + parent_offset);
             size_t len = KEYLEN(loc->file->base + parent_offset);
             if (len > 79) len = 79;
-            if (key) strncpy(scratch, key, len);
+            if (key && len) strncpy(scratch, key, len);
             scratch[len] = 0;
             for (i = 0; i < len; i++)
                 if (!scratch[i]) scratch[i] = '-';
@@ -2979,7 +3045,7 @@ static int twom_txn_dump(struct twom_txn *txn, int detail)
             const char *key = KEYPTR(ptr);
             size_t len = KEYLEN(ptr);
             if (len > 79) len = 79;
-            if (key) strncpy(scratch, key, len);
+            if (key && len) strncpy(scratch, key, len);
             scratch[len] = 0;
             for (i = 0; i < len; i++)
                 if (!scratch[i]) scratch[i] = '-';

@@ -1,44 +1,6 @@
-/* user.h -- User manipulation routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* user.h -- User manipulation routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #ifndef INCLUDED_USER_H
 #define INCLUDED_USER_H
@@ -49,6 +11,16 @@
 
 #define FNAME_SUBSSUFFIX     "sub"
 #define FNAME_COUNTERSSUFFIX "counters"
+
+#define USER_COMPACT_EMAILIDS(cstate) \
+    (cstate && cstate->version >= 2 && cstate->compact_emailids)
+
+struct usernamespacelocks {
+    struct mboxlock *l1;
+    struct mboxlock *l2;
+};
+
+typedef struct usernamespacelocks user_nslock_t;
 
 /* check if this user should be treated as being on a replica (for user moves,
  * or for actual replicas */
@@ -90,10 +62,17 @@ char *user_hash_xapian(const char *userid, const char *root);
 char *user_hash_xapian_byname(const mbname_t *mbname, const char *root);
 char *user_hash_xapian_byid(const char *mboxid, const char *root);
 
+user_nslock_t *user_nslock_lock(const char *userid, int locktype);
+user_nslock_t *user_nslock_lockdouble(const char *userid1, const char *userid2, int locktype);
+user_nslock_t *user_nslock_bymboxname(const char *mboxname1, const char *mboxname2, int locktype);
+#define user_nslock_lock_w(u) user_nslock_lock(u, LOCK_EXCLUSIVE)
+#define user_nslock_lockmb_w(m) user_nslock_bymboxname(m, NULL, LOCK_EXCLUSIVE)
+void user_nslock_release(user_nslock_t **ptr);
+int user_nslock_islocked(const char *userid);
+int user_nslock_islockedmboxname(const char *mboxname);
+
 /* default to exclusive lock! */
-struct mboxlock *user_namespacelock_full(const char *userid, int locktype);
-#define user_namespacelock(userid) user_namespacelock_full(userid, LOCK_EXCLUSIVE)
-int user_isnamespacelocked(const char *userid);
+/* NULL is a legit value for lock_full, so use a flag value instead */
 int user_run_with_lock(const char *userid, int (*cb)(void *), void *rock);
 
 int user_sharee_renameacls(const struct namespace *namespace,

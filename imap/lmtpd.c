@@ -1,44 +1,6 @@
-/* lmtpd.c -- Program to deliver mail to a mailbox
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* lmtpd.c -- Program to deliver mail to a mailbox */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -175,6 +137,7 @@ static struct protocol_t lmtp_protocol =
           { "STARTTLS", CAPA_STARTTLS },
           { "PIPELINING", CAPA_PIPELINING },
           { "IGNOREQUOTA", CAPA_IGNOREQUOTA },
+          { "TRACE", CAPA_TRACE },
           { NULL, 0 } } },
       { "STARTTLS", "220", "454", 0 },
       { "AUTH", 512, 0, "235", "5", "334 ", "*", NULL, 0 },
@@ -244,7 +207,9 @@ int service_init(int argc __attribute__((unused)),
     unsigned options =
         config_getswitch(IMAPOPT_SIEVE_UTF8FILEINTO) ? NAMESPACE_OPTION_UTF8 : 0;
     if ((r = mboxname_init_namespace(&lmtpd_namespace, options))) {
-        syslog(LOG_ERR, "%s", error_message(r));
+        xsyslog(LOG_ERR, "mboxname_init_namespace failed",
+                         "error=<%s>",
+                         error_message(r));
         fatal(error_message(r), EX_CONFIG);
     }
 
@@ -326,8 +291,8 @@ int service_main(int argc, char **argv,
 
     if (config_iolog) {
         read_io_count(io_count_stop);
-        syslog(LOG_INFO,
-               "LMTP session stats : I/O read : %d bytes : I/O write : %d bytes",
+        xsyslog(LOG_INFO, "LMTP session stats",
+               "read_bytes=<%d> wrote_bytes=<%d>",
                 io_count_stop->io_read_count - io_count_start->io_read_count,
                 io_count_stop->io_write_count - io_count_start->io_write_count);
         free (io_count_start);
@@ -455,7 +420,7 @@ EXPORTED int fuzzy_match(mbname_t *mbname)
         int i;
         const strarray_t *newboxes = mbname_boxes(frock.result);
         mbname_truncate_boxes(mbname, 0);
-        for (i = 0; i < strarray_size(newboxes); i++)
+        for (i = 0; i < frock.depth; i++)
             mbname_push_boxes(mbname, strarray_nth(newboxes, i));
         mbname_free(&frock.result);
         return 1;
@@ -528,7 +493,7 @@ int deliver_mailbox(FILE *f,
     char *uuid = NULL;
     duplicate_key_t dkey = DUPLICATE_INITIALIZER;
     quota_t qdiffs[QUOTA_NUMRESOURCES] = QUOTA_DIFFS_DONTCARE_INITIALIZER;
-    time_t internaldate = 0;
+    struct timespec internaldate = { 0 };
 
     /* make sure we have an IMAP mailbox */
     if (mboxname_isnondeliverymailbox(mailboxname, 0/*mbtype*/)) {
@@ -585,15 +550,18 @@ int deliver_mailbox(FILE *f,
         r = message_parse_file_buf(f, &content->map, &content->body, NULL);
     }
 
+    /* initialize internaldate to "now" */
+    cyrus_gettime(CLOCK_REALTIME, &internaldate);
+
     /* if the body contains an x-deliveredinternaldate then that overrides all else */
     if (content->body->x_deliveredinternaldate) {
         time_from_rfc5322(content->body->x_deliveredinternaldate,
-                          &internaldate, DATETIME_FULL);
+                          &internaldate.tv_sec, DATETIME_FULL);
     }
     /* Otherwise we'll use a received date if there's one */
     else if (content->body->received_date) {
         time_from_rfc5322(content->body->received_date,
-                          &internaldate, DATETIME_FULL);
+                          &internaldate.tv_sec, DATETIME_FULL);
     }
 
     if (!r) {
@@ -612,9 +580,11 @@ int deliver_mailbox(FILE *f,
             }
         }
 
-        r = append_fromstage_full(&as, &content->body, stage,
-                                  internaldate, savedate, /*createdmodseq*/0,
-                                  flags, !singleinstance, &annotations);
+        struct append_metadata meta = {
+            &internaldate, savedate, /*cmodseq*/ 0,
+            flags, &annotations, !singleinstance
+        };
+        r = append_fromstage_full(&as, &content->body, stage, &meta);
 
         if (r) {
             append_abort(&as);
@@ -646,11 +616,13 @@ int deliver_mailbox(FILE *f,
                 else if (mode & TARGET_FUZZY) target = "fuzzy";
                 else if (mode & TARGET_SET) target = "set";
 
-                syslog(LOG_INFO, "Delivered: sessionid=<%s>"
-                       " action=<%s> target=<%s>"
-                       " messageid=%s userid=<%s> mailbox=<%s> uniqueid=<%s>",
-                       session_id(), action, target, id, user,
-                       mailbox_name(mailbox), mailbox_uniqueid(mailbox));
+                xsyslog(LOG_INFO, "Delivered",
+                                  "action=<%s> target=<%s>"
+                                  " messageid=%s userid=<%s> mailbox=<%s>"
+                                  " uniqueid=<%s>",
+                                  action, target, id, user,
+                                  mailbox_name(mailbox),
+                                  mailbox_uniqueid(mailbox));
                 if (dupelim && id)
                     duplicate_mark(&dkey, time(NULL), as.baseuid);
             }
@@ -800,12 +772,19 @@ static int deliver_local(deliver_data_t *mydata, struct imap4flags *imap4flags,
             if (!ret) mode |= TARGET_FUZZY;
         }
 
-        ret = deliver_mailbox(md->f, mydata->content, mydata->stage,
-                              md->size, imap4flags, NULL,
-                              mydata->authuser, mydata->authstate, md->id,
-                              mbname_userid(mbname), mydata->notifyheader,
-                              mode, mbname_intname(mbname), md->date,
-                              0 /*savedate*/, quotaoverride, 0);
+        if (strarray_size(mbname_boxes(mbname)) == 1 &&
+            !strcasecmp("INBOX", strarray_nth(mbname_boxes(mbname), 0))) {
+            // never deliver to INBOX.INBOX
+            ret = 1;
+        }
+        else {
+            ret = deliver_mailbox(md->f, mydata->content, mydata->stage,
+                                  md->size, imap4flags, NULL,
+                                  mydata->authuser, mydata->authstate, md->id,
+                                  mbname_userid(mbname), mydata->notifyheader,
+                                  mode, mbname_intname(mbname), md->date,
+                                  0 /*savedate*/, quotaoverride, 0);
+        }
     }
 
     if (ret) {
@@ -876,8 +855,9 @@ int deliver(message_data_t *msgdata, char *authuser,
     /* loop through each recipient, attempting delivery for each */
     for (n = 0; n < nrcpts; n++) {
         const mbname_t *mbname = msg_getrcpt(msgdata, n);
-        char *mboxname = mbname_userid(mbname) ?
-                mboxname_user_mbox(mbname_userid(mbname), NULL) :
+        const char *userid = mbname_userid(mbname);
+        char *mboxname = userid ?
+                mboxname_user_mbox(userid, NULL) :
                 xstrdup(mbname_intname(mbname));
 
         mbentry_t *mbentry = NULL;
@@ -892,10 +872,7 @@ int deliver(message_data_t *msgdata, char *authuser,
             status[n] = nosieve;
         }
         else {
-            strarray_t flags = STRARRAY_INITIALIZER;
-            struct imap4flags imap4flags = { &flags, authstate };
 
-            const char *userid = mbname_userid(mbname);
             struct proc_limits limits;
             limits.servicename = config_ident;
             limits.clienthost = lmtpd_clienthost;
@@ -914,8 +891,10 @@ int deliver(message_data_t *msgdata, char *authuser,
             struct conversations_state *state = NULL;
             if (userid) {
                 r = conversations_open_user(userid, 0/*shared*/, &state);
-                if (r) goto setstatus;
+                if (r) goto unregister;
             }
+            strarray_t flags = STRARRAY_INITIALIZER;
+            struct imap4flags imap4flags = { &flags, authstate };
 
             /* local mailbox */
             mydata.cur_rcpt = n;
@@ -932,6 +911,7 @@ int deliver(message_data_t *msgdata, char *authuser,
             if (r < 0) strarray_append(&flags, "$SieveFailed");
 #ifdef WITH_DAV
             if (ctx.carddavdb) carddav_close(ctx.carddavdb);
+            ctx.carddavdb = NULL;
 #endif
             sieve_srs_free();
             sieve_interp_free(&interp);
@@ -945,13 +925,14 @@ int deliver(message_data_t *msgdata, char *authuser,
             }
             strarray_fini(&flags);
             conversations_commit(&state);
+
+           unregister:
             proc_register(&proc_handle, 0, config_ident, lmtpd_clienthost, NULL, NULL, NULL);
         }
 
-        telemetry_rusage(mbname_userid(mbname));
+        telemetry_rusage(userid);
 
-        setstatus:
-
+       setstatus:
         msg_setrcpt_status(msgdata, n, r, NULL);
 
         mboxlist_entry_free(&mbentry);
@@ -1099,9 +1080,8 @@ static void shut_down(int code)
         idle_done();
     }
 
-#ifdef HAVE_SSL
     tls_shutdown_serverengine();
-#endif
+
     if (deliver_out) {
         prot_flush(deliver_out);
 
@@ -1131,12 +1111,6 @@ int autocreate_inbox(const mbname_t *mbname)
     const char *userid = mbname_userid(mbname);
 
     if (!userid)
-        return IMAP_MAILBOX_NONEXISTENT;
-
-    /*
-     * Exclude anonymous
-     */
-    if (!strcmp(userid, "anonymous"))
         return IMAP_MAILBOX_NONEXISTENT;
 
     /*
@@ -1220,8 +1194,9 @@ static int verify_user(const mbname_t *origmbname,
         }
     }
 
-    if (r) syslog(LOG_DEBUG, "verify_user(%s) failed: %s", mbname_userid(mbname),
-                  error_message(r));
+    if (r) xsyslog(LOG_DEBUG, "verify_user failed",
+                              "user=<%s> error=<%s>",
+                              mbname_userid(mbname), error_message(r));
 
 done:
     mbname_free(&mbname);

@@ -1,44 +1,6 @@
-/* mbdump.c -- Mailbox dump routines
- *
- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *
- * 3. The name "Carnegie Mellon University" must not be used to
- *    endorse or promote products derived from this software without
- *    prior written permission. For permission or any legal
- *    details, please contact
- *      Carnegie Mellon University
- *      Center for Technology Transfer and Enterprise Creation
- *      4615 Forbes Avenue
- *      Suite 302
- *      Pittsburgh, PA  15213
- *      (412) 268-7393, fax: (412) 268-7395
- *      innovation@andrew.cmu.edu
- *
- * 4. Redistributions of any form whatsoever must retain the following
- *    acknowledgment:
- *    "This product includes software developed by Computing Services
- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
- *
- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- */
+/* mbdump.c -- Mailbox dump routines */
+/* SPDX-License-Identifier: BSD-3-Clause-CMU */
+/* See COPYING file at the root of the distribution for more details. */
 
 #include <config.h>
 
@@ -120,13 +82,13 @@ static void downgrade_header(struct index_header *i, char *buf, int version,
     *((bit32 *)(buf+OFFSET_RECORD_SIZE)) = htonl(record_size);
     /* NUM_RECORDS replaces "exists" in the older headers */
     *((bit32 *)(buf+OFFSET_NUM_RECORDS)) = htonl(UP_num_records);
-    *((bit32 *)(buf+OFFSET_LAST_APPENDDATE)) = htonl(i->last_appenddate);
+    *((bit32 *)(buf+OFFSET_LAST_APPENDDATE)) = htonl(i->last_appenddate.tv_sec);
     *((bit32 *)(buf+OFFSET_LAST_UID)) = htonl(i->last_uid);
 
     /* quotas may be 64bit now */
     *((bit64 *)(buf+OFFSET_QUOTA_MAILBOX_USED)) = htonll(i->quota_mailbox_used);
 
-    *((bit32 *)(buf+OFFSET_POP3_LAST_LOGIN)) = htonl(i->pop3_last_login);
+    *((bit32 *)(buf+OFFSET_POP3_LAST_LOGIN)) = htonl(i->pop3_last_login.tv_sec);
     *((bit32 *)(buf+OFFSET_UIDVALIDITY)) = htonl(i->uidvalidity);
     *((bit32 *)(buf+OFFSET_DELETED)) = htonl(i->deleted);
     *((bit32 *)(buf+OFFSET_ANSWERED)) = htonl(i->answered);
@@ -154,14 +116,14 @@ static void downgrade_record(const struct index_record *record, char *buf,
         UP_modseqbase = OFFSET_MESSAGE_GUID+12;
 
     *((bit32 *)(buf+OFFSET_UID)) = htonl(record->uid);
-    *((bit32 *)(buf+OFFSET_INTERNALDATE)) = htonl(record->internaldate);
-    *((bit32 *)(buf+OFFSET_SENTDATE)) = htonl(record->sentdate);
+    *((bit32 *)(buf+OFFSET_INTERNALDATE)) = htonl(record->internaldate.tv_sec);
+    *((bit32 *)(buf+OFFSET_SENTDATE)) = htonl(record->sentdate.tv_sec);
     *((bit32 *)(buf+OFFSET_SIZE)) = htonl(record->size);
     *((bit32 *)(buf+OFFSET_HEADER_SIZE)) = htonl(record->header_size);
     /* content_offset in previous versions, identical to header_size */
     *((bit32 *)(buf+OFFSET_GMTIME)) = htonl(UP_content_offset);
     *((bit32 *)(buf+OFFSET_CACHE_OFFSET)) = htonl(record->cache_offset);
-    *((bit32 *)(buf+OFFSET_LAST_UPDATED)) = htonl(record->last_updated);
+    *((bit32 *)(buf+OFFSET_LAST_UPDATED)) = htonl(record->last_updated.tv_sec);
     *((bit32 *)(buf+OFFSET_SYSTEM_FLAGS))
         = htonl(record->system_flags & UP_validflags);
     for (n = 0; n < MAX_USER_FLAGS/32; n++) {
@@ -282,7 +244,7 @@ static int dump_index(struct mailbox *mailbox, int oldversion,
             if (n == -1) {
                 mailbox_iter_done(&iter);
                 goto fail;
-	    }
+            }
         }
         mailbox_iter_done(&iter);
 
@@ -665,7 +627,7 @@ EXPORTED int dump_mailbox(const char *tag, struct mailbox *mailbox, uint32_t uid
 
         /* Dump sieve files
          *
-         * xxx can't use home directories currently
+         * XXX can't use home directories currently
          * (it makes almost no sense in the conext of a murder) */
         if (!sieve_usehomedir) {
             const char *sieve_path = user_sieve_path(userid);
@@ -799,8 +761,8 @@ static int cleanup_seen_cb(const mbentry_t *mbentry, void *rock)
     mailbox_index_dirty(mailbox);
     if (mailbox->i.recentuid < sd.lastuid)
         mailbox->i.recentuid = sd.lastuid;
-    if (mailbox->i.recenttime < sd.lastread)
-        mailbox->i.recenttime = sd.lastread;
+    if (mailbox->i.recenttime.tv_sec < sd.lastread)
+        mailbox->i.recenttime.tv_sec = sd.lastread;
 
  done:
     seqset_free(&seq);
@@ -907,9 +869,10 @@ EXPORTED int undump_mailbox(const char *mbname,
     if (r == IMAP_MAILBOX_NONEXISTENT) {
         mbentry_t *mbentry = NULL;
         r = mboxlist_lookup(mbname, &mbentry, NULL);
-        if (!r) r = mailbox_create(mbname, mbentry->mbtype,
+        if (!r) r = mailbox_create(mbname, mbentry->mbtype, /*version*/0,
                                    mbentry->partition, mbentry->acl,
-                                   mbentry->uniqueid, 0, 0, 0, 0, &mailbox);
+                                   mbentry->uniqueid, mbentry->jmapid,
+                                   0, 0, 0, 0, &mailbox);
         mboxlist_entry_free(&mbentry);
     }
     if(r) goto done;
@@ -980,7 +943,7 @@ EXPORTED int undump_mailbox(const char *mbname,
             }
 
             c = getbastring(pin, pout, &content);
-            /* xxx binary */
+            /* XXX binary */
 
             if(c != ' ') {
                 r = IMAP_PROTOCOL_ERROR;
@@ -1122,7 +1085,7 @@ EXPORTED int undump_mailbox(const char *mbname,
             else realname = file.s + 6;
 
             if(sieve_usehomedir) {
-                /* xxx! */
+                /* XXX! */
                 syslog(LOG_ERR,
                        "dropping sieve file %s since this host is " \
                        "configured for sieve_usehomedir",
@@ -1312,7 +1275,7 @@ EXPORTED int undump_mailbox(const char *mbname,
         while ((msg = mailbox_iter_step(iter))) {
             const struct index_record *record = msg_record(msg);
             fname = mailbox_record_fname(mailbox, record);
-            settime.actime = settime.modtime = record->internaldate;
+            settime.actime = settime.modtime = record->internaldate.tv_sec;
             if (utime(fname, &settime) == -1) {
                 r = IMAP_IOERROR;
                 mailbox_iter_done(&iter);

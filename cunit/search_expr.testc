@@ -1,17 +1,18 @@
 #include "config.h"
 
+#include "cunit/unit.h"
+#include "cunit/unit-timezones.h"
+#include "cunit/unit-timeofday.h"
+
 #include "lib/libconfig.h"
 #include "lib/libcyr_cfg.h"
+#include "lib/prot.h"
+#include "lib/util.h"
+#include "lib/xmalloc.h"
 
-#include "cunit/cyrunit.h"
-#include "prot.h"
-#include "xmalloc.h"
 #include "imap/imapd.h"
 #include "imap/index.h"
 #include "imap/imapparse.h"
-#include "util.h"
-#include "cunit/timezones.h"
-#include "cunit/timeofday.h"
 
 static struct namespace ns;
 static const char *userid = "fred";
@@ -47,7 +48,7 @@ static void test_get_search_program(void)
         searchargs = new_searchargs(".", 0, &ns, userid, authstate, isadmin); \
         pin = prot_readmap(_in, sizeof(_in)-1); \
         pout = prot_writebuf(&actual_errs); \
-        c = get_search_program(pin, pout, searchargs); \
+        c = get_search_program(pin, pout, 0/*quirks*/, searchargs); \
         CU_ASSERT_EQUAL(c, '\r'); \
         buf_cstring(&actual_errs); \
         CU_ASSERT_STRING_EQUAL(actual_errs.s, expected_errs); \
@@ -1360,6 +1361,18 @@ static void test_split_by_folder_and_index(void)
     TESTCASE("(or (and (le size 123) (fuzzymatch subject \"TUMBLR\")) (and (ge size 456) (fuzzymatch subject \"MLKSHK\")))",
              "indexed (fuzzymatch subject \"TUMBLR\") (le size 123)\n"
              "indexed (fuzzymatch subject \"MLKSHK\") (ge size 456)\n");
+
+    /* a disjunctive node of indexed matches is split into multiple
+     * indexed callbacks */
+    TESTCASE("(or (fuzzymatch subject \"ETSY\") (fuzzymatch subject \"KLAK\"))",
+             "indexed (fuzzymatch subject \"ETSY\") (true)\n"
+             "indexed (fuzzymatch subject \"KLAK\") (true)\n");
+    TESTCASE("(or (fuzzymatch subject \"ETSY\") (fuzzymatch body \"KLAK\"))",
+             "indexed (fuzzymatch subject \"ETSY\") (true)\n"
+             "indexed (fuzzymatch body \"KLAK\") (true)\n");
+    TESTCASE("(or (fuzzymatch body \"ETSY\") (fuzzymatch body \"KLAK\"))",
+             "indexed (fuzzymatch body \"ETSY\") (true)\n"
+             "indexed (fuzzymatch body \"KLAK\") (true)\n");
 }
 #undef TESTCASE
 
