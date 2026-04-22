@@ -386,7 +386,7 @@ EXPORTED mbname_t *mbname_from_userid(const char *userid)
     return mbname;
 }
 
-EXPORTED mbname_t *mbname_from_recipient(const char *recipient, const struct namespace *ns)
+EXPORTED mbname_t *mbname_from_recipient(const char *recipient, const struct namespace *ns, int encode_detail)
 {
     mbname_t *mbname = xzmalloc(sizeof(mbname_t));
 
@@ -414,16 +414,20 @@ EXPORTED mbname_t *mbname_from_recipient(const char *recipient, const struct nam
         sep[0] = ns->hier_sep;
         sep[1] = '\0';
         *plus = '\0';
+        if (encode_detail) {
+            /* Encode mailbox name in IMAP UTF-7 */
+            charset_t cs = charset_lookupname("utf-8");
+            char *detail =
+                charset_to_imaputf7(plus+1, strlen(plus+1), cs, ENCODING_NONE);
 
-        /* Encode mailbox name in IMAP UTF-7 */
-        charset_t cs = charset_lookupname("utf-8");
-        char *detail =
-            charset_to_imaputf7(plus+1, strlen(plus+1), cs, ENCODING_NONE);
+            mbname->boxes = strarray_split(detail, sep, /*flags*/0);
 
-        mbname->boxes = strarray_split(detail, sep, /*flags*/0);
-
-        charset_free(&cs);
-        free(detail);
+            charset_free(&cs);
+            free(detail);
+        }
+        else {
+            mbname->boxes = strarray_split(plus+1, sep, /*flags*/0);
+        }
     }
     else
         mbname->boxes = strarray_new();

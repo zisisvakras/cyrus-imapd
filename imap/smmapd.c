@@ -218,7 +218,7 @@ static int verify_user(const char *key, struct auth_state *authstate)
     mbentry_t *mbentry = NULL;
     int r = 0;
 
-    mbname_t *mbname = mbname_from_recipient(key, &map_namespace);
+    mbname_t *mbname = mbname_from_recipient(key, &map_namespace, 0);
 
     if (skipplus) mbname_set_boxes(mbname, NULL);
     if (forcedowncase) mbname_downcaseuser(mbname);

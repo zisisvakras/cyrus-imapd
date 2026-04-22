@@ -774,7 +774,7 @@ static int process_recipient(char *addr,
 
     if (sl) {
         char *rcpt = xstrndup(addr, sl);
-        mbname = mbname_from_recipient(rcpt, msg->ns);
+        mbname = mbname_from_recipient(rcpt, msg->ns, 0);
         free(rcpt);
 
         int forcedowncase = config_getswitch(IMAPOPT_LMTP_DOWNCASE_RCPT);
